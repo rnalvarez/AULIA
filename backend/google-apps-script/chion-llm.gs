@@ -64,26 +64,25 @@ function handleChat(body) {
 
   if (!reply) throw new Error("El proveedor LLM devolvió una respuesta vacía.");
 
-  let tracking = { ok: false };
-  try {
-    tracking = handleLog({
-      courseId: auth.courseId,
-      token: auth.token,
-      sid: body.sid || "",
-      q: extractLastUserMessage(messages),
-      r: reply,
-      model: data.model || model,
-      modeId: mode.id || "",
-    });
-  } catch (error) {
-    console.error("AULIA chat tracking:", error);
+  const tracking = handleLog({
+    courseId: auth.courseId,
+    token: auth.token,
+    sid: body.sid || "",
+    q: extractLastUserMessage(messages),
+    r: reply,
+    model: data.model || model,
+    modeId: mode.id || "",
+  });
+
+  if (!tracking || !tracking.tracked) {
+    throw new Error("La respuesta no pudo registrarse en el seguimiento de la cátedra.");
   }
 
   return {
     ok: true,
     reply,
     model: data.model || model,
-    tracked: Boolean(tracking && tracking.tracked),
+    tracked: true,
   };
 }
 
