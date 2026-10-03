@@ -40,8 +40,8 @@ function buildRegistry() {
         examples: pack["examples"],
         tracking: pack["tracking"],
         assistant: pack["assistant"] || {
-          name: course?.title || "Asistente pedagógico",
-          shortTitle: course?.title || "Asistente pedagógico",
+          name: (pack["course"] || {}).title || "Asistente pedagógico",
+          shortTitle: (pack["course"] || {}).title || "Asistente pedagógico",
           initials: "AI",
           welcomeMessage: "Elegí una modalidad para comenzar.",
           suggestions: [],
