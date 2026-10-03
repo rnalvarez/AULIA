@@ -1,0 +1,9 @@
+{
+  "provider": "google-sheets",
+  "courseId": "montaje",
+  "identitySource": "padron",
+  "interactionSource": "interactions",
+  "sessionSource": "sessions",
+  "endpoint": "",
+  "note": "Configuración de prueba. El endpoint real se inyectará posteriormente."
+}
