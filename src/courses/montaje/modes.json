@@ -1,0 +1,30 @@
+[
+  {
+    "id": "consulta",
+    "title": "Consultá con el asistente",
+    "description": "Preguntá libremente sobre los conceptos y la bibliografía del curso.",
+    "pedagogicalGoal": "comprender",
+    "placeholder": "Preguntá por un concepto de montaje..."
+  },
+  {
+    "id": "analisis",
+    "title": "Analizá una escena",
+    "description": "Describí una escena y trabajá la función del montaje.",
+    "pedagogicalGoal": "aplicar",
+    "placeholder": "Describí la escena o secuencia..."
+  },
+  {
+    "id": "socratico",
+    "title": "Modo socrático",
+    "description": "La herramienta devuelve preguntas para ayudar a construir una hipótesis.",
+    "pedagogicalGoal": "elaborar",
+    "placeholder": "Escribí tu hipótesis sobre el montaje..."
+  },
+  {
+    "id": "diagnostico",
+    "title": "Diagnóstico de montaje",
+    "description": "Identificá qué relación entre planos produce el efecto que describís.",
+    "pedagogicalGoal": "diagnosticar",
+    "placeholder": "¿Qué problema de montaje observás?"
+  }
+]
