@@ -4,12 +4,13 @@
   "identitySource": "padron",
   "interactionSource": "interactions",
   "sessionSource": "sessions",
-  "endpoint": "https://script.google.com/macros/s/AKfycbx5f4HcnqhibmaOof3-mBZuj9XB_6E2LMOb_zAPgzG4Pxdd8vyP4RUddeDljGNt9u6o/exec",
+  "endpoint": "",
   "actions": {
     "check": "check",
     "register": "registrar",
     "verify": "verificar",
     "logInteraction": "log"
   },
-  "failOpen": false
+  "failOpen": false,
+  "deploymentNote": "Configurar aquí únicamente el endpoint del backend AULIA conectado a una COPIA de la Sheet de CHIONIA para pruebas."
 }
