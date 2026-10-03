@@ -1,0 +1,12 @@
+{
+  "name": "Asistente de Montaje",
+  "shortTitle": "Fundamentos del montaje audiovisual",
+  "initials": "AM",
+  "welcomeMessage": "Hola. Soy el asistente pedagógico de la cátedra de Montaje.\n\nVamos a trabajar conceptos de montaje a partir del corpus autorizado del curso, pero sin reducir el análisis a definiciones aisladas.\n\n¿Qué concepto, escena o problema de montaje querés explorar?",
+  "suggestions": [
+    "¿Qué función cumple el eje de 180 grados?",
+    "¿Cómo analizarías un raccord dentro de una acción?",
+    "¿Qué diferencia hay entre corte y ritmo de montaje?",
+    "¿Qué produce el montaje paralelo?"
+  ]
+}
