@@ -1,7 +1,15 @@
 export function createLLMClient({ endpoint, getToken, defaultModel = "" }) {
-  async function generate({ messages, model = defaultModel, signal }) {
+  async function generate({
+    course,
+    assistant,
+    mode,
+    messages,
+    retrieved = [],
+    model = defaultModel,
+    signal,
+  }) {
     if (!endpoint) {
-      throw new Error("No hay proveedor LLM configurado.");
+      throw new Error("No hay un backend de IA configurado para esta instancia.");
     }
 
     const token = await getToken?.();
@@ -11,18 +19,35 @@ export function createLLMClient({ endpoint, getToken, defaultModel = "" }) {
     const response = await fetch(endpoint, {
       method: "POST",
       headers,
-      body: JSON.stringify({ model, messages }),
+      body: JSON.stringify({
+        courseId: course?.id,
+        assistant,
+        mode,
+        messages,
+        retrieved,
+        model,
+      }),
       signal,
     });
 
     const data = await response.json().catch(() => ({}));
     if (!response.ok) {
       throw new Error(
-        data?.error?.message || "El proveedor LLM rechazó la solicitud."
+        data?.error?.message || data?.message || "El backend de IA rechazó la solicitud."
       );
     }
 
-    return data;
+    const reply =
+      data?.reply ||
+      data?.choices?.[0]?.message?.content ||
+      data?.output ||
+      "";
+
+    return {
+      ...data,
+      reply,
+      model: data?.model || model || "",
+    };
   }
 
   return { generate };
