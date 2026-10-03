@@ -46,7 +46,7 @@ export default function StudentLogin({ course, onReady }) {
     const data = await run(() => verifyStudentPin(course, student.dni, pin));
     if (!data) return;
     if (!data.allowed) { setError("PIN incorrecto. Si lo olvidaste, contactá al docente para que lo resetee."); return; }
-    onReady(saveVerifiedStudent(course, student));
+    onReady(saveVerifiedStudent(course, student, data["token"]));
   }
 
   const buttonLabel = loading ? "Verificando…" : step === "dni" ? "Verificar DNI →" : step === "createPin" ? "Crear PIN y acceder →" : "Acceder →";
