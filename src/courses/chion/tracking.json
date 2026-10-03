@@ -4,6 +4,12 @@
   "identitySource": "padron",
   "interactionSource": "interactions",
   "sessionSource": "sessions",
-  "endpoint": "",
-  "note": "La planilla y su endpoint no pertenecen al CORE; se inyectan por curso en una etapa posterior."
+  "endpoint": "https://script.google.com/macros/s/AKfycbx5f4HcnqhibmaOof3-mBZuj9XB_6E2LMOb_zAPgzG4Pxdd8vyP4RUddeDljGNt9u6o/exec",
+  "actions": {
+    "check": "check",
+    "register": "registrar",
+    "verify": "verificar",
+    "logInteraction": "log"
+  },
+  "failOpen": false
 }
