@@ -1,6 +1,7 @@
 const SESSION_PREFIX = "aulia:student:";
 const SID_KEY = "aulia:sid";
 const PENDING_KEY = "aulia:pending";
+const VERIFY_TTL = 24 * 60 * 60 * 1000;
 
 export function getSessionId() {
   try {
@@ -28,7 +29,12 @@ export function loadStudent(courseId) {
   try {
     const raw = localStorage.getItem(SESSION_PREFIX + courseId);
     if (!raw) return null;
-    return JSON.parse(raw);
+    const student = JSON.parse(raw);
+    if (!student.verifiedAt || Date.now() - student.verifiedAt > VERIFY_TTL) {
+      clearStudent(courseId);
+      return null;
+    }
+    return student;
   } catch {
     return null;
   }
