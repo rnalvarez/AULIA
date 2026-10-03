@@ -1,0 +1,50 @@
+[
+  {
+    "id": "continuidad",
+    "title": "Continuidad",
+    "aliases": ["continuidad", "continuidad narrativa", "continuity"],
+    "keywords": ["espacio", "tiempo", "accion", "montaje"],
+    "summary": "Organización de planos para que una acción o situación pueda ser percibida como coherente.",
+    "explanation": "La continuidad puede apoyarse en relaciones espaciales, temporales y de acción, pero también puede romperse deliberadamente con una finalidad expresiva."
+  },
+  {
+    "id": "eje180",
+    "title": "Eje de 180 grados",
+    "aliases": ["eje de 180", "regla de 180", "180 grados"],
+    "keywords": ["eje", "espacio", "orientacion", "miradas"],
+    "summary": "Regla de organización espacial que mantiene una orientación consistente entre los planos.",
+    "explanation": "Al permanecer del mismo lado del eje, los planos conservan relaciones espaciales previsibles. Cruzarlo puede alterar deliberadamente esa percepción."
+  },
+  {
+    "id": "raccord",
+    "title": "Raccord",
+    "aliases": ["raccord", "match", "continuidad de raccord"],
+    "keywords": ["movimiento", "mirada", "accion", "montaje"],
+    "summary": "Relación entre dos planos que permite que un movimiento, mirada o posición continúe de forma perceptualmente coherente.",
+    "explanation": "El raccord ayuda a construir la continuidad entre planos, especialmente en cortes dentro de una misma acción."
+  },
+  {
+    "id": "montaje-paralelo",
+    "title": "Montaje paralelo",
+    "aliases": ["montaje paralelo", "cross cutting", "montaje alterno"],
+    "keywords": ["alternancia", "acciones", "simultaneidad", "tension"],
+    "summary": "Alternancia entre dos o más líneas de acción para relacionarlas temporal o dramáticamente.",
+    "explanation": "La alternancia puede hacer percibir simultaneidad, contraste, anticipación o convergencia entre acciones."
+  },
+  {
+    "id": "corte",
+    "title": "Corte",
+    "aliases": ["corte", "cut", "cortar"],
+    "keywords": ["plano", "transicion", "ritmo"],
+    "summary": "Cambio directo de un plano a otro mediante una discontinuidad de la imagen.",
+    "explanation": "El corte organiza el flujo temporal y espacial. Su efecto depende de la relación entre los planos que conecta."
+  },
+  {
+    "id": "ritmo",
+    "title": "Ritmo de montaje",
+    "aliases": ["ritmo", "ritmo de montaje", "pacing"],
+    "keywords": ["duracion", "corte", "tiempo", "tension"],
+    "summary": "Sensación temporal producida por la duración y articulación de los planos.",
+    "explanation": "El ritmo no depende solamente de cortar rápido o lento: intervienen la duración de los planos, sus movimientos, acciones, pausas y relaciones internas."
+  }
+]
