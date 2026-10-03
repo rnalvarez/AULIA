@@ -53,6 +53,7 @@ function requirePin(pin) {
 }
 
 function handleCheck(body) {
+  requireCourse(body);
   const student = findPadronStudent(body.dni);
   if (!student) return { found: false };
   return {
