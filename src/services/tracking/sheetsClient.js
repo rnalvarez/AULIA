@@ -1,21 +1,21 @@
-import { queuePendingInteraction, readPendingInteractions, clearPendingInteractions, getSessionId } from "../../core/studentSession.js";
+import {
+  queuePendingInteraction,
+  readPendingInteractions,
+  removePendingInteractions,
+  getSessionId,
+} from "../../core/studentSession.js";
 
 export function createSheetsClient(course, student = null) {
   const endpoint = course?.tracking?.endpoint || "";
   const actions = course?.tracking?.actions || {};
 
   async function request(payload, { read = true } = {}) {
-    if (!endpoint) {
-      throw new Error("El tracking remoto no está configurado para esta cátedra.");
-    }
+    if (!endpoint) throw new Error("El tracking remoto no está configurado para esta cátedra.");
 
     const response = await fetch(endpoint, {
       method: "POST",
-      headers: { "Content-Type": read ? "text/plain;charset=utf-8" : "text/plain;charset=utf-8" },
-      body: JSON.stringify({
-        courseId: course.id,
-        ...payload,
-      }),
+      headers: { "Content-Type": "text/plain;charset=utf-8" },
+      body: JSON.stringify({ courseId: course.id, ...payload }),
       ...(read ? {} : { mode: "no-cors" }),
     });
 
@@ -53,25 +53,23 @@ export function createSheetsClient(course, student = null) {
   }
 
   async function flushPending() {
-    const pending = readPendingInteractions().filter((event) => event.courseId === course.id);
+    const pending = readPendingInteractions(course.id);
     if (!pending.length || !endpoint) return { sent: 0 };
 
-    let sent = 0;
+    const sentIds = [];
     for (const event of pending) {
       const result = await logInteraction(event);
-      if (result.ok) sent += 1;
+      if (result.ok) sentIds.push(event.eventId);
     }
 
-    if (sent === pending.length) clearPendingInteractions();
-    return { sent };
+    if (sentIds.length) removePendingInteractions(sentIds);
+    return { sent: sentIds.length };
   }
 
   return {
     checkStudent: (dni) => request({ action: actions.check || "check", dni }),
-    registerStudent: (dni, pin) =>
-      request({ action: actions.register || "registrar", dni, pin }),
-    verifyStudent: (dni, pin) =>
-      request({ action: actions.verify || "verificar", dni, pin }),
+    registerStudent: (dni, pin) => request({ action: actions.register || "registrar", dni, pin }),
+    verifyStudent: (dni, pin) => request({ action: actions.verify || "verificar", dni, pin }),
     logInteraction,
     flushPending,
   };
