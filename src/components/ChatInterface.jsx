@@ -171,8 +171,8 @@ export default function ChatInterface({ course, student, onLogoutStudent }) {
     }
   }, [activeMode, assistant, course, generating, input, llm, messages, sheets, student, stopAudio, voiceMode]);
 
-  function handleModeChange(mode) {
-    if (mode.id === activeMode.id) return;
+  function handleModeChange(mode, force) {
+    if (mode.id === activeMode.id && !force) return;
     stopAudio();
     recognitionRef.current && recognitionRef.current.stop();
     setIsListening(false);
@@ -191,7 +191,7 @@ export default function ChatInterface({ course, student, onLogoutStudent }) {
     if (textareaRef.current) textareaRef.current.style.height = "26px";
   }
 
-  function reset() { handleModeChange(activeMode); }
+  function reset() { handleModeChange(activeMode, true); }
 
   function handleTextarea(event) {
     setInput(event.target.value);
