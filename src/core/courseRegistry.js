@@ -22,14 +22,23 @@ function buildRegistry() {
 
   return Object.entries(packs)
     .map(([folder, pack]) => {
+      const requiredFiles = ["course", "bibliography", "concepts", "modes", "activities", "examples", "tracking"];
+      const missingFiles = requiredFiles.filter((file) => !(file in pack));
+      if (missingFiles.length) {
+        console.warn(
+          `AULIA: se omitió el curso "${folder}" porque faltan archivos: ${missingFiles.join(", ")}`
+        );
+        return null;
+      }
+
       const course = {
         ...(pack["course"] || {}),
-        bibliography: pack["bibliography"] || [],
-        concepts: pack["concepts"] || [],
-        modes: pack["modes"] || [],
-        activities: pack["activities"] || [],
-        examples: pack["examples"] || [],
-        tracking: pack["tracking"] || {},
+        bibliography: pack["bibliography"],
+        concepts: pack["concepts"],
+        modes: pack["modes"],
+        activities: pack["activities"],
+        examples: pack["examples"],
+        tracking: pack["tracking"],
         _folder: folder,
       };
 
