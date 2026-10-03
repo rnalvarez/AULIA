@@ -1,25 +1,78 @@
-export function createSheetsClient({ endpoint, courseId }) {
-  async function post(action, payload = {}) {
+import { queuePendingInteraction, readPendingInteractions, clearPendingInteractions, getSessionId } from "../../core/studentSession.js";
+
+export function createSheetsClient(course, student = null) {
+  const endpoint = course?.tracking?.endpoint || "";
+  const actions = course?.tracking?.actions || {};
+
+  async function request(payload, { read = true } = {}) {
+    if (!endpoint) {
+      throw new Error("El tracking remoto no está configurado para esta cátedra.");
+    }
+
+    const response = await fetch(endpoint, {
+      method: "POST",
+      headers: { "Content-Type": read ? "text/plain;charset=utf-8" : "text/plain;charset=utf-8" },
+      body: JSON.stringify({
+        courseId: course.id,
+        ...payload,
+      }),
+      ...(read ? {} : { mode: "no-cors" }),
+    });
+
+    if (!read) return { ok: true };
+    if (!response.ok) throw new Error(`Tracking HTTP ${response.status}`);
+    return response.json();
+  }
+
+  async function logInteraction(event) {
     if (!endpoint) return { ok: false, disabled: true };
 
-    try {
-      const response = await fetch(endpoint, {
-        method: "POST",
-        headers: { "Content-Type": "text/plain" },
-        body: JSON.stringify({ action, courseId, ...payload }),
-      });
+    const payload = {
+      action: actions.logInteraction || "log",
+      ts: event.ts || new Date().toISOString(),
+      sid: event.sessionId || getSessionId(),
+      dni: student?.dni || "",
+      nombre: student?.nombre || "",
+      apellido: student?.apellido || "",
+      comision: student?.comision || "",
+      q: event.question || "",
+      r: event.response || "",
+      model: event.model || "",
+      modeId: event.modeId || "",
+      activityId: event.activityId || "",
+      retrievedIds: event.retrievedIds || [],
+    };
 
-      const data = await response.json().catch(() => ({}));
-      return { ok: response.ok, data };
+    try {
+      await request(payload, { read: false });
+      return { ok: true };
     } catch (error) {
-      return { ok: false, error: error.message };
+      queuePendingInteraction({ ...event, studentId: student?.dni || null });
+      return { ok: false, error: error.message, queued: true };
     }
   }
 
+  async function flushPending() {
+    const pending = readPendingInteractions().filter((event) => event.courseId === course.id);
+    if (!pending.length || !endpoint) return { sent: 0 };
+
+    let sent = 0;
+    for (const event of pending) {
+      const result = await logInteraction(event);
+      if (result.ok) sent += 1;
+    }
+
+    if (sent === pending.length) clearPendingInteractions();
+    return { sent };
+  }
+
   return {
-    checkStudent: (studentId) => post("check", { studentId }),
-    registerStudent: (payload) => post("register", payload),
-    verifyStudent: (payload) => post("verify", payload),
-    logInteraction: (event) => post("logInteraction", { event }),
+    checkStudent: (dni) => request({ action: actions.check || "check", dni }),
+    registerStudent: (dni, pin) =>
+      request({ action: actions.register || "registrar", dni, pin }),
+    verifyStudent: (dni, pin) =>
+      request({ action: actions.verify || "verificar", dni, pin }),
+    logInteraction,
+    flushPending,
   };
 }
