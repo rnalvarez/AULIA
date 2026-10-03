@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Avatar from "./Avatar.jsx";
 import { retrieveFromCourse } from "../core/retrieval.js";
-import { buildPedagogicalResponse } from "../core/pedagogy.js";
 import { createLLMClient } from "../services/llm/llmClient.js";
 
 function useIsMobile() {
@@ -146,9 +145,22 @@ export default function ChatInterface({ course, student, onLogoutStudent }) {
       }
     } catch (error) {
       if (abortRef.current) return;
-      const fallback = buildPedagogicalResponse({ course, mode: activeMode, retrieved });
-      setMessages(current => current.slice(0, -1).concat({ role: "assistant", content: fallback }));
-      setServiceStatus("Motor IA no disponible: se utilizó la respuesta pedagógica local del course pack.");
+      const message = String(error?.message || "");
+      const sessionInvalid = /sesión.*(vencida|inválida)|sesion.*(vencida|invalida)/i.test(message);
+      if (sessionInvalid) {
+        setMessages(current => current.slice(0, -1).concat({
+          role: "assistant",
+          content: "Tu sesión ya no es válida. Volvé a ingresar para continuar.",
+        }));
+        setServiceStatus("Sesión vencida. Iniciá sesión nuevamente.");
+        setTimeout(() => onLogoutStudent(), 800);
+      } else {
+        setMessages(current => current.slice(0, -1).concat({
+          role: "assistant",
+          content: "No se pudo procesar la consulta. Intentá nuevamente en unos segundos.",
+        }));
+        setServiceStatus(message || "El servicio de IA no está disponible.");
+      }
     } finally {
       setGenerating(false);
     }
