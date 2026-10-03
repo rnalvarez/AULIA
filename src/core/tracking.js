@@ -7,6 +7,7 @@ export function createInteractionEvent({
   studentId = null,
   sessionId = null,
   activityId = null,
+  model = "",
 }) {
   return {
     eventId: crypto.randomUUID(),
@@ -19,5 +20,6 @@ export function createInteractionEvent({
     question,
     response,
     retrievedIds,
+    model,
   };
 }
