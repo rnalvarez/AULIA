@@ -155,6 +155,7 @@ function buildSystemPrompt(body) {
     'Objetivo del modo: ' + (mode.pedagogicalGoal || ''),
     'Estrategia: ' + (mode.strategy || ''),
     'Instrucciones del asistente: ' + (assistant.instructions || ''),
+    'Instrucciones del modo: ' + (mode.instructions || ''),
     'Trabajá únicamente con el corpus autorizado que se te proporciona.',
     'Unidades recuperadas:\n' + context
   ].join('\n\n');
