@@ -15,6 +15,8 @@ src/courses/<course-id>/
   activities.json
   tracking.json
 
+Además del perfil del curso, cada pack puede incluir un perfil de asistente en `assistant.json`. Allí viven la identidad, bienvenida, sugerencias e instrucciones generales del asistente. Las instrucciones específicas de cada modalidad viven en `modes.json`.
+
 STUDIO utiliza además un formato portable único:
 
 {
