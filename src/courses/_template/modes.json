@@ -1,0 +1,16 @@
+[
+  {
+    "id": "consulta",
+    "title": "Consultá",
+    "description": "Preguntas y explicaciones.",
+    "pedagogicalGoal": "comprender",
+    "placeholder": "Escribí tu consulta..."
+  },
+  {
+    "id": "socratico",
+    "title": "Modo socrático",
+    "description": "Preguntas para elaborar una respuesta.",
+    "pedagogicalGoal": "elaborar",
+    "placeholder": "Escribí tu hipótesis..."
+  }
+]

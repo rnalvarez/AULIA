@@ -1,0 +1,8 @@
+{
+  "provider": "google-sheets",
+  "courseId": "replace-me",
+  "identitySource": "padron",
+  "interactionSource": "interactions",
+  "sessionSource": "sessions",
+  "endpoint": ""
+}

@@ -1,0 +1,9 @@
+{
+  "provider": "google-sheets",
+  "courseId": "chion",
+  "identitySource": "padron",
+  "interactionSource": "interactions",
+  "sessionSource": "sessions",
+  "endpoint": "",
+  "note": "La planilla y su endpoint no pertenecen al CORE; se inyectan por curso en una etapa posterior."
+}

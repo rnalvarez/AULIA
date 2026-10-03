@@ -1,0 +1,11 @@
+[
+  {
+    "id": "concept-01",
+    "title": "Concepto",
+    "aliases": ["sinónimo"],
+    "keywords": ["palabra clave"],
+    "summary": "Definición breve controlada.",
+    "explanation": "Explicación pedagógica autorizada.",
+    "chapter": null
+  }
+]

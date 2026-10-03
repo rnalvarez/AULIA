@@ -1,0 +1,30 @@
+[
+  {
+    "id": "consulta",
+    "title": "Consultá con el asistente",
+    "description": "Preguntá libremente sobre el corpus autorizado.",
+    "pedagogicalGoal": "comprender",
+    "placeholder": "Preguntá por un concepto..."
+  },
+  {
+    "id": "analisis",
+    "title": "Analizá una escena",
+    "description": "Describí una escena y trabajá la aplicación de conceptos.",
+    "pedagogicalGoal": "aplicar",
+    "placeholder": "Describí la escena..."
+  },
+  {
+    "id": "socratico",
+    "title": "Modo socrático",
+    "description": "La herramienta devuelve preguntas para favorecer la elaboración.",
+    "pedagogicalGoal": "elaborar",
+    "placeholder": "Escribí tu hipótesis..."
+  },
+  {
+    "id": "ocultadores",
+    "title": "Análisis paso a paso",
+    "description": "Modalidad secuencial inspirada en el método de los ocultadores.",
+    "pedagogicalGoal": "experimentar",
+    "placeholder": "Respondé para continuar..."
+  }
+]

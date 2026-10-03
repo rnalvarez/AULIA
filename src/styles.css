@@ -1,0 +1,55 @@
+:root {
+  font-family: Inter, "Helvetica Neue", system-ui, sans-serif;
+  color: #efeae0;
+  background: #0d0d0d;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+}
+* { box-sizing: border-box; }
+body { margin: 0; min-width: 320px; min-height: 100vh; background: #0d0d0d; }
+button, textarea, select { font: inherit; }
+.app-shell { min-height: 100vh; background: linear-gradient(180deg, #111 0%, #0d0d0d 55%, #0b0b0b 100%); }
+.topbar { display:flex; justify-content:space-between; align-items:center; padding:22px 28px; border-bottom:1px solid #2a2a2a; background:#151515; }
+.brand { font-size:20px; font-weight:700; letter-spacing:.08em; }
+.subtitle { color:#99948b; font-size:12px; margin-top:3px; }
+.status { font-size:10px; color:#c78a48; border:1px solid #573616; background:#1b1007; padding:6px 10px; border-radius:999px; }
+.control-grid { display:grid; grid-template-columns:1.2fr 1.2fr 1fr; gap:12px; max-width:1180px; margin:18px auto 0; padding:0 18px; }
+.control-grid label, .course-card, .info-card, .chat-card { background:#171717; border:1px solid #2d2d2d; border-radius:14px; }
+.control-grid label { display:flex; flex-direction:column; gap:7px; padding:13px; }
+.control-grid label span { color:#88837a; font-size:10px; text-transform:uppercase; letter-spacing:.08em; }
+select, textarea { color:#ede8df; background:#222; border:1px solid #3a3a3a; border-radius:10px; outline:none; }
+select { padding:10px 12px; }
+textarea { resize:vertical; width:100%; padding:12px 14px; line-height:1.55; }
+select:focus, textarea:focus { border-color:#c98545; }
+.course-card { display:flex; flex-direction:column; justify-content:center; padding:15px; gap:4px; }
+.course-card strong { font-size:14px; }
+.course-card span { color:#9e988e; font-size:12px; }
+.eyebrow { color:#c98545; font-size:10px; text-transform:uppercase; letter-spacing:.09em; margin-bottom:7px; }
+.main-grid { display:grid; grid-template-columns:minmax(0,1fr) 300px; gap:14px; max-width:1180px; margin:14px auto 0; padding:0 18px 24px; }
+.chat-card { min-height:640px; display:flex; flex-direction:column; overflow:hidden; }
+.chat-head { display:flex; justify-content:space-between; gap:10px; padding:15px 16px; border-bottom:1px solid #2b2b2b; }
+.chat-head strong { font-size:14px; }
+.chat-head div { color:#8f8a82; font-size:11px; margin-top:3px; }
+.ghost, .primary { border-radius:9px; padding:8px 12px; cursor:pointer; }
+.ghost { color:#a6a097; border:1px solid #353535; background:#202020; }
+.primary { color:#fff7eb; border:1px solid #9a5f2b; background:#b46d35; min-width:72px; }
+.primary:disabled { opacity:.45; cursor:default; }
+.messages { flex:1; overflow-y:auto; padding:18px; display:flex; flex-direction:column; gap:12px; }
+.message { max-width:82%; border-radius:12px; padding:11px 13px; line-height:1.65; white-space:pre-wrap; }
+.message.assistant { align-self:flex-start; background:#222; border:1px solid #303030; }
+.message.user { align-self:flex-end; background:#54321a; color:#f7e7d2; }
+.message-label { font-size:9px; color:#918b83; letter-spacing:.08em; margin-bottom:5px; }
+.message.user .message-label { color:#d2a97b; }
+.composer { padding:13px; border-top:1px solid #2b2b2b; background:#151515; display:flex; gap:8px; align-items:flex-end; }
+.composer textarea { min-height:74px; }
+.composer .primary { height:40px; }
+.side-column { display:flex; flex-direction:column; gap:12px; }
+.info-card { padding:15px; }
+.book { display:flex; flex-direction:column; gap:2px; margin-top:10px; }
+.book span, .info-card p { color:#9f9990; font-size:12px; line-height:1.55; }
+.small-note { color:#737068; font-size:11px; line-height:1.5; }
+.architecture { display:flex; flex-direction:column; align-items:center; gap:6px; font-size:10px; color:#b9b1a7; }
+.architecture div { width:100%; text-align:center; padding:8px; border:1px solid #363636; border-radius:8px; background:#202020; }
+.architecture span { color:#6d675f; }
+@media (max-width:860px) { .control-grid, .main-grid { grid-template-columns:1fr; } .side-column { display:grid; grid-template-columns:1fr 1fr 1fr; } }
+@media (max-width:620px) { .topbar { padding:16px; } .status { display:none; } .control-grid, .main-grid { padding:0 10px; } .side-column { display:flex; } .message { max-width:94%; } .composer { flex-direction:column; } .composer .primary { width:100%; } }

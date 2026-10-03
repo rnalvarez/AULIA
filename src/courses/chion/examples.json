@@ -1,0 +1,32 @@
+[
+  {
+    "id": "persona",
+    "title": "Persona",
+    "director": "Ingmar Bergman",
+    "concepts": ["valorAnadido"]
+  },
+  {
+    "id": "m-hulot",
+    "title": "Las vacaciones de Monsieur Hulot",
+    "director": "Jacques Tati",
+    "concepts": ["valorAnadido", "sincresis"]
+  },
+  {
+    "id": "apocalypse-now",
+    "title": "Apocalypse Now",
+    "director": "Francis Ford Coppola",
+    "concepts": ["valorAnadido", "puntoEscucha", "fueraCampo", "sonidoInterno"]
+  },
+  {
+    "id": "psicosis",
+    "title": "Psicosis",
+    "director": "Alfred Hitchcock",
+    "concepts": ["acusmetro", "musicaAnempatica"]
+  },
+  {
+    "id": "2001",
+    "title": "2001: Odisea del espacio",
+    "director": "Stanley Kubrick",
+    "concepts": ["acusmetro"]
+  }
+]

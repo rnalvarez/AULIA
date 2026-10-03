@@ -1,0 +1,26 @@
+[
+  {
+    "id": "consulta-concepto",
+    "title": "Consulta conceptual",
+    "modeId": "consulta",
+    "description": "Comprender un concepto y relacionarlo con ejemplos."
+  },
+  {
+    "id": "lectura-escena",
+    "title": "Lectura de escena",
+    "modeId": "analisis",
+    "description": "Aplicar conceptos del corpus a una escena concreta."
+  },
+  {
+    "id": "hipotesis",
+    "title": "Hipótesis socrática",
+    "modeId": "socratico",
+    "description": "Construir una interpretación mediante preguntas."
+  },
+  {
+    "id": "ocultadores",
+    "title": "Método de los ocultadores",
+    "modeId": "ocultadores",
+    "description": "Comparar imagen y sonido antes de conceptualizar."
+  }
+]

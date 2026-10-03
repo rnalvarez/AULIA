@@ -1,0 +1,110 @@
+[
+  {
+    "id": "valorAnadido",
+    "title": "Valor añadido",
+    "aliases": ["valor añadido", "valor anadido", "added value"],
+    "keywords": ["sonido", "imagen", "expresion", "informacion"],
+    "summary": "Efecto por el cual el sonido enriquece una imagen y hace sentir que esa expresión nace naturalmente de ella.",
+    "explanation": "En el contrato audiovisual, el espectador atribuye a la imagen cualidades que pueden llegar por el sonido. El sonido transforma la percepción de la imagen.",
+    "chapter": 1
+  },
+  {
+    "id": "sincresis",
+    "title": "Síncresis",
+    "aliases": ["síncresis", "sincresis", "soldadura audiovisual"],
+    "keywords": ["sincronismo", "sintesis", "doblaje", "foley"],
+    "summary": "Soldadura perceptiva entre un fenómeno sonoro y un fenómeno visual cuando coinciden en el tiempo.",
+    "explanation": "Permite aceptar como unidos sonidos e imágenes aunque sus causas reales sean distintas.",
+    "chapter": 3
+  },
+  {
+    "id": "acusmetro",
+    "title": "Acúsmetro",
+    "aliases": ["acúsmetro", "acusmetro", "voz acusmática", "voz acusmatica"],
+    "keywords": ["voz", "acusmatica", "poder", "omnipotencia"],
+    "summary": "Figura acusmática cuya fuente permanece invisible y puede adquirir poderes narrativos.",
+    "explanation": "La voz acusmática puede parecer omnividente, omnisciente u omnipotente mientras no se revela su cuerpo.",
+    "chapter": 6
+  },
+  {
+    "id": "puntoEscucha",
+    "title": "Punto de escucha",
+    "aliases": ["punto de escucha", "escucha subjetiva", "punto auditivo"],
+    "keywords": ["espacial", "subjetivo", "personaje"],
+    "summary": "Lugar o subjetividad desde la que la película nos hace oír una escena.",
+    "explanation": "Puede ser espacial o subjetivo, según cómo la película organice nuestra percepción.",
+    "chapter": 4
+  },
+  {
+    "id": "fueraCampo",
+    "title": "Sonido fuera de campo",
+    "aliases": ["fuera de campo", "sonido fuera de campo"],
+    "keywords": ["invisible", "diegetico", "espacio"],
+    "summary": "Sonido cuya fuente pertenece al mundo de la película pero no aparece en el encuadre.",
+    "explanation": "Amplía el espacio visible y puede producir expectativa, amenaza o continuidad.",
+    "chapter": 4
+  },
+  {
+    "id": "sonidoInOff",
+    "title": "Sonido in, fuera de campo y off",
+    "aliases": ["sonido in", "sonido off", "in off", "sonido diegético", "sonido diegetico"],
+    "keywords": ["in", "off", "diegético", "fuera"],
+    "summary": "Categorías para relacionar un sonido con la imagen y el mundo narrativo.",
+    "explanation": "Distinguen la fuente visible, la fuente diegética no visible y el sonido externo al espacio de la escena.",
+    "chapter": 4
+  },
+  {
+    "id": "escuchas",
+    "title": "Tres escuchas",
+    "aliases": ["tres escuchas", "escucha causal", "escucha semántica", "escucha reducida"],
+    "keywords": ["causal", "semantica", "reducida", "schaeffer"],
+    "summary": "Distinción entre escucha causal, semántica y reducida.",
+    "explanation": "Permite describir diferentes operaciones de escucha sobre un mismo sonido.",
+    "chapter": 2
+  },
+  {
+    "id": "musicaAnempatica",
+    "title": "Música anempática",
+    "aliases": ["música anempática", "musica anempatica", "anempática"],
+    "keywords": ["indiferencia", "drama", "musica"],
+    "summary": "Música que parece indiferente al drama de la escena.",
+    "explanation": "La distancia entre música y situación puede producir fricción expresiva.",
+    "chapter": 1
+  },
+  {
+    "id": "musicaEmpatica",
+    "title": "Música empática",
+    "aliases": ["música empática", "musica empatica", "empática"],
+    "keywords": ["emocion", "musica", "escena"],
+    "summary": "Música que acompaña o intensifica la emoción de la escena.",
+    "explanation": "Se alinea con códigos afectivos reconocibles dentro de una cultura determinada.",
+    "chapter": 1
+  },
+  {
+    "id": "vococentrismo",
+    "title": "Vococentrismo y verbocentrismo",
+    "aliases": ["vococentrismo", "verbocentrismo"],
+    "keywords": ["voz", "palabra", "dialogo", "mezcla"],
+    "summary": "Tendencia del cine a organizar la escucha alrededor de la voz y la palabra.",
+    "explanation": "La voz puede atraer y reorganizar la atención del espectador frente a otros sonidos.",
+    "chapter": 1
+  },
+  {
+    "id": "contratoAudiovisual",
+    "title": "Contrato audiovisual",
+    "aliases": ["contrato audiovisual", "audiovisión", "audiovision"],
+    "keywords": ["imagen", "sonido", "percepcion"],
+    "summary": "Marco perceptivo en el que imagen y sonido se reciben como una unidad transformada.",
+    "explanation": "El cine no suma dos canales de manera neutral: cada percepción modifica a la otra.",
+    "chapter": 3
+  },
+  {
+    "id": "sonidoInterno",
+    "title": "Sonido interno",
+    "aliases": ["sonido interno", "sonido mental", "sonido subjetivo"],
+    "keywords": ["respiracion", "latidos", "memoria", "mental"],
+    "summary": "Sonido ligado al interior físico o mental de un personaje.",
+    "explanation": "Puede remitir a procesos corporales, recuerdos o estados subjetivos.",
+    "chapter": 4
+  }
+]
