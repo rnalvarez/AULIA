@@ -16,11 +16,12 @@
 - [ ] Versionar corpus y configuración.
 
 ## Etapa 3 · Plataforma institucional
-- [ ] Backend/API.
-- [ ] Proxy seguro para proveedores LLM.
-- [ ] Autenticación institucional.
-- [ ] Padrón aislado por cátedra.
-- [ ] Tracking aislado por curso.
+- [x] Backend/API — piloto CHIONIA preparado en Google Apps Script.
+- [x] Proxy seguro para proveedores LLM — primera capa en backend (piloto).
+- [x] Autenticación con sesión temporal y bloqueo básico — piloto.
+- [x] Padrón aislado por cátedra — una instancia backend por Sheet/cátedra.
+- [x] Tracking aislado por curso — registro server-side en el piloto.
+
 - [ ] Sesiones y exportación de datos.
 - [ ] Roles docente / administrador / estudiante.
 
@@ -32,6 +33,10 @@
 - [ ] Validar el curso antes de publicar.
 - [ ] Publicar una instancia del asistente.
 - [ ] Administrar versiones del course pack.
+
+## Implementación actual
+
+El backend piloto está documentado en `docs/BACKEND_PILOT.md`. Antes de marcar la Etapa 3 como terminada hay que desplegarlo contra una copia de la Sheet de CHIONIA y ejecutar las pruebas del circuito completo.
 
 ## Criterio de arquitectura
 
