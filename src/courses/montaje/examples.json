@@ -1,0 +1,17 @@
+[
+  {
+    "id": "ejemplo-entrevista",
+    "title": "Entrevista de dos personajes",
+    "concepts": ["eje180", "raccord", "continuidad"]
+  },
+  {
+    "id": "ejemplo-persecucion",
+    "title": "Persecución con dos líneas de acción",
+    "concepts": ["montaje-paralelo", "raccord", "ritmo"]
+  },
+  {
+    "id": "ejemplo-dialogo",
+    "title": "Diálogo campo-contracampo",
+    "concepts": ["eje180", "corte", "continuidad"]
+  }
+]
