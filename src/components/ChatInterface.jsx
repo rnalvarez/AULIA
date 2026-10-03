@@ -152,7 +152,7 @@ export default function ChatInterface({ course, student, onLogoutStudent }) {
     } finally {
       setGenerating(false);
     }
-  }, [activeMode, assistant, course, generating, input, llm, messages, sheets, student, stopAudio, voiceMode]);
+  }, [activeMode, assistant, course, generating, input, llm, messages, stopAudio, voiceMode]);
 
   function handleModeChange(mode, force) {
     if (mode.id === activeMode.id && !force) return;
