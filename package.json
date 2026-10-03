@@ -1,8 +1,8 @@
 {
-  "name": "aulia-platform-foundation",
+  "name": "aulia",
   "version": "0.1.0",
   "private": true,
-  "description": "Núcleo inicial para asistentes pedagógicos configurables por cátedra y corpus.",
+  "description": "Plataforma para crear y operar asistentes pedagógicos configurables por cátedra y corpus.",
   "type": "module",
   "scripts": {
     "dev": "vite",
