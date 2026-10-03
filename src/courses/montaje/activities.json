@@ -1,0 +1,26 @@
+[
+  {
+    "id": "consulta-concepto",
+    "title": "Consulta conceptual",
+    "modeId": "consulta",
+    "description": "Comprender un concepto y relacionarlo con una situación de montaje."
+  },
+  {
+    "id": "lectura-secuencia",
+    "title": "Lectura de secuencia",
+    "modeId": "analisis",
+    "description": "Aplicar conceptos a una secuencia concreta."
+  },
+  {
+    "id": "hipotesis",
+    "title": "Hipótesis de montaje",
+    "modeId": "socratico",
+    "description": "Construir una interpretación mediante preguntas."
+  },
+  {
+    "id": "diagnostico",
+    "title": "Diagnóstico",
+    "modeId": "diagnostico",
+    "description": "Distinguir qué recurso de montaje explica un efecto perceptivo."
+  }
+]
