@@ -13,14 +13,14 @@ export function createLLMClient({ endpoint, getToken, defaultModel = "" }) {
     }
 
     const token = await getToken?.();
-    const headers = { "Content-Type": "application/json" };
-    if (token) headers.Authorization = "Bearer " + token;
 
     const response = await fetch(endpoint, {
       method: "POST",
-      headers,
+      headers: { "Content-Type": "text/plain;charset=utf-8" },
       body: JSON.stringify({
+        action: "chat",
         courseId: course?.id,
+        token: token || "",
         assistant,
         mode,
         messages,
@@ -31,9 +31,13 @@ export function createLLMClient({ endpoint, getToken, defaultModel = "" }) {
     });
 
     const data = await response.json().catch(() => ({}));
-    if (!response.ok) {
+
+    if (!response.ok || data?.ok === false) {
       throw new Error(
-        data?.error?.message || data?.message || "El backend de IA rechazó la solicitud."
+        data?.error?.message ||
+        data?.error ||
+        data?.message ||
+        "El backend de IA rechazó la solicitud."
       );
     }
 
