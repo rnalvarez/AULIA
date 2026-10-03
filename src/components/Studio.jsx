@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { cloneCourse, validateCourse } from "../core/courseContract.js";
+import { createBlankCourse } from "../core/courseFactory.js";
 import {
   downloadCoursePack,
   readCoursePackFile,
@@ -178,6 +179,13 @@ export default function Studio({ course }) {
     setStatus("Borrador guardado en este navegador.");
   }
 
+  function newCourse() {
+    const fresh = createBlankCourse();
+    setDraft(fresh);
+    setValidation(null);
+    setStatus("Nuevo course pack creado en el Studio. Todavía no está publicado.");
+  }
+
   function restoreCourse() {
     const fresh = cloneCourse(course);
     localStorage.removeItem(storageKey);
@@ -220,6 +228,7 @@ export default function Studio({ course }) {
             Importar
             <input type="file" accept="application/json,.json" onChange={importPack} />
           </label>
+          <button type="button" className="ghost" onClick={newCourse}>Nuevo</button>
           <button type="button" className="ghost" onClick={restoreCourse}>Restaurar</button>
           <button type="button" className="ghost" onClick={validateDraft}>Validar</button>
           <button type="button" className="primary" onClick={() => {
