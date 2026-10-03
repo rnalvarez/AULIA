@@ -4,17 +4,19 @@ import { COURSE_REGISTRY } from "./core/courseRegistry.js";
 import { retrieveFromCourse } from "./core/retrieval.js";
 import { buildPedagogicalResponse } from "./core/pedagogy.js";
 import { createInteractionEvent } from "./core/tracking.js";
+import Studio from "./components/Studio.jsx";
 
 const initialCourse = COURSE_REGISTRY[0];
 
 export default function App() {
+  const [view, setView] = useState("aula");
   const [courseId, setCourseId] = useState(initialCourse.id);
   const [modeId, setModeId] = useState(initialCourse.modes[0].id);
   const [messages, setMessages] = useState([
     {
       role: "assistant",
       content:
-        "Este es el núcleo experimental de AULIA. Elegí una modalidad y consultá el corpus del curso.",
+        "Elegí una modalidad y consultá el corpus autorizado del curso.",
     },
   ]);
   const [input, setInput] = useState("");
@@ -64,10 +66,12 @@ export default function App() {
       retrievedIds: retrieved.map((item) => item.id),
     });
 
-    setMessages((current) => current.concat([
-      { role: "user", content: question },
-      { role: "assistant", content: response },
-    ]));
+    setMessages((current) =>
+      current.concat([
+        { role: "user", content: question },
+        { role: "assistant", content: response },
+      ])
+    );
     setEvents((current) => current.concat(event));
     setInput("");
   }
@@ -88,121 +92,156 @@ export default function App() {
         <div>
           <div className="brand">AULIA</div>
           <div className="subtitle">
-            Núcleo para asistentes pedagógicos configurables
+            Plataforma para asistentes pedagógicos configurables por cátedra
           </div>
         </div>
-        <div className="status">FOUNDATION 0.1</div>
+
+        <nav className="view-switcher" aria-label="Vista">
+          <button
+            type="button"
+            className={view === "aula" ? "view-active" : ""}
+            onClick={() => setView("aula")}
+          >
+            AULA
+          </button>
+          <button
+            type="button"
+            className={view === "studio" ? "view-active" : ""}
+            onClick={() => setView("studio")}
+          >
+            STUDIO
+          </button>
+        </nav>
       </header>
 
-      <section className="control-grid">
-        <label>
-          <span>Cátedra / curso</span>
-          <select value={course.id} onChange={(event) => changeCourse(event.target.value)}>
-            {COURSE_REGISTRY.map((item) => (
-              <option key={item.id} value={item.id}>
-                {item.title}
-              </option>
-            ))}
-          </select>
-        </label>
+      {view === "studio" ? (
+        <Studio course={course} />
+      ) : (
+        <>
+          <section className="control-grid">
+            <label>
+              <span>Cátedra / curso</span>
+              <select
+                value={course.id}
+                onChange={(event) => changeCourse(event.target.value)}
+              >
+                {COURSE_REGISTRY.map((item) => (
+                  <option key={item.id} value={item.id}>
+                    {item.title}
+                  </option>
+                ))}
+              </select>
+            </label>
 
-        <label>
-          <span>Modalidad de interacción</span>
-          <select value={mode.id} onChange={(event) => setModeId(event.target.value)}>
-            {course.modes.map((item) => (
-              <option key={item.id} value={item.id}>
-                {item.title}
-              </option>
-            ))}
-          </select>
-        </label>
+            <label>
+              <span>Modalidad de interacción</span>
+              <select
+                value={mode.id}
+                onChange={(event) => setModeId(event.target.value)}
+              >
+                {course.modes.map((item) => (
+                  <option key={item.id} value={item.id}>
+                    {item.title}
+                  </option>
+                ))}
+              </select>
+            </label>
 
-        <div className="course-card">
-          <div className="eyebrow">COURSE PACK</div>
-          <strong>{course.title}</strong>
-          <span>{course.author}</span>
-        </div>
-      </section>
-
-      <main className="main-grid">
-        <section className="chat-card">
-          <div className="chat-head">
-            <div>
+            <div className="course-card">
+              <div className="eyebrow">COURSE PACK</div>
               <strong>{course.title}</strong>
-              <div>{mode.description}</div>
+              <span>{course.description}</span>
             </div>
-            <button type="button" className="ghost" onClick={reset}>
-              Reiniciar
-            </button>
-          </div>
+          </section>
 
-          <div className="messages">
-            {messages.map((message, index) => (
-              <div key={index} className={"message " + message.role}>
-                <div className="message-label">
-                  {message.role === "user" ? "ALUMNO" : "AULIA"}
+          <main className="main-grid">
+            <section className="chat-card">
+              <div className="chat-head">
+                <div>
+                  <strong>{course.title}</strong>
+                  <div>{mode.description}</div>
                 </div>
-                <div className="message-body">{message.content}</div>
+                <button type="button" className="ghost" onClick={reset}>
+                  Reiniciar
+                </button>
               </div>
-            ))}
-          </div>
 
-          <div className="composer">
-            <textarea
-              value={input}
-              onChange={(event) => setInput(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === "Enter" && !event.shiftKey) {
-                  event.preventDefault();
-                  send();
-                }
-              }}
-              placeholder={mode.placeholder}
-              rows={3}
-            />
-            <button type="button" className="primary" onClick={send} disabled={!input.trim()}>
-              Enviar
-            </button>
-          </div>
-        </section>
-
-        <aside className="side-column">
-          <section className="info-card">
-            <div className="eyebrow">BIBLIOGRAFÍA</div>
-            {course.bibliography.map((book) => (
-              <div className="book" key={book.id}>
-                <strong>{book.title}</strong>
-                <span>{book.author} · {book.year}</span>
+              <div className="messages">
+                {messages.map((message, index) => (
+                  <div key={index} className={"message " + message.role}>
+                    <div className="message-label">
+                      {message.role === "user" ? "ALUMNO" : "AULIA"}
+                    </div>
+                    <div className="message-body">{message.content}</div>
+                  </div>
+                ))}
               </div>
-            ))}
-          </section>
 
-          <section className="info-card">
-            <div className="eyebrow">RECUPERACIÓN</div>
-            <p>
-              {events.length
-                ? "Última consulta: " + events[events.length - 1].retrievedIds.length + " unidad(es) del corpus."
-                : "Todavía no hay interacciones."}
-            </p>
-            <div className="small-note">
-              La recuperación está desacoplada del proveedor de LLM.
-            </div>
-          </section>
+              <div className="composer">
+                <textarea
+                  value={input}
+                  onChange={(event) => setInput(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter" && !event.shiftKey) {
+                      event.preventDefault();
+                      send();
+                    }
+                  }}
+                  placeholder={mode.placeholder}
+                  rows={3}
+                />
+                <button
+                  type="button"
+                  className="primary"
+                  onClick={send}
+                  disabled={!input.trim()}
+                >
+                  Enviar
+                </button>
+              </div>
+            </section>
 
-          <section className="info-card">
-            <div className="eyebrow">ARQUITECTURA</div>
-            <div className="architecture">
-              <div>CORE</div>
-              <span>↓</span>
-              <div>COURSE PACK</div>
-              <span>↓</span>
-              <div>LLM / RULES</div>
-              <span>↓</span>
-              <div>TRACKING</div>
-            </div>
-          </section>
-        </aside>
-      </main>
+            <aside className="side-column">
+              <section className="info-card">
+                <div className="eyebrow">CURSO</div>
+                <strong>{course.author}</strong>
+                <p>{course.description}</p>
+                <div className="stats">
+                  <span>{course.concepts.length} conceptos</span>
+                  <span>{course.modes.length} modos</span>
+                  <span>{course.activities.length} actividades</span>
+                </div>
+              </section>
+
+              <section className="info-card">
+                <div className="eyebrow">BIBLIOGRAFÍA</div>
+                {course.bibliography.map((book) => (
+                  <div className="book" key={book.id}>
+                    <strong>{book.title}</strong>
+                    <span>
+                      {book.author} · {book.year}
+                    </span>
+                  </div>
+                ))}
+              </section>
+
+              <section className="info-card">
+                <div className="eyebrow">RECUPERACIÓN</div>
+                <p>
+                  {events.length
+                    ? "Última consulta: " +
+                      events[events.length - 1].retrievedIds.length +
+                      " unidad(es) del corpus."
+                    : "Todavía no hay interacciones."}
+                </p>
+                <div className="small-note">
+                  La recuperación está desacoplada del proveedor de IA.
+                </div>
+              </section>
+            </aside>
+          </main>
+        </>
+      )}
     </div>
   );
 }
