@@ -1,19 +1,51 @@
-import course from "../courses/chion/course.json";
-import concepts from "../courses/chion/concepts.json";
-import bibliography from "../courses/chion/bibliography.json";
-import modes from "../courses/chion/modes.json";
-import activities from "../courses/chion/activities.json";
-import examples from "../courses/chion/examples.json";
-import tracking from "../courses/chion/tracking.json";
+import { validateCourse } from "./courseContract.js";
 
-export const COURSE_REGISTRY = [
-  {
-    ...course,
-    bibliography,
-    concepts,
-    modes,
-    activities,
-    examples,
-    tracking,
-  },
-];
+const courseFiles = import.meta.glob("../courses/*/*.json", {
+  eager: true,
+  query: "?json",
+  import: "default",
+});
+
+function buildRegistry() {
+  const packs = {};
+
+  for (const [path, data] of Object.entries(courseFiles)) {
+    const match = path.match(/\/courses\/([^/]+)\/([^/]+)\.json$/);
+    if (!match) continue;
+
+    const [, folder, file] = match;
+    if (folder.startsWith("_")) continue;
+
+    if (!packs[folder]) packs[folder] = {};
+    packs[folder][file] = data;
+  }
+
+  return Object.entries(packs)
+    .map(([folder, pack]) => {
+      const course = {
+        ...(pack["course"] || {}),
+        bibliography: pack["bibliography"] || [],
+        concepts: pack["concepts"] || [],
+        modes: pack["modes"] || [],
+        activities: pack["activities"] || [],
+        examples: pack["examples"] || [],
+        tracking: pack["tracking"] || {},
+        _folder: folder,
+      };
+
+      const validation = validateCourse(course);
+      if (!validation.valid) {
+        console.warn(
+          `AULIA: se omitió el curso "${folder}" porque no cumple el contrato:`,
+          validation.errors
+        );
+        return null;
+      }
+
+      return course;
+    })
+    .filter(Boolean)
+    .sort((a, b) => a.title.localeCompare(b.title, "es"));
+}
+
+export const COURSE_REGISTRY = buildRegistry();
