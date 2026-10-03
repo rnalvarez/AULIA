@@ -1,14 +1,15 @@
 const SESSION_PREFIX = "aulia:student:";
-const SID_KEY = "aulia:sid";
+const SID_KEY_PREFIX = "aulia:sid:";
 const PENDING_KEY = "aulia:pending";
 const VERIFY_TTL = 24 * 60 * 60 * 1000;
 
-export function getSessionId() {
+export function getSessionId(courseId = "default") {
   try {
-    let sid = sessionStorage.getItem(SID_KEY);
+    const key = SID_KEY_PREFIX + courseId;
+    let sid = sessionStorage.getItem(key);
     if (!sid) {
       sid = crypto.randomUUID();
-      sessionStorage.setItem(SID_KEY, sid);
+      sessionStorage.setItem(key, sid);
     }
     return sid;
   } catch {
@@ -20,7 +21,7 @@ export function saveStudent(courseId, student) {
   try {
     localStorage.setItem(
       SESSION_PREFIX + courseId,
-      JSON.stringify({ ...student, courseId, verifiedAt: Date.now() })
+      JSON.stringify({ ...student, courseId, verifiedAt: Date.now(), authToken: student.authToken || null })
     );
   } catch {}
 }
@@ -34,7 +35,7 @@ export function loadStudent(courseId) {
       clearStudent(courseId);
       return null;
     }
-    return student;
+    return { ...student, courseId, authToken: student.authToken || null };
   } catch {
     return null;
   }
@@ -43,7 +44,17 @@ export function loadStudent(courseId) {
 export function clearStudent(courseId) {
   try {
     localStorage.removeItem(SESSION_PREFIX + courseId);
+    sessionStorage.removeItem(SID_KEY_PREFIX + courseId);
   } catch {}
+}
+
+export function getAuthToken(courseId) {
+  try {
+    const student = loadStudent(courseId);
+    return student && student.authToken ? student.authToken : null;
+  } catch {
+    return null;
+  }
 }
 
 export function queuePendingInteraction(event) {
