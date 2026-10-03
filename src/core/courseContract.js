@@ -24,6 +24,9 @@ export function validateCourse(course) {
       errors.push(`Falta course.${key}`);
     }
   }
+  if (Array.isArray(course?.modes) && course.modes.length === 0) {
+    errors.push("El course pack debe tener al menos un modo");
+  }
 
   checkUniqueIds(course?.bibliography, "Bibliografía", errors);
   checkUniqueIds(course?.concepts, "Conceptos", errors);
