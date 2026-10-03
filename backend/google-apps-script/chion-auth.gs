@@ -169,10 +169,10 @@ function issueSession(dni, student) {
   const props = PropertiesService.getScriptProperties();
   const configured = Number(props.getProperty("SESSION_TTL_SECONDS") || DEFAULT_SESSION_TTL_SECONDS);
   const ttl = Math.max(900, Math.min(configured, 21600));
-  const sessionKey = Utilities.getUuid() + "-" + Utilities.getUuid();
+  const token = Utilities.getUuid() + "-" + Utilities.getUuid();
 
   CacheService.getScriptCache().put(
-    "aulia:session:" + sessionKey,
+    "aulia:session:" + token,
     JSON.stringify({ courseId: requiredProperty("COURSE_ID"), dni }),
     ttl
   );
@@ -180,7 +180,7 @@ function issueSession(dni, student) {
   return {
     success: true,
     allowed: true,
-    sessionKey,
+    token,
     expiresIn: ttl,
     dni,
     apellido: student.apellido,
@@ -191,8 +191,8 @@ function issueSession(dni, student) {
 
 function requireSession(body) {
   const courseId = requireCourse(body);
-  const sessionKey = String(body.sessionKey || body.token || body.authToken || "").trim();
-  const raw = sessionKey ? CacheService.getScriptCache().get("aulia:session:" + sessionKey) : null;
+  const token = String(body.token || body.authToken || "").trim();
+  const raw = token ? CacheService.getScriptCache().get("aulia:session:" + token) : null;
   if (!raw) throw new Error("Sesión vencida o inválida. Volvé a iniciar sesión.");
 
   let session;
@@ -204,7 +204,7 @@ function requireSession(body) {
   const student = findPadronStudent(session.dni);
   if (!student || !student.activo) throw new Error("Tu acceso ya no está habilitado en el padrón.");
 
-  return { courseId, sessionKey, student };
+  return { courseId, token, student };
 }
 
 function testAuth() {
