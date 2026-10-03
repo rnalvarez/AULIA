@@ -51,3 +51,21 @@ sesiones
 4. Sustituir la recuperación lexical por recuperación semántica controlada.
 5. Integrar un backend/proxy para LLM.
 6. Crear una interfaz docente para generar y validar course packs sin código.
+
+
+## Prueba de independencia del course pack
+
+AULIA ahora descubre automáticamente los directorios de curso dentro de `src/courses/*/`. El CORE ya no importa de forma explícita a Chion.
+
+Se incorporó un segundo course pack de prueba:
+
+- `src/courses/chion/`
+- `src/courses/montaje/`
+
+El curso de montaje utiliza otro corpus, otra bibliografía y una modalidad adicional (`diagnostico`). La interfaz y el motor no contienen lógica específica para ese curso.
+
+Esto establece una prueba básica del contrato:
+
+`CORE + COURSE PACK A` y `CORE + COURSE PACK B` pueden coexistir sin agregar imports ni condiciones específicas de cada cátedra al CORE.
+
+La siguiente evolución será reemplazar el registro de archivos por un mecanismo de administración/publicación de course packs, manteniendo este mismo contrato.
