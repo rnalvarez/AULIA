@@ -2,9 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Avatar from "./Avatar.jsx";
 import { retrieveFromCourse } from "../core/retrieval.js";
 import { buildPedagogicalResponse } from "../core/pedagogy.js";
-import { createInteractionEvent } from "../core/tracking.js";
 import { createLLMClient } from "../services/llm/llmClient.js";
-import { createSheetsClient } from "../services/tracking/sheetsClient.js";
 
 function useIsMobile() {
   const [mobile, setMobile] = useState(() => window.innerWidth < 640);
@@ -68,19 +66,21 @@ export default function ChatInterface({ course, student, onLogoutStudent }) {
   const recognitionRef = useRef(null);
   const abortRef = useRef(false);
 
-  const sheets = useMemo(() => createSheetsClient(course, student), [course, student]);
   const llm = useMemo(() => createLLMClient({
-    endpoint: course.llm && course.llm.endpoint ? course.llm.endpoint : "",
-  }), [course]);
+    endpoint: course.tracking?.endpoint || "",
+    getToken: async () => student?.authToken || "",
+  }), [course, student]);
 
   useEffect(() => {
     bottomRef.current && bottomRef.current.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
   useEffect(() => {
-    sheets.flushPending().catch(() => {});
-    return () => { recognitionRef.current && recognitionRef.current.stop(); window.speechSynthesis && window.speechSynthesis.cancel(); };
-  }, [sheets]);
+    return () => {
+      recognitionRef.current && recognitionRef.current.stop();
+      window.speechSynthesis && window.speechSynthesis.cancel();
+    };
+  }, []);
 
   const currentModeStyle = activeMode || firstMode;
 
@@ -139,18 +139,6 @@ export default function ChatInterface({ course, student, onLogoutStudent }) {
       if (!reply) throw new Error("Respuesta vacía.");
       if (!abortRef.current) {
         setMessages(current => current.slice(0, -1).concat({ role: "assistant", content: reply }));
-        const event = createInteractionEvent({
-          courseId: course.id,
-          modeId: activeMode.id,
-          question: text,
-          response: reply,
-          retrievedIds: retrieved.map(item => item.id),
-          studentId: student && student.dni ? student.dni : null,
-          model: result.model || "",
-        });
-        sheets.logInteraction(event).then(resultLog => {
-          if (!resultLog.ok && resultLog.queued) setServiceStatus("La consulta quedó en cola local para reenviarse al registro de la cátedra.");
-        }).catch(() => setServiceStatus("No se pudo enviar el registro de esta consulta."));
         if (voiceMode && window.speechSynthesis) {
           setIsSpeaking(true);
           speakText(reply, () => setIsSpeaking(true), () => setIsSpeaking(false));
@@ -161,11 +149,6 @@ export default function ChatInterface({ course, student, onLogoutStudent }) {
       const fallback = buildPedagogicalResponse({ course, mode: activeMode, retrieved });
       setMessages(current => current.slice(0, -1).concat({ role: "assistant", content: fallback }));
       setServiceStatus("Motor IA no disponible: se utilizó la respuesta pedagógica local del course pack.");
-      const event = createInteractionEvent({
-        courseId: course.id, modeId: activeMode.id, question: text, response: fallback,
-        retrievedIds: retrieved.map(item => item.id), studentId: student && student.dni ? student.dni : null, model: "local-fallback",
-      });
-      sheets.logInteraction(event).catch(() => {});
     } finally {
       setGenerating(false);
     }
