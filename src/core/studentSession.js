@@ -1,4 +1,5 @@
 const SESSION_PREFIX = "aulia:student:";
+const TOKEN_KEY_PREFIX = "aulia:token:";
 const SID_KEY_PREFIX = "aulia:sid:";
 const PENDING_KEY = "aulia:pending";
 const VERIFY_TTL = 24 * 60 * 60 * 1000;
@@ -19,10 +20,16 @@ export function getSessionId(courseId = "default") {
 
 export function saveStudent(courseId, student) {
   try {
+    const authToken = student?.authToken || "";
+    const profile = { ...student, courseId };
+    delete profile.authToken;
+
     localStorage.setItem(
       SESSION_PREFIX + courseId,
-      JSON.stringify({ ...student, courseId, verifiedAt: Date.now(), authToken: student.authToken || null })
+      JSON.stringify({ ...profile, verifiedAt: Date.now() })
     );
+
+    if (authToken) sessionStorage.setItem(TOKEN_KEY_PREFIX + courseId, authToken);
   } catch {}
 }
 
@@ -30,12 +37,20 @@ export function loadStudent(courseId) {
   try {
     const raw = localStorage.getItem(SESSION_PREFIX + courseId);
     if (!raw) return null;
+
     const student = JSON.parse(raw);
     if (!student.verifiedAt || Date.now() - student.verifiedAt > VERIFY_TTL) {
       clearStudent(courseId);
       return null;
     }
-    return { ...student, courseId, authToken: student.authToken || null };
+
+    const authToken = sessionStorage.getItem(TOKEN_KEY_PREFIX + courseId);
+    if (!authToken) {
+      clearStudent(courseId);
+      return null;
+    }
+
+    return { ...student, courseId, authToken };
   } catch {
     return null;
   }
@@ -44,14 +59,14 @@ export function loadStudent(courseId) {
 export function clearStudent(courseId) {
   try {
     localStorage.removeItem(SESSION_PREFIX + courseId);
+    sessionStorage.removeItem(TOKEN_KEY_PREFIX + courseId);
     sessionStorage.removeItem(SID_KEY_PREFIX + courseId);
   } catch {}
 }
 
 export function getAuthToken(courseId) {
   try {
-    const student = loadStudent(courseId);
-    return student && student.authToken ? student.authToken : null;
+    return sessionStorage.getItem(TOKEN_KEY_PREFIX + courseId) || null;
   } catch {
     return null;
   }
