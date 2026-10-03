@@ -38,7 +38,7 @@ export default function StudentLogin({ course, onReady }) {
     if (pin !== pinConf) { setError("Los PINs no coinciden. Volvé a ingresarlos."); return; }
     const data = await run(() => createStudentPin(course, student.dni, pin));
     if (!data || data.success === false) { setError((data && data.msg) || "No se pudo registrar el PIN."); return; }
-    onReady(saveVerifiedStudent(course, student));
+    onReady(saveVerifiedStudent(course, student, data["token"]));
   }
 
   async function handleVerifyPin() {
