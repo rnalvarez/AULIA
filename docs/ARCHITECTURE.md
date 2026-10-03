@@ -69,3 +69,23 @@ Esto establece una prueba básica del contrato:
 `CORE + COURSE PACK A` y `CORE + COURSE PACK B` pueden coexistir sin agregar imports ni condiciones específicas de cada cátedra al CORE.
 
 La siguiente evolución será reemplazar el registro de archivos por un mecanismo de administración/publicación de course packs, manteniendo este mismo contrato.
+
+## Estado de la capa docente
+
+STUDIO introduce una primera interfaz de autoría sin código sobre el contrato de course pack.
+
+Flujo actual:
+
+course pack cargado → editar → validar → guardar borrador local → exportar/importar
+
+La publicación real queda separada de este flujo. Una versión institucional deberá incorporar almacenamiento persistente, autenticación de docentes, versionado, publicación y aislamiento por curso.
+
+## Principios que se mantienen
+
+**MODE = cómo interactúa el sistema.**
+
+**CORPUS = qué conocimiento autorizado utiliza.**
+
+**ACTIVITY = qué tarea pedagógica propone.**
+
+Un cambio de curso no debería obligar a modificar el CORE. Un cambio de modalidad tampoco debería obligar a introducir una condición específica del autor dentro del motor.
