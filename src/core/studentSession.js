@@ -42,22 +42,26 @@ export function clearStudent(courseId) {
 
 export function queuePendingInteraction(event) {
   try {
-    const current = JSON.parse(localStorage.getItem(PENDING_KEY) || "[]");
+    const current = readPendingInteractions();
     current.push(event);
     localStorage.setItem(PENDING_KEY, JSON.stringify(current.slice(-100)));
   } catch {}
 }
 
-export function readPendingInteractions() {
+export function readPendingInteractions(courseId = null) {
   try {
-    return JSON.parse(localStorage.getItem(PENDING_KEY) || "[]");
+    const all = JSON.parse(localStorage.getItem(PENDING_KEY) || "[]");
+    return courseId ? all.filter(event => event.courseId === courseId) : all;
   } catch {
     return [];
   }
 }
 
-export function clearPendingInteractions() {
+export function removePendingInteractions(eventIds) {
   try {
-    localStorage.removeItem(PENDING_KEY);
+    const ids = new Set(eventIds);
+    const all = JSON.parse(localStorage.getItem(PENDING_KEY) || "[]");
+    const remaining = all.filter(event => !ids.has(event.eventId));
+    localStorage.setItem(PENDING_KEY, JSON.stringify(remaining));
   } catch {}
 }
