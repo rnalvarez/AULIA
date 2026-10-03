@@ -5,5 +5,12 @@
   "interactionSource": "interactions",
   "sessionSource": "sessions",
   "endpoint": "",
-  "note": "Configuración de prueba. El endpoint real se inyectará posteriormente."
+  "actions": {
+    "check": "check",
+    "register": "registrar",
+    "verify": "verificar",
+    "logInteraction": "log"
+  },
+  "failOpen": false,
+  "note": "Instancia de prueba sin endpoint configurado."
 }
