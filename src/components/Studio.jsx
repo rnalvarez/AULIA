@@ -246,6 +246,18 @@ export default function Studio({ course }) {
       </div>
 
       <section className="studio-section">
+        <div className="eyebrow">ASISTENTE</div>
+        <div className="studio-grid">
+          <Field label="Nombre" value={draft.assistant?.name} onChange={(value) => updateRoot("assistant", { ...draft.assistant, name: value })} />
+          <Field label="Iniciales" value={draft.assistant?.initials} onChange={(value) => updateRoot("assistant", { ...draft.assistant, initials: value })} />
+          <Field label="Subtítulo" value={draft.assistant?.shortTitle} onChange={(value) => updateRoot("assistant", { ...draft.assistant, shortTitle: value })} />
+          <Field label="Sugerencias" value={(draft.assistant?.suggestions || []).join(", ")} onChange={(value) => updateRoot("assistant", { ...draft.assistant, suggestions: parseList(value) })} />
+          <Field label="Mensaje de bienvenida" value={draft.assistant?.welcomeMessage} onChange={(value) => updateRoot("assistant", { ...draft.assistant, welcomeMessage: value })} multiline />
+          <Field label="Instrucciones generales para la IA" value={draft.assistant?.instructions} onChange={(value) => updateRoot("assistant", { ...draft.assistant, instructions: value })} multiline />
+        </div>
+      </section>
+
+      <section className="studio-section">
         <div className="eyebrow">IDENTIDAD DEL CURSO</div>
         <div className="studio-grid">
           <Field label="ID interno" value={draft.id} onChange={(value) => updateRoot("id", value)} />
