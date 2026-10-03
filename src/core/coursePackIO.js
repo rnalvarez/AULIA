@@ -7,6 +7,7 @@ export function courseToPack(course) {
     format: "aulia-course-pack",
     version: COURSE_PACK_VERSION,
     exportedAt: new Date().toISOString(),
+    assistant: cloneCourse(course.assistant || {}),
     course: {
       id: course.id,
       title: course.title,
@@ -31,6 +32,7 @@ export function packToCourse(pack) {
 
   const course = {
     ...(pack.course || {}),
+    assistant: pack.assistant || {},
     bibliography: pack.bibliography || [],
     concepts: pack.concepts || [],
     examples: pack.examples || [],
