@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import { createRoot } from "react-dom/client";
 import "./styles.css";
 import { COURSE_REGISTRY } from "./core/courseRegistry.js";
 import { createBlankCourse } from "./core/courseFactory.js";
@@ -84,3 +85,6 @@ export default function StudioApp() {
     </div>
   );
 }
+
+
+createRoot(document.getElementById("root")).render(<StudioApp />);
