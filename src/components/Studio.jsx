@@ -146,7 +146,7 @@ function Row({ title, meta, onRemove, children }) {
   return <article className="studio-wf-row"><div className="studio-wf-row-main"><div className="studio-wf-row-title"><strong>{title || "Sin título"}</strong>{meta && <span>{meta}</span>}</div>{children}</div><button className="studio-wf-danger" type="button" onClick={onRemove}>Eliminar</button></article>;
 }
 
-export default function Studio({ course, onCourseChanged }) {
+export default function Studio({ course, courseMeta = null, canEdit = true, onCourseChanged, onSaveCourse, onReloadCourse }) {
   const storageKey = useMemo(() => STORAGE_PREFIX + course.id, [course.id]);
   const [draft, setDraft] = useState(() => cloneCourse(course));
   const [step, setStep] = useState("overview");
@@ -161,11 +161,40 @@ export default function Studio({ course, onCourseChanged }) {
   useEffect(() => {
     const saved = localStorage.getItem(storageKey);
     if (!saved) {
-      setDraft(cloneCourse(course)); setValidation(null); setStatus(""); return;
+      setDraft(cloneCourse(course));
+      setValidation(null);
+      setStatus("");
+      return;
     }
-    try { setDraft(JSON.parse(saved)); setStatus("Borrador local recuperado."); setValidation(null); }
-    catch { localStorage.removeItem(storageKey); setDraft(cloneCourse(course)); }
-  }, [course, storageKey]);
+
+    try {
+      const parsed = JSON.parse(saved);
+      const localDraft = parsed?.draft || parsed;
+      const localVersion = parsed?.version || "";
+
+      if (!canEdit) {
+        setDraft(cloneCourse(course));
+        setValidation(null);
+        setStatus("Modo solo lectura.");
+        return;
+      }
+
+      if (courseMeta?.updatedAt && localVersion && localVersion !== courseMeta.updatedAt) {
+        setDraft(cloneCourse(course));
+        setValidation(null);
+        setStatus("La versión remota cambió. Se descartó el borrador local anterior.");
+        localStorage.removeItem(storageKey);
+        return;
+      }
+
+      setDraft(cloneCourse(localDraft));
+      setValidation(null);
+      setStatus("Borrador local recuperado.");
+    } catch {
+      localStorage.removeItem(storageKey);
+      setDraft(cloneCourse(course));
+    }
+  }, [course, storageKey, courseMeta?.updatedAt, canEdit]);
 
   useEffect(() => {
     setStudioApiKey(loadStudioApiKey(course.id));
@@ -177,10 +206,35 @@ export default function Studio({ course, onCourseChanged }) {
     setDraft((current) => typeof updater === "function" ? updater(current) : { ...current, ...updater });
     setValidation(null); setStatus(message);
   }
-  function save() {
-    localStorage.setItem(storageKey, JSON.stringify(draft));
-    onCourseChanged?.(cloneCourse(draft));
-    setStatus("Borrador guardado en este navegador.");
+  async function save() {
+    if (!canEdit || busy) return;
+
+    setBusy(true);
+    try {
+      const next = cloneCourse(draft);
+      if (onSaveCourse) {
+        const result = await onSaveCourse(next, courseMeta?.updatedAt || "");
+        const version = result?.meta?.updatedAt || new Date().toISOString();
+        localStorage.setItem(storageKey, JSON.stringify({ version, draft: next }));
+        onCourseChanged?.(cloneCourse(next));
+        setStatus("Cátedra guardada en el backend.");
+      } else {
+        localStorage.setItem(storageKey, JSON.stringify({
+          version: courseMeta?.updatedAt || "",
+          draft: next,
+        }));
+        onCourseChanged?.(cloneCourse(next));
+        setStatus("Borrador guardado en este navegador.");
+      }
+    } catch (err) {
+      if (err?.conflict) {
+        setStatus(err.message + " Usá “Recargar remoto” para continuar.");
+      } else {
+        setStatus(err.message || "No se pudo guardar la cátedra.");
+      }
+    } finally {
+      setBusy(false);
+    }
   }
   function restore() {
     const fresh = cloneCourse(course);
@@ -195,7 +249,11 @@ export default function Studio({ course, onCourseChanged }) {
     const file = e.target.files?.[0]; e.target.value = ""; if (!file) return;
     try {
       const imported = await readCoursePackFile(file);
-      setDraft(imported); onCourseChanged?.(cloneCourse(imported));
+      const normalized = cloneCourse(imported);
+      normalized.id = course.id;
+      normalized.tracking = { ...(normalized.tracking || {}), courseId: course.id };
+      setDraft(normalized);
+      onCourseChanged?.(cloneCourse(normalized));
       setValidation({ valid: true, errors: [] }); setStatus("Course pack importado."); setStep("overview");
     } catch (err) {
       setValidation({ valid: false, errors: [err.message] }); setStatus("No se pudo importar el course pack.");
@@ -387,17 +445,19 @@ export default function Studio({ course, onCourseChanged }) {
     <header className="studio-wf-toolbar">
       <div className="studio-wf-toolbar-title"><div className="brand">AULIA · STUDIO</div><strong>{draft.title || "Nueva cátedra"}</strong><span>Autoría de course pack · v{VERSION}</span></div>
       <div className="studio-wf-toolbar-actions">
-        <label className="ghost studio-file">Importar JSON<input type="file" accept="application/json,.json" onChange={importPack}/></label>
-        <button className="ghost" type="button" onClick={restore}>Restaurar</button>
+        <label className={"ghost studio-file" + (!canEdit ? " disabled" : "")}>Importar JSON<input type="file" accept="application/json,.json" onChange={importPack} disabled={!canEdit || busy}/></label>
+        <button className="ghost" type="button" onClick={restore} disabled={!canEdit || busy}>Restaurar</button>
         <button className="ghost" type="button" onClick={validate}>Validar</button>
-        <button className="primary" type="button" onClick={save}>Guardar borrador</button>
+        {onReloadCourse && <button className="ghost" type="button" onClick={onReloadCourse} disabled={busy}>Recargar remoto</button>}
+        <button className="primary" type="button" onClick={save} disabled={!canEdit || busy}>{busy ? "Guardando…" : "Guardar"}</button>
       </div>
     </header>
 
-    <div className="studio-wf-local-note"><span><b>Flujo de autoría:</b> Cátedra → Material → Propuesta pedagógica → Interacción → Comisiones.</span><small>El trabajo sigue siendo local hasta implementar la publicación docente.</small></div>
+    <div className="studio-wf-local-note"><span><b>Flujo de autoría:</b> Cátedra → Material → Propuesta pedagógica → Interacción → Comisiones.</span><small>{canEdit ? "Los cambios se guardan en el backend." : "Esta cátedra está disponible en modo solo lectura."}</small></div>
 
     <nav className="studio-wf-steps">{STEPS.map(([id, n, label], i) => <button key={id} type="button" className={step === id ? "active" : ""} onClick={() => setStep(id)}><b>{n}</b><span>{label}</span>{counts[id] > 0 && <i>{counts[id]}</i>}{i < STEPS.length - 1 && <em>→</em>}</button>)}</nav>
 
+    <fieldset className="studio-wf-editor-fieldset" disabled={!canEdit}>
     <main className="studio-wf-main">
       {step === "overview" && <>
         <div className="studio-wf-hero"><div className="eyebrow">PASO 01 · CÁTEDRA</div><h1>Primero definí qué cátedra estás construyendo.</h1><p>Solo configuramos la identidad que necesita el estudiante. La estructura técnica del course pack queda fuera del camino.</p></div>
@@ -418,7 +478,7 @@ export default function Studio({ course, onCourseChanged }) {
 
       {step === "material" && <>
         <div className="studio-wf-hero"><div className="eyebrow">PASO 02 · MATERIAL</div><h1>Cargá la bibliografía y el material de trabajo.</h1><p>La bibliografía identifica las fuentes; el corpus contiene los fragmentos que AULIA puede recuperar. No necesitás crear conceptos a mano.</p></div>
-        <Panel eyebrow="BIBLIOGRAFÍA" title="Fuentes de la cátedra" description="Libros, apuntes o materiales principales." actions={<button className="ghost" type="button" onClick={addBibliography}>+ Agregar fuente</button>}>
+        <Panel eyebrow="BIBLIOGRAFÍA" title="Fuentes de la cátedra" description="Libros, apuntes o materiales principales." actions={<button className="ghost" type="button" onClick={addBibliography} disabled={!canEdit}>+ Agregar fuente</button>}>
           {draft.bibliography?.length ? <div className="studio-wf-stack">{draft.bibliography.map((x, i) => <Row key={x.id || i} title={x.title} meta={[x.author, x.year].filter(Boolean).join(" · ")} onRemove={() => remove("bibliography", i)}><div className="studio-wf-grid">
             <Field label="Título" value={x.title} onChange={(v) => edit("bibliography", i, { title: v })}/><Field label="Autor" value={x.author} onChange={(v) => edit("bibliography", i, { author: v })}/><Field label="Editorial" value={x.publisher} onChange={(v) => edit("bibliography", i, { publisher: v })}/><Field label="Año" value={x.year} onChange={(v) => edit("bibliography", i, { year: v })}/><Field label="Rol" value={x.role} onChange={(v) => edit("bibliography", i, { role: v })}/>
           </div></Row>)}</div> : <Empty title="Todavía no cargaste fuentes." text="Podés agregarlas manualmente o incorporarlas desde un JSON." action={<button className="ghost" type="button" onClick={addBibliography}>Agregar primera fuente</button>}/>}
@@ -432,8 +492,8 @@ export default function Studio({ course, onCourseChanged }) {
       {step === "proposal" && <>
         <div className="studio-wf-hero"><div className="eyebrow">PASO 03 · PROPUESTA</div><h1>Ahora AULIA propone cómo organizar ese material.</h1><p>La IA puede detectar conceptos, relaciones, ejemplos y actividades a partir del material. Nada se publica automáticamente: todo queda como propuesta editable para la cátedra.</p></div>
         <Panel eyebrow="UNIDADES / CONCEPTOS" title="Núcleo pedagógico" description="La propuesta semántica usa tu propia clave de IA docente. AULIA no envía esa clave al backend ni la guarda en el course pack." actions={<>
-          <button className="primary" type="button" onClick={analyzeWithAI} disabled={!draft.corpus?.length || busy}>{busy ? "Analizando…" : "Analizar con IA"}</button>
-          <button className="ghost" type="button" onClick={() => setShowStudioKey((value) => !value)}>{studioApiKey ? "Cambiar clave IA" : "Configurar IA docente"}</button>
+          <button className="primary" type="button" onClick={analyzeWithAI} disabled={!canEdit || !draft.corpus?.length || busy}>{busy ? "Analizando…" : "Analizar con IA"}</button>
+          <button className="ghost" type="button" onClick={() => setShowStudioKey((value) => !value)} disabled={!canEdit}>{studioApiKey ? "Cambiar clave IA" : "Configurar IA docente"}</button>
         </>}>
           {(showStudioKey || !studioApiKey) && <div className="studio-wf-ai-setup">
             <div><strong>IA docente</strong><span>Usá una API key propia de Groq. Se mantiene en la sesión de este navegador y nunca entra al course pack.</span></div>
@@ -448,7 +508,7 @@ export default function Studio({ course, onCourseChanged }) {
           <details className="studio-wf-details">
             <summary>Alternativas sin IA</summary>
             <div className="studio-wf-tool-row">
-              <button className="ghost" type="button" onClick={proposeConceptsLocal} disabled={!draft.corpus?.length || busy}>Propuesta rápida por títulos y capítulos</button>
+              <button className="ghost" type="button" onClick={proposeConceptsLocal} disabled={!canEdit || !draft.corpus?.length || busy}>Propuesta rápida por títulos y capítulos</button>
               <button className="ghost" type="button" onClick={() => mutate((c) => ({...c, concepts:[...(c.concepts || []), {id:uniqueId("concepto",c.concepts), title:"Nuevo concepto", aliases:[], keywords:[], summary:"", explanation:""}]}))}>Agregar concepto manualmente</button>
             </div>
           </details>
@@ -474,7 +534,7 @@ export default function Studio({ course, onCourseChanged }) {
 
       {step === "commissions" && <>
         <div className="studio-wf-hero"><div className="eyebrow">PASO 05 · COMISIONES</div><h1>Separá la organización de la cursada del contenido.</h1><p>Las comisiones comparten bibliografía, corpus y pedagogía. Solo registramos la organización administrativa.</p></div>
-        <Panel eyebrow="CURSADA" title="Comisiones" description="Agregar una comisión no duplica el contenido." actions={<button className="ghost" type="button" onClick={addCommission}>+ Agregar comisión</button>}>
+        <Panel eyebrow="CURSADA" title="Comisiones" description="Agregar una comisión no duplica el contenido." actions={<button className="ghost" type="button" onClick={addCommission} disabled={!canEdit}>+ Agregar comisión</button>}>
           {draft.commissions?.length ? <div className="studio-wf-stack">{draft.commissions.map((x, i) => <Row key={x.id || i} title={x.title} meta={x.code} onRemove={() => remove("commissions", i)}><div className="studio-wf-grid"><Field label="Nombre" value={x.title} onChange={(v) => edit("commissions", i, {title:v})}/><Field label="Código" value={x.code} onChange={(v) => edit("commissions", i, {code:v})} placeholder="Ej. A · lunes 18:00"/></div></Row>)}</div> : <Empty title="Todavía no definiste comisiones." text="Podés hacerlo ahora o dejarlo para la publicación."/>}
         </Panel>
         <Panel eyebrow="CIERRE" title="Antes de publicar" description="La publicación docente todavía no está conectada. Guardá, validá y exportá el borrador.">
@@ -487,5 +547,6 @@ export default function Studio({ course, onCourseChanged }) {
       <footer className="studio-wf-footer"><span>{status || "Borrador listo para editar."}</span><span>AULIA · Studio local</span></footer>
       {validation && <section className={"studio-wf-validation " + (validation.valid ? "valid" : "invalid")}><strong>{validation.valid ? "✓ Course pack válido" : "Hay elementos que revisar"}</strong>{!validation.valid && <ul>{validation.errors.map((x) => <li key={x}>{x}</li>)}</ul>}</section>}
     </main>
+    </fieldset>
   </section>;
 }
