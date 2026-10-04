@@ -1091,3 +1091,202 @@ button { border: 0; }
   .studio-wf-tool-row { flex-direction:column; }
   .studio-wf-tool-row .ghost { width:100%; }
 }
+
+
+/* ---------- AULIA Studio access / authorization ---------- */
+.studio-access-screen {
+  min-height: 100vh;
+  padding: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #0f0f0f;
+  color: #f0ece0;
+}
+.studio-access-wrap { width: min(440px, 100%); }
+.studio-access-heading {
+  margin-bottom: 24px;
+  display:flex;
+  flex-direction:column;
+  align-items:center;
+  text-align:center;
+}
+.studio-access-heading h1 {
+  margin: 5px 0 6px;
+  color:#f0ece0;
+  font-size:26px;
+  font-weight:650;
+  letter-spacing:.05em;
+}
+.studio-access-heading p {
+  margin:0;
+  color:#6e6a62;
+  font-size:11px;
+  line-height:1.55;
+}
+.studio-access-card {
+  overflow:hidden;
+  border:1px solid #2e2e2e;
+  border-radius:16px;
+  background:#171717;
+}
+.studio-access-body {
+  padding:20px;
+  display:flex;
+  flex-direction:column;
+  gap:14px;
+}
+.studio-access-welcome {
+  padding:11px 13px;
+  display:flex;
+  flex-direction:column;
+  gap:3px;
+  border:1px solid #49311f;
+  border-radius:10px;
+  background:#1a140f;
+}
+.studio-access-welcome strong { color:#d4843c; font-size:12px; }
+.studio-access-welcome span { color:#8d857a; font-size:10px; line-height:1.5; }
+.studio-access-field { display:flex; flex-direction:column; gap:6px; }
+.studio-access-field span { color:#9a958b; font-size:10px; font-weight:600; }
+.studio-access-field input {
+  width:100%;
+  padding:11px 12px;
+  border:1px solid #343434;
+  border-radius:9px;
+  outline:none;
+  color:#eee8dc;
+  background:#212121;
+  font-size:12px;
+}
+.studio-access-field input:focus {
+  border-color:#8a4a14;
+  box-shadow:0 0 0 3px #1c0e04;
+}
+.studio-access-error {
+  padding:10px 12px;
+  border:1px solid #4c2925;
+  border-radius:9px;
+  color:#dda39b;
+  background:#1a0f0e;
+  font-size:11px;
+  line-height:1.55;
+}
+.studio-access-footer {
+  margin:14px 0 0;
+  color:#5f5b55;
+  text-align:center;
+  font-size:9px;
+  line-height:1.5;
+}
+.studio-access-loading {
+  padding:12px 16px;
+  color:#8f897f;
+  font-size:12px;
+}
+.studio-access-welcome code {
+  color:#d0a16e;
+  font-size:10px;
+}
+.studio-teacher-card {
+  margin:0 4px 18px;
+  padding:10px 11px;
+  display:flex;
+  flex-direction:column;
+  gap:3px;
+  border:1px solid #292929;
+  border-radius:10px;
+  background:#191919;
+}
+.studio-teacher-card strong { color:#d9d2c7; font-size:11px; }
+.studio-teacher-card span { color:#68645d; font-size:9px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.studio-course-empty {
+  padding:10px 11px;
+  border:1px dashed #333;
+  border-radius:10px;
+  color:#67635c;
+  font-size:9px;
+  line-height:1.5;
+}
+.studio-sidebar-footer {
+  margin:24px 8px 0;
+  padding-top:13px;
+  display:flex;
+  flex-direction:column;
+  gap:6px;
+  border-top:1px solid #292929;
+}
+.studio-sidebar-footer button {
+  align-self:flex-start;
+  padding:0;
+  border:0;
+  color:#8a7e72;
+  background:transparent;
+  cursor:pointer;
+  font-size:9px;
+}
+.studio-sidebar-footer button:hover { color:#d4843c; }
+.studio-sidebar-footer span { color:#57534d; font-size:9px; line-height:1.5; }
+.studio-global-error {
+  margin:12px auto 0;
+  width:min(980px,calc(100% - 48px));
+  padding:9px 12px;
+  border:1px solid #4c2925;
+  border-radius:9px;
+  color:#dda39b;
+  background:#1a0f0e;
+  font-size:10px;
+  line-height:1.5;
+}
+.studio-global-loading {
+  margin:8px auto 0;
+  width:min(980px,calc(100% - 48px));
+  color:#77736b;
+  font-size:9px;
+}
+.studio-no-course {
+  width:min(760px,calc(100% - 48px));
+  margin:90px auto;
+  padding:24px 0;
+}
+.studio-no-course h1 {
+  margin:0 0 8px;
+  color:#f0ece0;
+  font-size:30px;
+  font-weight:600;
+  letter-spacing:-.02em;
+}
+.studio-no-course p {
+  max-width:600px;
+  margin:0;
+  color:#77736b;
+  font-size:12px;
+  line-height:1.7;
+}
+.studio-wf-editor-fieldset {
+  min-width:0;
+  margin:0;
+  padding:0;
+  border:0;
+}
+.studio-wf-editor-fieldset:disabled {
+  opacity:.9;
+}
+.studio-wf-toolbar-actions button:disabled,
+.studio-wf-toolbar-actions .studio-file.disabled {
+  cursor:not-allowed;
+  opacity:.4;
+}
+.studio-wf-toolbar-actions .studio-file.disabled {
+  pointer-events:none;
+}
+
+@media (max-width: 900px) {
+  .studio-sidebar-footer { display:none; }
+}
+@media (max-width: 639px) {
+  .studio-access-screen { padding:16px; }
+  .studio-global-error, .studio-global-loading, .studio-no-course { width:calc(100% - 24px); }
+  .studio-no-course { margin:55px auto; }
+  .studio-no-course h1 { font-size:24px; }
+}
