@@ -1,0 +1,192 @@
+// AULIA — Teacher Studio backend configuration
+const STUDIO_BACKEND_VERSION = "0.1.0";
+const STUDIO_TIMEZONE = "America/Argentina/Buenos_Aires";
+const STUDIO_SESSION_TTL_SECONDS = 6 * 60 * 60;
+const STUDIO_LOGIN_MAX_FAILURES = 5;
+const STUDIO_LOGIN_WINDOW_SECONDS = 10 * 60;
+const STUDIO_LOGIN_LOCK_SECONDS = 15 * 60;
+
+const STUDIO_SHEETS = {
+  teachers: "👩‍🏫 Docentes",
+  courses: "📚 Cátedras",
+  permissions: "👥 Permisos",
+  audit: "📝 Auditoría",
+};
+
+const STUDIO_HEADERS = {
+  teachers: ["Email", "Nombre", "Password Hash", "Salt", "Activo", "Creado"],
+  courses: ["Course ID", "Título", "Owner Email", "Estado", "Drive File ID", "Actualizado"],
+  permissions: ["Email", "Course ID", "Rol", "Activo", "Creado", "Actualizado"],
+  audit: ["Fecha", "Email", "Acción", "Course ID", "Resultado", "Detalle"],
+};
+
+function studioRequiredProperty(name) {
+  const value = PropertiesService.getScriptProperties().getProperty(name);
+  if (!value) throw new Error("Falta la propiedad " + name + ".");
+  return value;
+}
+
+function studioSpreadsheet() {
+  const id = PropertiesService.getScriptProperties().getProperty("STUDIO_SHEET_ID");
+  return id
+    ? SpreadsheetApp.openById(id)
+    : SpreadsheetApp.getActiveSpreadsheet();
+}
+
+function studioDriveFolder() {
+  const id = studioRequiredProperty("COURSE_PACK_FOLDER_ID");
+  return DriveApp.getFolderById(id);
+}
+
+function studioSheet(name, headersKey) {
+  const ss = studioSpreadsheet();
+  let sheet = ss.getSheetByName(name);
+  if (!sheet) sheet = ss.insertSheet(name);
+  if (sheet.getLastRow() === 0) {
+    sheet.getRange(1, 1, 1, STUDIO_HEADERS[headersKey].length)
+      .setValues([STUDIO_HEADERS[headersKey]]);
+    sheet.setFrozenRows(1);
+  }
+  return sheet;
+}
+
+function normalizeStudioEmail(value) {
+  return String(value || "").trim().toLowerCase();
+}
+
+function studioNow() {
+  return Utilities.formatDate(new Date(), STUDIO_TIMEZONE, "yyyy-MM-dd HH:mm:ss");
+}
+
+function studioHash(value) {
+  const bytes = Utilities.computeDigest(
+    Utilities.DigestAlgorithm.SHA_256,
+    String(value || ""),
+    Utilities.Charset.UTF_8
+  );
+  return bytes.map(b => ("0" + ((b + 256) % 256).toString(16)).slice(-2)).join("");
+}
+
+function studioRandomSalt() {
+  return Utilities.getUuid().replace(/-/g, "");
+}
+
+function studioHashPassword(email, password, salt) {
+  return studioHash(
+    normalizeStudioEmail(email) + ":" + String(password || "") + ":" + String(salt || "")
+  );
+}
+
+function studioSlugify(value) {
+  return String(value || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-|-$/g, "")
+    .slice(0, 44) || "catedra";
+}
+
+function studioColumn(headers, candidates) {
+  const normalized = headers.map(h => String(h || "").trim().toLowerCase());
+  for (const candidate of candidates) {
+    const index = normalized.indexOf(String(candidate).trim().toLowerCase());
+    if (index >= 0) return index;
+  }
+  return -1;
+}
+
+function studioCell(row, index) {
+  return index >= 0 && row[index] != null ? String(row[index]).trim() : "";
+}
+
+function studioAudit(email, action, courseId, result, detail) {
+  try {
+    const sheet = studioSheet(STUDIO_SHEETS.audit, "audit");
+    sheet.appendRow([
+      studioNow(),
+      normalizeStudioEmail(email),
+      String(action || ""),
+      String(courseId || ""),
+      String(result || ""),
+      String(detail || ""),
+    ]);
+  } catch (e) {
+    console.error("studioAudit", e);
+  }
+}
+
+function initializeStudio() {
+  const ss = studioSpreadsheet();
+  for (const key of Object.keys(STUDIO_SHEETS)) {
+    studioSheet(STUDIO_SHEETS[key], key);
+  }
+  const folderId = PropertiesService.getScriptProperties().getProperty("COURSE_PACK_FOLDER_ID");
+  if (!folderId) {
+    const folder = DriveApp.createFolder("AULIA · Course Packs");
+    PropertiesService.getScriptProperties().setProperty("COURSE_PACK_FOLDER_ID", folder.getId());
+    console.log("COURSE_PACK_FOLDER_ID=" + folder.getId());
+  }
+  console.log("STUDIO_SHEET_ID=" + ss.getId());
+  console.log("✓ AULIA Studio backend inicializado.");
+}
+
+function provisionTeacher(email, name, password) {
+  const normalizedEmail = normalizeStudioEmail(email);
+  const cleanName = String(name || "").trim();
+  const cleanPassword = String(password || "");
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail)) {
+    throw new Error("Email docente inválido.");
+  }
+  if (cleanPassword.length < 10) {
+    throw new Error("La contraseña docente debe tener al menos 10 caracteres.");
+  }
+
+  const sheet = studioSheet(STUDIO_SHEETS.teachers, "teachers");
+  const values = sheet.getDataRange().getValues();
+  const headers = values[0];
+  const emailCol = studioColumn(headers, ["Email"]);
+
+  for (let i = 1; i < values.length; i += 1) {
+    if (normalizeStudioEmail(values[i][emailCol]) !== normalizedEmail) continue;
+    const salt = studioRandomSalt();
+    const hash = studioHashPassword(normalizedEmail, cleanPassword, salt);
+    sheet.getRange(i + 1, 1, 1, STUDIO_HEADERS.teachers.length).setValues([[
+      normalizedEmail, cleanName, hash, salt, "Sí", studioNow()
+    ]]);
+    return { updated: true, email: normalizedEmail };
+  }
+
+  const salt = studioRandomSalt();
+  const hash = studioHashPassword(normalizedEmail, cleanPassword, salt);
+  sheet.appendRow([normalizedEmail, cleanName, hash, salt, "Sí", studioNow()]);
+  return { created: true, email: normalizedEmail };
+}
+
+function getActiveTeacher(email) {
+  const normalizedEmail = normalizeStudioEmail(email);
+  const sheet = studioSheet(STUDIO_SHEETS.teachers, "teachers");
+  const values = sheet.getDataRange().getValues();
+  if (!values.length) return null;
+
+  const headers = values[0];
+  const emailCol = studioColumn(headers, ["Email"]);
+  const nameCol = studioColumn(headers, ["Nombre"]);
+  const hashCol = studioColumn(headers, ["Password Hash"]);
+  const saltCol = studioColumn(headers, ["Salt"]);
+  const activeCol = studioColumn(headers, ["Activo"]);
+
+  for (let i = 1; i < values.length; i += 1) {
+    if (normalizeStudioEmail(values[i][emailCol]) !== normalizedEmail) continue;
+    const active = activeCol < 0 || ["si", "sí", "1", "true"].includes(String(values[i][activeCol] || "").trim().toLowerCase());
+    if (!active) return null;
+    return {
+      rowIndex: i + 1,
+      email: normalizedEmail,
+      name: studioCell(values[i], nameCol),
+      passwordHash: studioCell(values[i], hashCol),
+      salt: studioCell(values[i], saltCol),
+    };
+  }
+  return null;
+}
