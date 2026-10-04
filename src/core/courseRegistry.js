@@ -39,6 +39,7 @@ function buildRegistry() {
         activities: pack["activities"],
         examples: pack["examples"],
         tracking: pack["tracking"],
+        llm: pack["llm"] || null,
         assistant: pack["assistant"] || {
           name: (pack["course"] || {}).title || "Asistente pedagógico",
           shortTitle: (pack["course"] || {}).title || "Asistente pedagógico",
