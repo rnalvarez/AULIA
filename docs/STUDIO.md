@@ -34,7 +34,7 @@ También acepta `?course=chion` o `?course=montaje`.
 
 - Define identidad de cátedra y la identidad visible del asistente.
 - Registra bibliografía sin exigir la carga manual de conceptos.
-- Importa TXT, Markdown y JSON como material de trabajo.
+- Importa PDF, DOCX, TXT, Markdown y JSON como material de trabajo.
 - Divide material de texto en fragmentos reutilizables y los incorpora al corpus.
 - Acepta course packs JSON completos para importar/exportar.
 - Genera una **primera propuesta conservadora de unidades/conceptos** usando títulos y capítulos del corpus existente; no llama a ningún LLM y no inventa contenido.
@@ -65,12 +65,12 @@ unidades sugeridas
 revisión docente
 ```
 
-La siguiente evolución será:
+La extracción de PDF y DOCX ya está integrada en el flujo local. La siguiente evolución será:
 
 ```text
 PDF / DOCX
     ↓
-extracción de texto
+extracción local de texto
     ↓
 fragmentación
     ↓
@@ -83,7 +83,7 @@ publicación
 
 ## Qué todavía no hace
 
-- Extracción directa de PDF/DOCX.
+- OCR para PDFs escaneados sin capa de texto.
 - Análisis semántico con LLM durante la creación del course pack.
 - Autenticación de docentes.
 - Publicación remota del course pack.
