@@ -1,5 +1,6 @@
 // AULIA — dispatcher for the CHIONIA pilot backend.
-// All operational logic lives in the companion .gs files in this folder.
+// This backend handles course access and teacher tracking.
+// The LLM is called directly by the student's browser with the student's own API key.
 
 function doPost(e) {
   try {
@@ -8,7 +9,6 @@ function doPost(e) {
       case "check": return jsonResponse(handleCheck(body));
       case "registrar": return jsonResponse(handleRegister(body));
       case "verificar": return jsonResponse(handleVerify(body));
-      case "chat": return jsonResponse(handleChat(body));
       case "log": return jsonResponse(handleLog(body));
       default: return jsonResponse({ ok: false, error: "Acción no reconocida." });
     }
