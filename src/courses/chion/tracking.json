@@ -12,5 +12,5 @@
     "logInteraction": "log"
   },
   "failOpen": false,
-  "deploymentNote": "Configurar aquí únicamente el endpoint del backend AULIA conectado a una COPIA de la Sheet de CHIONIA para pruebas."
+  "deploymentNote": "Configurar aquí únicamente el endpoint del backend AULIA conectado a una COPIA de la Sheet de CHIONIA para pruebas. La IA se ejecuta directamente en el navegador con la API key del alumno."
 }
