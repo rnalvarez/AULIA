@@ -143,7 +143,9 @@ async function readPdf(file) {
     import.meta.url
   ).toString();
 
-  const pdf = await pdfjsLib.getDocument({ data: await file.arrayBuffer() }).promise;
+  const pdf = await pdfjsLib.getDocument({
+    data: new Uint8Array(await file.arrayBuffer()),
+  }).promise;
   const corpus = [];
 
   for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber += 1) {
@@ -154,6 +156,13 @@ async function readPdf(file) {
     });
     const lines = groupPdfItems(textContent.items);
     corpus.push(...pdfPageToFragments(lines, pageNumber, file.name));
+    page.cleanup?.();
+  }
+
+  await pdf.cleanup?.();
+  await pdf.destroy?.();
+  if (!corpus.length) {
+    throw new Error("El PDF no contiene texto extraíble. Si es un escaneo de páginas, todavía hace falta OCR antes de incorporarlo a AULIA.");
   }
 
   return { corpus, bibliography: [], sourceName: file.name, pages: pdf.numPages };
@@ -163,7 +172,14 @@ async function readDocx(file) {
   const mammothModule = await import("mammoth");
   const mammoth = mammothModule.default || mammothModule;
   const arrayBuffer = await file.arrayBuffer();
-  const result = await mammoth.convertToHtml({ arrayBuffer });
+  const result = await mammoth.convertToHtml(
+    { arrayBuffer },
+    {
+      convertImage: mammoth.images.imgElement(() => Promise.resolve({ src: "" })),
+      includeDefaultStyleMap: true,
+      ignoreEmptyParagraphs: true,
+    }
+  );
 
   const parser = new DOMParser();
   const doc = parser.parseFromString(result.value, "text/html");
