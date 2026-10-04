@@ -160,7 +160,8 @@ async function readPdf(file) {
 }
 
 async function readDocx(file) {
-  const mammoth = await import("mammoth");
+  const mammothModule = await import("mammoth");
+  const mammoth = mammothModule.default || mammothModule;
   const arrayBuffer = await file.arrayBuffer();
   const result = await mammoth.convertToHtml({ arrayBuffer });
 
@@ -256,7 +257,7 @@ export async function readMaterialFile(file) {
 
 export function materialToCorpus(material, existing = []) {
   const used = new Set((existing || []).map((item) => item.id));
-  return (material.corpus || []).map((chunk, index) => {
+  const corpus = (material.corpus || []).map((chunk, index) => {
     const base = chunk.id || "fragmento-" + slugify(material.sourceName || "material") + "-" + (index + 1);
     let id = base;
     let suffix = 1;
@@ -264,6 +265,13 @@ export function materialToCorpus(material, existing = []) {
     used.add(id);
     return { ...chunk, id };
   });
+  return {
+    corpus,
+    bibliography: material.bibliography || [],
+    sourceName: material.sourceName || "",
+    warnings: material.warnings || [],
+    pages: material.pages || null,
+  };
 }
 
 function sameReference(a, b) {
