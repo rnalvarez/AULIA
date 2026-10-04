@@ -17,6 +17,8 @@ export function createBlankCourse() {
     bibliography: [],
     concepts: [],
     examples: [],
+    corpus: [],
+    commissions: [],
     modes: [
       {
         id: "consulta",
