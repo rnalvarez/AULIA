@@ -1075,3 +1075,19 @@ button { border: 0; }
   .studio-wf-ai-key-row { flex-wrap:wrap; }
   .studio-wf-ai-key-row input { width:100%; flex-basis:100%; }
 }
+
+
+.studio-wf-tool-row {
+  display:flex;
+  flex-wrap:wrap;
+  gap:6px;
+}
+.studio-wf-tool-row .ghost {
+  padding:7px 9px;
+  font-size:9px;
+}
+
+@media (max-width: 520px) {
+  .studio-wf-tool-row { flex-direction:column; }
+  .studio-wf-tool-row .ghost { width:100%; }
+}
