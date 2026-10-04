@@ -35,6 +35,12 @@ export function createBlankCourse() {
         description: "Comprender una unidad del curso.",
       },
     ],
+    llm: {
+      provider: "",
+      endpoint: "",
+      models: [],
+      generation: {},
+    },
     tracking: {
       provider: "",
       courseId: "nuevo-curso",
