@@ -2,9 +2,11 @@ import { useEffect, useMemo, useState } from "react";
 import { cloneCourse, validateCourse } from "../core/courseContract.js";
 import { downloadCoursePack, readCoursePackFile } from "../core/coursePackIO.js";
 import { readMaterialFile, materialToCorpus, mergeImportedBibliography } from "../core/materialIO.js";
+import { requestTeacherProposal } from "../services/llm/teacherProposal.js";
+import { clearStudioApiKey, isGroqApiKey, loadStudioApiKey, saveStudioApiKey } from "../utils/studioStorage.js";
 
 const STORAGE_PREFIX = "aulia:studio:";
-const VERSION = "0.2";
+const VERSION = "0.3";
 const STEPS = [
   ["overview", "01", "Cátedra"],
   ["material", "02", "Material"],
@@ -38,6 +40,98 @@ function firstSentence(text) {
   if (!clean) return "";
   return (clean.match(/^(.{1,240}?[.!?])(?:\s|$)/)?.[1] || clean.slice(0, 240)).trim();
 }
+
+function mergeTeacherProposal(course, proposal) {
+  const corpusIds = new Set((course.corpus || []).map((item) => item.id));
+  const concepts = [...(course.concepts || [])];
+  const conceptByKey = new Map(concepts.map((item) => [slug(item.title), item]));
+  const newConcepts = [];
+  let skippedConcepts = 0;
+
+  for (const item of proposal.concepts || []) {
+    const title = String(item?.title || "").trim();
+    const key = slug(title);
+    if (!title || conceptByKey.has(key)) {
+      skippedConcepts += 1;
+      continue;
+    }
+    const sourceCorpusIds = (item.sourceIds || []).filter((id) => corpusIds.has(id));
+    const concept = {
+      id: uniqueId(key || "concepto", [...concepts, ...newConcepts]),
+      title,
+      chapter: String(item.chapter || "").trim(),
+      summary: String(item.summary || "").trim(),
+      explanation: String(item.explanation || "").trim(),
+      aliases: Array.isArray(item.aliases) ? item.aliases.filter(Boolean).slice(0, 8) : [],
+      keywords: Array.isArray(item.keywords) ? item.keywords.filter(Boolean).slice(0, 12) : [],
+      sourceCorpusIds,
+      suggested: true,
+      suggestionSource: "llm",
+    };
+    newConcepts.push(concept);
+    conceptByKey.set(key, concept);
+  }
+
+  const allConcepts = [...concepts, ...newConcepts];
+  const examples = [...(course.examples || [])];
+  const exampleKeys = new Set(examples.map((item) => slug(item.title)));
+  const newExamples = [];
+
+  for (const item of proposal.examples || []) {
+    const title = String(item?.title || "").trim();
+    const key = slug(title);
+    if (!title || exampleKeys.has(key)) continue;
+    const conceptIds = (item.conceptTitles || [])
+      .map((title) => conceptByKey.get(slug(title))?.id)
+      .filter(Boolean);
+    newExamples.push({
+      id: uniqueId("ejemplo-" + (key || "item"), [...examples, ...newExamples]),
+      title,
+      director: String(item.director || "").trim(),
+      description: String(item.description || "").trim(),
+      concepts: conceptIds,
+      sourceCorpusIds: (item.sourceIds || []).filter((id) => corpusIds.has(id)),
+      suggested: true,
+      suggestionSource: "llm",
+    });
+    exampleKeys.add(key);
+  }
+
+  const activities = [...(course.activities || [])];
+  const activityKeys = new Set(activities.map((item) => slug(item.title)));
+  const newActivities = [];
+  for (const item of proposal.activities || []) {
+    const title = String(item?.title || "").trim();
+    const key = slug(title);
+    if (!title || activityKeys.has(key)) continue;
+    const strategy = String(item.strategy || "retrieve");
+    const matchingMode = (course.modes || []).find((mode) => mode.strategy === strategy);
+    newActivities.push({
+      id: uniqueId("actividad-" + (key || "item"), [...activities, ...newActivities]),
+      title,
+      modeId: matchingMode?.id || course.modes?.[0]?.id || "",
+      description: [item.description, item.goal ? "Objetivo: " + item.goal : ""].filter(Boolean).join("\n\n"),
+      suggested: true,
+      suggestionSource: "llm",
+    });
+    activityKeys.add(key);
+  }
+
+  return {
+    course: {
+      ...course,
+      concepts: allConcepts,
+      examples: [...examples, ...newExamples],
+      activities: [...activities, ...newActivities],
+    },
+    stats: {
+      concepts: newConcepts.length,
+      examples: newExamples.length,
+      activities: newActivities.length,
+      skippedConcepts,
+    },
+  };
+}
 function Field({ label, value, onChange, multiline = false, placeholder = "", hint = "" }) {
   const T = multiline ? "textarea" : "input";
   return <label className="studio-wf-field"><span>{label}</span><T value={value ?? ""} onChange={(e) => onChange(e.target.value)} placeholder={placeholder} rows={multiline ? 4 : undefined}/>{hint && <small>{hint}</small>}</label>;
@@ -60,6 +154,9 @@ export default function Studio({ course, onCourseChanged }) {
   const [validation, setValidation] = useState(null);
   const [busy, setBusy] = useState(false);
   const [advanced, setAdvanced] = useState(false);
+  const [studioApiKey, setStudioApiKey] = useState(() => loadStudioApiKey(course.id));
+  const [studioKeyInput, setStudioKeyInput] = useState("");
+  const [showStudioKey, setShowStudioKey] = useState(false);
 
   useEffect(() => {
     const saved = localStorage.getItem(storageKey);
@@ -69,6 +166,12 @@ export default function Studio({ course, onCourseChanged }) {
     try { setDraft(JSON.parse(saved)); setStatus("Borrador local recuperado."); setValidation(null); }
     catch { localStorage.removeItem(storageKey); setDraft(cloneCourse(course)); }
   }, [course, storageKey]);
+
+  useEffect(() => {
+    setStudioApiKey(loadStudioApiKey(course.id));
+    setStudioKeyInput("");
+    setShowStudioKey(false);
+  }, [course.id]);
 
   function mutate(updater, message = "Cambios pendientes de guardar.") {
     setDraft((current) => typeof updater === "function" ? updater(current) : { ...current, ...updater });
@@ -171,7 +274,7 @@ export default function Studio({ course, onCourseChanged }) {
       id: uniqueId("comision", c.commissions), title: "Nueva comisión", code: ""
     }] }));
   }
-  function proposeConcepts() {
+  function proposeConceptsLocal() {
     const corpus = draft.corpus || [];
     if (!corpus.length) { setStep("material"); setStatus("Primero cargá material."); return; }
     const seen = new Set((draft.concepts || []).map((x) => slug(x.title)));
@@ -198,6 +301,77 @@ export default function Studio({ course, onCourseChanged }) {
     mutate((c) => ({ ...c, concepts: [...(c.concepts || []), ...additions] }),
       additions.length + " unidades propuestas. Revisalas antes de publicar.");
     setStep("proposal");
+  }
+
+  function saveTeacherKey() {
+    const trimmed = studioKeyInput.trim();
+    if (!isGroqApiKey(trimmed)) {
+      setStatus('La clave no parece ser una API key de Groq. Debería comenzar con "gsk_".');
+      return;
+    }
+    saveStudioApiKey(course.id, trimmed);
+    setStudioApiKey(trimmed);
+    setStudioKeyInput("");
+    setShowStudioKey(false);
+    setStatus("IA docente configurada en esta sesión del navegador.");
+  }
+
+  function forgetTeacherKey() {
+    clearStudioApiKey(course.id);
+    setStudioApiKey("");
+    setStudioKeyInput("");
+    setShowStudioKey(false);
+    setStatus("Se eliminó la clave de IA docente de esta sesión.");
+  }
+
+  async function analyzeWithAI() {
+    if (!draft.corpus?.length) {
+      setStep("material");
+      setStatus("Primero cargá material.");
+      return;
+    }
+    if (!studioApiKey) {
+      setShowStudioKey(true);
+      setStatus("Configurá tu clave de Groq para generar una propuesta semántica.");
+      return;
+    }
+
+    setBusy(true);
+    setStatus("La IA está leyendo el material y preparando una propuesta pedagógica…");
+    try {
+      const result = await requestTeacherProposal({
+        apiKey: studioApiKey,
+        course: draft,
+        corpus: draft.corpus,
+        bibliography: draft.bibliography,
+        endpoint: draft.llm?.endpoint,
+        models: draft.llm?.models,
+      });
+      const merged = mergeTeacherProposal(draft, result.proposal);
+      const suffix = result.truncated
+        ? " · se analizó una selección representativa del corpus"
+        : " · se analizó todo el corpus disponible";
+      mutate(() => merged.course,
+        "Propuesta IA incorporada: " +
+        merged.stats.concepts + " conceptos · " +
+        merged.stats.examples + " ejemplos · " +
+        merged.stats.activities + " actividades" +
+        suffix +
+        ".");
+      setStatus(
+        "Propuesta IA incorporada: " +
+        merged.stats.concepts + " conceptos · " +
+        merged.stats.examples + " ejemplos · " +
+        merged.stats.activities + " actividades" +
+        suffix +
+        "."
+      );
+      setStep("proposal");
+    } catch (err) {
+      setStatus(err.message || "No se pudo generar la propuesta con IA.");
+    } finally {
+      setBusy(false);
+    }
   }
 
   const counts = {
@@ -256,12 +430,27 @@ export default function Studio({ course, onCourseChanged }) {
       </>}
 
       {step === "proposal" && <>
-        <div className="studio-wf-hero"><div className="eyebrow">PASO 03 · PROPUESTA</div><h1>Ahora AULIA propone cómo organizar ese material.</h1><p>La primera propuesta es conservadora: usa títulos, capítulos y fragmentos ya cargados. No inventa contenido y todo queda editable.</p></div>
-        <Panel eyebrow="UNIDADES / CONCEPTOS" title="Núcleo pedagógico" description="Los campos técnicos de recuperación aparecen solo cuando realmente hacen falta." actions={<><button className="ghost" type="button" onClick={proposeConcepts} disabled={!draft.corpus?.length}>Analizar material</button><button className="ghost" type="button" onClick={() => mutate((c) => ({...c, concepts:[...(c.concepts || []), {id:uniqueId("concepto",c.concepts), title:"Nuevo concepto", aliases:[], keywords:[], summary:"", explanation:""}]}))}>+ Agregar manualmente</button></>}>
+        <div className="studio-wf-hero"><div className="eyebrow">PASO 03 · PROPUESTA</div><h1>Ahora AULIA propone cómo organizar ese material.</h1><p>La IA puede detectar conceptos, relaciones, ejemplos y actividades a partir del material. Nada se publica automáticamente: todo queda como propuesta editable para la cátedra.</p></div>
+        <Panel eyebrow="UNIDADES / CONCEPTOS" title="Núcleo pedagógico" description="La propuesta semántica usa tu propia clave de IA docente. AULIA no envía esa clave al backend ni la guarda en el course pack." actions={<>
+          <button className="primary" type="button" onClick={analyzeWithAI} disabled={!draft.corpus?.length || busy}>{busy ? "Analizando…" : "Analizar con IA"}</button>
+          <button className="ghost" type="button" onClick={() => setShowStudioKey((value) => !value)}>{studioApiKey ? "Cambiar clave IA" : "Configurar IA docente"}</button>
+          <button className="ghost" type="button" onClick={proposeConceptsLocal} disabled={!draft.corpus?.length || busy}>Propuesta rápida</button>
+          <button className="ghost" type="button" onClick={() => mutate((c) => ({...c, concepts:[...(c.concepts || []), {id:uniqueId("concepto",c.concepts), title:"Nuevo concepto", aliases:[], keywords:[], summary:"", explanation:""}]}))}>+ Manual</button>
+        </>}>
+          {(showStudioKey || !studioApiKey) && <div className="studio-wf-ai-setup">
+            <div><strong>IA docente</strong><span>Usá una API key propia de Groq. Se mantiene en la sesión de este navegador y nunca entra al course pack.</span></div>
+            <div className="studio-wf-ai-key-row">
+              <input type="password" value={studioKeyInput} placeholder="gsk_…" autoComplete="off" onChange={(e) => setStudioKeyInput(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") saveTeacherKey(); }}/>
+              <button className="ghost" type="button" onClick={saveTeacherKey} disabled={!studioKeyInput.trim()}>Guardar clave</button>
+              {studioApiKey && <button className="ghost" type="button" onClick={forgetTeacherKey}>Quitar</button>}
+            </div>
+          </div>}
+          {studioApiKey && !showStudioKey && <div className="studio-wf-ai-ready"><span>● IA docente lista</span><small>La clave está solo en esta sesión.</small></div>}
+
           {draft.concepts?.length ? <div className="studio-wf-stack">{draft.concepts.map((x, i) => <article className="studio-wf-concept" key={x.id || i}><div className="studio-wf-concept-head"><div><strong>{x.title || "Sin título"}</strong><span>{x.suggested ? "Propuesto por AULIA" : "Editado por la cátedra"}{x.chapter ? " · " + x.chapter : ""}</span></div><button className="studio-wf-danger" type="button" onClick={() => remove("concepts", i)}>Eliminar</button></div><div className="studio-wf-grid"><Field label="Título" value={x.title} onChange={(v) => edit("concepts", i, {title:v, suggested:false})}/><Field label="Unidad / capítulo" value={x.chapter} onChange={(v) => edit("concepts", i, {chapter:v})}/><Field label="Resumen" value={x.summary} onChange={(v) => edit("concepts", i, {summary:v})} multiline/><Field label="Explicación docente (opcional)" value={x.explanation} onChange={(v) => edit("concepts", i, {explanation:v})} multiline/></div><details className="studio-wf-details"><summary>Detalles opcionales de recuperación</summary><div className="studio-wf-grid"><Field label="Aliases" value={(x.aliases || []).join(", ")} onChange={(v) => edit("concepts", i, {aliases:list(v)})} hint="Sinónimos o formas alternativas."/><Field label="Palabras clave" value={(x.keywords || []).join(", ")} onChange={(v) => edit("concepts", i, {keywords:list(v)})}/></div></details></article>)}</div> : <Empty title="Todavía no hay una propuesta." text="Cargá material y presioná “Analizar material”."/>}
         </Panel>
         <Panel eyebrow="EJEMPLOS" title="Ejemplos y obras" description="Conectan el corpus con escenas, obras o casos. Son opcionales al comienzo." actions={<button className="ghost" type="button" onClick={() => mutate((c) => ({...c, examples:[...(c.examples || []), {id:uniqueId("ejemplo",c.examples), title:"Nuevo ejemplo", director:"", concepts:[]}]}))}>+ Agregar ejemplo</button>}>
-          {draft.examples?.length ? <div className="studio-wf-stack">{draft.examples.map((x, i) => <Row key={x.id || i} title={x.title} meta={x.director} onRemove={() => remove("examples", i)}><div className="studio-wf-grid"><Field label="Obra / ejemplo" value={x.title} onChange={(v) => edit("examples", i, {title:v})}/><Field label="Autor / director" value={x.director} onChange={(v) => edit("examples", i, {director:v})}/><Field label="Conceptos relacionados" value={(x.concepts || []).join(", ")} onChange={(v) => edit("examples", i, {concepts:list(v)})}/></div></Row>)}</div> : <Empty title="Todavía no hay ejemplos." text="Podés agregarlos después, cuando tengas una selección de escenas o casos."/>}
+          {draft.examples?.length ? <div className="studio-wf-stack">{draft.examples.map((x, i) => <Row key={x.id || i} title={x.title} meta={x.director} onRemove={() => remove("examples", i)}><div className="studio-wf-grid"><Field label="Obra / ejemplo" value={x.title} onChange={(v) => edit("examples", i, {title:v})}/><Field label="Autor / director" value={x.director} onChange={(v) => edit("examples", i, {director:v})}/><Field label="Descripción" value={x.description} onChange={(v) => edit("examples", i, {description:v})} multiline/><Field label="Conceptos relacionados" value={(x.concepts || []).join(", ")} onChange={(v) => edit("examples", i, {concepts:list(v)})}/></div></Row>)}</div> : <Empty title="Todavía no hay ejemplos." text="Podés agregarlos después, cuando tengas una selección de escenas o casos."/>}
         </Panel>
         <div className="studio-wf-next"><button className="primary" type="button" onClick={() => setStep("interaction")}>Configurar interacción →</button></div>
       </>}
