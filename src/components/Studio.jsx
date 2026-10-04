@@ -99,17 +99,38 @@ export default function Studio({ course, onCourseChanged }) {
     }
   }
   async function importMaterial(e) {
-    const file = e.target.files?.[0]; e.target.value = ""; if (!file) return;
+    const files = Array.from(e.target.files || []);
+    e.target.value = "";
+    if (!files.length) return;
     setBusy(true);
     try {
-      const material = materialToCorpus(await readMaterialFile(file));
+      const baseIds = [...(draft.corpus || [])];
+      const collected = [];
+      const bibliography = [];
+      let warnings = 0;
+      let pages = 0;
+
+      for (const file of files) {
+        const extracted = await readMaterialFile(file);
+        const material = materialToCorpus(extracted, [...baseIds, ...collected]);
+        collected.push(...material.corpus);
+        bibliography.push(...(material.bibliography || []));
+        warnings += material.warnings?.length || 0;
+        pages += material.pages || 0;
+      }
+
       mutate((current) => ({
         ...current,
-        corpus: [...(current.corpus || []), ...material.corpus],
-        bibliography: mergeImportedBibliography(current.bibliography || [], material.bibliography || []),
-      }), material.corpus.length + " fragmentos incorporados al material." + (material.pages ? " · " + material.pages + " páginas." : "") + (material.warnings?.length ? " · " + material.warnings.length + " aviso(s) de conversión." : ""));
-    } catch (err) { setStatus(err.message); }
-    finally { setBusy(false); }
+        corpus: [...(current.corpus || []), ...collected],
+        bibliography: mergeImportedBibliography(current.bibliography || [], bibliography),
+      }), \`\${collected.length} fragmentos incorporados desde \${files.length} documento\${files.length === 1 ? "" : "s"}.\` +
+        (pages ? \` · \${pages} páginas.\` : "") +
+        (warnings ? \` · \${warnings} aviso(s) de conversión.\` : ""));
+    } catch (err) {
+      setStatus(err.message);
+    } finally {
+      setBusy(false);
+    }
   }
   function addBibliography() {
     mutate((c) => ({ ...c, bibliography: [...(c.bibliography || []), {
@@ -228,7 +249,7 @@ export default function Studio({ course, onCourseChanged }) {
             <Field label="Título" value={x.title} onChange={(v) => edit("bibliography", i, { title: v })}/><Field label="Autor" value={x.author} onChange={(v) => edit("bibliography", i, { author: v })}/><Field label="Editorial" value={x.publisher} onChange={(v) => edit("bibliography", i, { publisher: v })}/><Field label="Año" value={x.year} onChange={(v) => edit("bibliography", i, { year: v })}/><Field label="Rol" value={x.role} onChange={(v) => edit("bibliography", i, { role: v })}/>
           </div></Row>)}</div> : <Empty title="Todavía no cargaste fuentes." text="Podés agregarlas manualmente o incorporarlas desde un JSON." action={<button className="ghost" type="button" onClick={addBibliography}>Agregar primera fuente</button>}/>}
         </Panel>
-        <Panel eyebrow="CORPUS" title="Material que AULIA podrá recuperar" description="PDF, DOCX, TXT, Markdown y JSON se convierten en fragmentos. La extracción ocurre localmente en este navegador." actions={<label className="primary studio-wf-file-btn">{busy ? "Procesando…" : "Cargar material"}<input type="file" accept=".txt,.md,.markdown,.json,.pdf,.docx,text/plain,text/markdown,application/json,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document" onChange={importMaterial} disabled={busy}/></label>}>
+        <Panel eyebrow="CORPUS" title="Material que AULIA podrá recuperar" description="PDF, DOCX, TXT, Markdown y JSON se convierten en fragmentos. Podés seleccionar varios documentos; la extracción ocurre localmente en este navegador." actions={<label className="primary studio-wf-file-btn">{busy ? "Procesando…" : "Cargar material"}<input type="file" accept=".txt,.md,.markdown,.json,.pdf,.docx,text/plain,text/markdown,application/json,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document" multiple onChange={importMaterial} disabled={busy}/></label>}>
           {draft.corpus?.length ? <><div className="studio-wf-stats"><div><strong>{draft.corpus.length}</strong><span>fragmentos</span></div><div><strong>{new Set(draft.corpus.map((x) => x.chapter).filter(Boolean)).size}</strong><span>unidades de origen</span></div><div><strong>{pending}</strong><span>propuestas pendientes</span></div></div><div className="studio-wf-corpus-list">{draft.corpus.slice(0, 18).map((x, i) => <article key={x.id || i}><div><strong>{x.title || "Fragmento"}</strong><span>{x.chapter || (x.sourcePage ? "Página " + x.sourcePage : "Sin unidad de origen")}{x.source ? " · " + x.source : ""}</span></div><p>{String(x.content || "").slice(0, 240)}{String(x.content || "").length > 240 ? "…" : ""}</p></article>)}{draft.corpus.length > 18 && <small>Mostrando 18 de {draft.corpus.length} fragmentos.</small>}</div></> : <Empty title="El corpus está vacío." text="Empezá cargando un PDF, DOCX, TXT, Markdown o JSON."/>}
         </Panel>
         <div className="studio-wf-next"><button className="primary" type="button" onClick={() => setStep("proposal")}>Ir a la propuesta pedagógica →</button></div>
