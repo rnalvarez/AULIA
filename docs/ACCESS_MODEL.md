@@ -26,12 +26,85 @@ El docente sigue controlando el padrón y consultando las interacciones desde su
 
 ## STUDIO
 
-STUDIO no forma parte del runtime estudiantil ni aparece en su navegación.
+STUDIO tiene ahora una capa de acceso docente separada del runtime estudiantil.
 
-Su objetivo es preparar y validar course packs. La futura versión institucional deberá protegerlo mediante autenticación docente del lado servidor.
+Flujo:
 
-## Seguridad
+```text
+email + contraseña
+        ↓
+Google Apps Script
+        ↓
+sesión docente temporal
+        ↓
+cátedras autorizadas
+        ↓
+course pack en Google Drive
+        ↓
+Studio
+```
 
-El ocultamiento de rutas o botones en un frontend no constituye control de acceso seguro. Un despliegue institucional debe mantener la autorización y las credenciales LLM del lado servidor.
+El frontend **no carga una lista pública de todas las cátedras**. La lista que aparece en Studio proviene del backend después de autenticar al docente.
 
-Por eso el repositorio público contiene la plataforma y ejemplos de course packs, mientras que el backend de cada cátedra debe proteger el acceso efectivo y las credenciales del proveedor LLM.
+Cada cátedra tiene un `Owner Email`. Ese docente obtiene automáticamente el rol `owner`.
+
+Los accesos adicionales se registran en la hoja `👥 Permisos` y pueden ser:
+
+- `owner`: responsable de la cátedra.
+- `editor`: puede modificar y guardar.
+- `viewer`: puede consultar sin guardar cambios.
+
+La autorización se comprueba nuevamente en el backend en cada operación de curso. No depende de que el frontend oculte botones.
+
+## Persistencia
+
+La Google Sheet administrativa mantiene:
+
+- docentes;
+- cátedras;
+- permisos;
+- auditoría.
+
+Los course packs se guardan como JSON en una carpeta privada de Google Drive accesible por el backend.
+
+La Sheet no se utiliza para almacenar corpus completos.
+
+## Control de concurrencia
+
+Cada course pack tiene una marca `Actualizado`.
+
+Cuando Studio guarda:
+
+1. envía la versión que había cargado;
+2. el backend compara esa versión con la versión actual;
+3. si cambió, rechaza el guardado;
+4. Studio debe recargar la versión remota antes de continuar.
+
+Esto evita que dos sesiones sobrescriban silenciosamente el trabajo.
+
+## Seguridad del piloto
+
+La autenticación docente del piloto usa email + contraseña con hash SHA-256 y salt por docente, sesión temporal en `CacheService` y bloqueo básico ante intentos repetidos.
+
+La implementación institucional definitiva podrá sustituir este acceso por Google Workspace/OAuth u otro proveedor de identidad.
+
+Google Apps Script permite desplegar Web Apps con distintas identidades de ejecución; para este diseño se evita depender de `Session.getActiveUser().getEmail()` porque Google indica que el email puede quedar vacío en determinados contextos, entre ellos Web Apps ejecutadas como el propietario. citeturn912173search1turn912173search0
+
+## Principio central
+
+**Una cuenta docente no implica acceso a todas las cátedras.**
+
+El acceso efectivo es:
+
+```text
+DOCENTE
+  ↓
+PERMISO
+  ↓
+CÁTEDRA
+  ↓
+COURSE PACK
+```
+
+El backend es la autoridad final para leer y modificar esos recursos.
+
