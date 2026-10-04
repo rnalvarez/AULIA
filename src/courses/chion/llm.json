@@ -1,0 +1,30 @@
+{
+  "provider": "groq",
+  "endpoint": "https://api.groq.com/openai/v1/chat/completions",
+  "models": [
+    "openai/gpt-oss-120b",
+    "qwen/qwen3.8-27b",
+    "openai/gpt-oss-20b"
+  ],
+  "generation": {
+    "temperature": 0.4,
+    "max_tokens": 800,
+    "top_p": 0.9,
+    "stream": false,
+    "modeOverrides": {
+      "consulta": {
+        "max_tokens": 650
+      },
+      "analisis": {
+        "max_tokens": 900
+      },
+      "socratico": {
+        "max_tokens": 450
+      },
+      "ocultadores": {
+        "max_tokens": 650
+      }
+    }
+  },
+  "keyPolicy": "student-provided"
+}

@@ -1,8 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Avatar from "./Avatar.jsx";
 import { retrieveFromCourse } from "../core/retrieval.js";
-import { buildPedagogicalResponse } from "../core/pedagogy.js";
-import { createInteractionEvent } from "../core/tracking.js";
 import { createLLMClient } from "../services/llm/llmClient.js";
 import { createSheetsClient } from "../services/tracking/sheetsClient.js";
 
@@ -48,7 +46,7 @@ function speakText(text, onStart, onEnd) {
   window.speechSynthesis.speak(utterance);
 }
 
-export default function ChatInterface({ course, student, onLogoutStudent }) {
+export default function ChatInterface({ course, student, apiKey, onLogoutApiKey, onLogoutStudent }) {
   const mobile = useIsMobile();
   const assistant = course.assistant || {};
   const modes = course.modes || [];
@@ -69,9 +67,14 @@ export default function ChatInterface({ course, student, onLogoutStudent }) {
   const abortRef = useRef(false);
 
   const sheets = useMemo(() => createSheetsClient(course, student), [course, student]);
+
   const llm = useMemo(() => createLLMClient({
-    endpoint: course.llm && course.llm.endpoint ? course.llm.endpoint : "",
-  }), [course]);
+    courseId: course.id,
+    apiKey,
+    endpoint: course.llm?.endpoint || "",
+    models: course.llm?.models || [],
+    generation: course.llm?.generation || {},
+  }), [course, apiKey]);
 
   useEffect(() => {
     bottomRef.current && bottomRef.current.scrollIntoView({ behavior: "smooth" });
@@ -79,8 +82,11 @@ export default function ChatInterface({ course, student, onLogoutStudent }) {
 
   useEffect(() => {
     sheets.flushPending().catch(() => {});
-    return () => { recognitionRef.current && recognitionRef.current.stop(); window.speechSynthesis && window.speechSynthesis.cancel(); };
-  }, [sheets]);
+    return () => {
+      recognitionRef.current && recognitionRef.current.stop();
+      window.speechSynthesis && window.speechSynthesis.cancel();
+    };
+  }, []);
 
   const currentModeStyle = activeMode || firstMode;
 
@@ -123,8 +129,8 @@ export default function ChatInterface({ course, student, onLogoutStudent }) {
     setServiceStatus("");
     abortRef.current = false;
 
-    const retrieved = retrieveFromCourse(course, text);
-    const history = updated.slice(1).slice(-10);
+    const retrieved = retrieveFromCourse(course, text, { modeId: activeMode.id });
+    const history = updated.slice(1).slice(-6);
 
     try {
       const result = await llm.generate({
@@ -139,18 +145,24 @@ export default function ChatInterface({ course, student, onLogoutStudent }) {
       if (!reply) throw new Error("Respuesta vacía.");
       if (!abortRef.current) {
         setMessages(current => current.slice(0, -1).concat({ role: "assistant", content: reply }));
-        const event = createInteractionEvent({
+
+        const logResult = await sheets.logInteraction({
           courseId: course.id,
-          modeId: activeMode.id,
+          sessionId: undefined,
           question: text,
           response: reply,
           retrievedIds: retrieved.map(item => item.id),
-          studentId: student && student.dni ? student.dni : null,
+          studentId: student?.dni || null,
           model: result.model || "",
+          modeId: activeMode.id,
         });
-        sheets.logInteraction(event).then(resultLog => {
-          if (!resultLog.ok && resultLog.queued) setServiceStatus("La consulta quedó en cola local para reenviarse al registro de la cátedra.");
-        }).catch(() => setServiceStatus("No se pudo enviar el registro de esta consulta."));
+
+        if (!logResult.ok && logResult.queued) {
+          setServiceStatus("La consulta se respondió, pero quedó en cola para registrarse en la cátedra.");
+        } else if (!logResult.ok && !logResult.disabled) {
+          setServiceStatus("La consulta se respondió, pero no pudo registrarse en la cátedra.");
+        }
+
         if (voiceMode && window.speechSynthesis) {
           setIsSpeaking(true);
           speakText(reply, () => setIsSpeaking(true), () => setIsSpeaking(false));
@@ -158,18 +170,26 @@ export default function ChatInterface({ course, student, onLogoutStudent }) {
       }
     } catch (error) {
       if (abortRef.current) return;
-      const fallback = buildPedagogicalResponse({ course, mode: activeMode, retrieved });
-      setMessages(current => current.slice(0, -1).concat({ role: "assistant", content: fallback }));
-      setServiceStatus("Motor IA no disponible: se utilizó la respuesta pedagógica local del course pack.");
-      const event = createInteractionEvent({
-        courseId: course.id, modeId: activeMode.id, question: text, response: fallback,
-        retrievedIds: retrieved.map(item => item.id), studentId: student && student.dni ? student.dni : null, model: "local-fallback",
-      });
-      sheets.logInteraction(event).catch(() => {});
+      const message = String(error?.message || "");
+      const sessionInvalid = /sesión.*(vencida|inválida)|sesion.*(vencida|invalida)/i.test(message);
+      if (sessionInvalid) {
+        setMessages(current => current.slice(0, -1).concat({
+          role: "assistant",
+          content: "Tu sesión ya no es válida. Volvé a ingresar para continuar.",
+        }));
+        setServiceStatus("Sesión vencida. Iniciá sesión nuevamente.");
+        setTimeout(() => onLogoutStudent(), 800);
+      } else {
+        setMessages(current => current.slice(0, -1).concat({
+          role: "assistant",
+          content: "No se pudo procesar la consulta. Intentá nuevamente en unos segundos.",
+        }));
+        setServiceStatus(message || "El servicio de IA no está disponible.");
+      }
     } finally {
       setGenerating(false);
     }
-  }, [activeMode, assistant, course, generating, input, llm, messages, sheets, student, stopAudio, voiceMode]);
+  }, [activeMode, apiKey, assistant, course, generating, input, llm, messages, sheets, stopAudio, student, voiceMode]);
 
   function handleModeChange(mode, force) {
     if (mode.id === activeMode.id && !force) return;
@@ -249,6 +269,7 @@ export default function ChatInterface({ course, student, onLogoutStudent }) {
           )}
           <button className="ch-icon-button" onClick={exportConversation} title="Exportar conversación">⬇{!mobile && <em>Exportar</em>}</button>
           <button className="ch-icon-button" onClick={reset} title="Nueva conversación">↺{!mobile && <em>Reiniciar</em>}</button>
+          <button className="ch-icon-button" onClick={() => onLogoutApiKey?.()} title="Cambiar API key">🔑</button>
           <button className="ch-icon-button" onClick={() => { if (window.confirm("¿Cerrar tu sesión?")) onLogoutStudent(); }} title="Cerrar sesión">⏻</button>
         </div>
       </header>

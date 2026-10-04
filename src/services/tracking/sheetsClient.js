@@ -29,12 +29,9 @@ export function createSheetsClient(course, student = null) {
 
     const payload = {
       action: actions.logInteraction || "log",
+      token: student?.authToken || "",
       ts: event.ts || new Date().toISOString(),
-      sid: event.sessionId || getSessionId(),
-      dni: student?.dni || "",
-      nombre: student?.nombre || "",
-      apellido: student?.apellido || "",
-      comision: student?.comision || "",
+      sid: event.sessionId || getSessionId(course.id),
       q: event.question || "",
       r: event.response || "",
       model: event.model || "",
@@ -47,7 +44,12 @@ export function createSheetsClient(course, student = null) {
       await request(payload, { read: false });
       return { ok: true };
     } catch (error) {
-      queuePendingInteraction({ ...event, studentId: student?.dni || null });
+      queuePendingInteraction({
+        ...event,
+        courseId: course.id,
+        sessionId: event.sessionId || getSessionId(course.id),
+        studentId: student?.dni || null,
+      });
       return { ok: false, error: error.message, queued: true };
     }
   }

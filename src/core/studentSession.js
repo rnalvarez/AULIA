@@ -1,14 +1,16 @@
 const SESSION_PREFIX = "aulia:student:";
-const SID_KEY = "aulia:sid";
+const TOKEN_KEY_PREFIX = "aulia:token:";
+const SID_KEY_PREFIX = "aulia:sid:";
 const PENDING_KEY = "aulia:pending";
 const VERIFY_TTL = 24 * 60 * 60 * 1000;
 
-export function getSessionId() {
+export function getSessionId(courseId = "default") {
   try {
-    let sid = sessionStorage.getItem(SID_KEY);
+    const key = SID_KEY_PREFIX + courseId;
+    let sid = sessionStorage.getItem(key);
     if (!sid) {
       sid = crypto.randomUUID();
-      sessionStorage.setItem(SID_KEY, sid);
+      sessionStorage.setItem(key, sid);
     }
     return sid;
   } catch {
@@ -18,10 +20,16 @@ export function getSessionId() {
 
 export function saveStudent(courseId, student) {
   try {
+    const authToken = student?.authToken || "";
+    const profile = { ...student, courseId };
+    delete profile.authToken;
+
     localStorage.setItem(
       SESSION_PREFIX + courseId,
-      JSON.stringify({ ...student, courseId, verifiedAt: Date.now() })
+      JSON.stringify({ ...profile, verifiedAt: Date.now() })
     );
+
+    if (authToken) sessionStorage.setItem(TOKEN_KEY_PREFIX + courseId, authToken);
   } catch {}
 }
 
@@ -29,12 +37,20 @@ export function loadStudent(courseId) {
   try {
     const raw = localStorage.getItem(SESSION_PREFIX + courseId);
     if (!raw) return null;
+
     const student = JSON.parse(raw);
     if (!student.verifiedAt || Date.now() - student.verifiedAt > VERIFY_TTL) {
       clearStudent(courseId);
       return null;
     }
-    return student;
+
+    const authToken = sessionStorage.getItem(TOKEN_KEY_PREFIX + courseId);
+    if (!authToken) {
+      clearStudent(courseId);
+      return null;
+    }
+
+    return { ...student, courseId, authToken };
   } catch {
     return null;
   }
@@ -43,7 +59,17 @@ export function loadStudent(courseId) {
 export function clearStudent(courseId) {
   try {
     localStorage.removeItem(SESSION_PREFIX + courseId);
+    sessionStorage.removeItem(TOKEN_KEY_PREFIX + courseId);
+    sessionStorage.removeItem(SID_KEY_PREFIX + courseId);
   } catch {}
+}
+
+export function getAuthToken(courseId) {
+  try {
+    return sessionStorage.getItem(TOKEN_KEY_PREFIX + courseId) || null;
+  } catch {
+    return null;
+  }
 }
 
 export function queuePendingInteraction(event) {

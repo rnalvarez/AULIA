@@ -26,6 +26,7 @@ async function request(course, payload) {
 
   const data = await response.json().catch(() => null);
   if (!data) throw new Error("El sistema de acceso devolvió una respuesta inválida.");
+  if (data.ok === false && data.error) throw new Error(data.error);
   return data;
 }
 
@@ -58,11 +59,12 @@ export async function verifyStudentPin(course, dni, pin) {
   });
 }
 
-export function saveVerifiedStudent(course, student) {
+export function saveVerifiedStudent(course, student, authToken = null) {
   const normalized = {
     ...student,
     dni: cleanId(student.dni),
     displayName: displayName(student) || cleanId(student.dni),
+    authToken: authToken || student.authToken || null,
   };
   saveStudent(course.id, normalized);
   return normalized;
