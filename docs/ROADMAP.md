@@ -32,7 +32,8 @@
 - [x] Configurar conceptos, ejemplos, modalidades y actividades.
 - [x] Configurar comisiones sin duplicar el contenido de la cátedra.
 - [x] Validar el course pack antes de exportarlo.
-- [ ] Extracción directa de PDF/DOCX.
+- [x] Extracción local de PDF/DOCX con trazabilidad de archivo y página.
+- [ ] OCR para PDFs escaneados sin capa de texto.
 - [ ] Análisis semántico asistido para proponer conceptos, relaciones y referencias.
 - [ ] Revisión pedagógica más rica antes de publicar.
 - [ ] Publicar una instancia del asistente desde STUDIO.
