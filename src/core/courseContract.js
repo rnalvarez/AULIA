@@ -33,6 +33,12 @@ export function validateCourse(course) {
   checkUniqueIds(course?.modes, "Modos", errors);
   checkUniqueIds(course?.activities, "Actividades", errors);
   checkUniqueIds(course?.examples, "Ejemplos", errors);
+  if (Array.isArray(course?.corpus)) checkUniqueIds(course.corpus, "Corpus", errors);
+  if (Array.isArray(course?.commissions)) checkUniqueIds(course.commissions, "Comisiones", errors);
+
+  for (const [index, chunk] of (course?.corpus || []).entries()) {
+    if (!chunk?.content) errors.push(`Corpus[${index}] no tiene content`);
+  }
 
   const modeIds = new Set((course?.modes || []).map((item) => item?.id).filter(Boolean));
   const conceptIds = new Set((course?.concepts || []).map((item) => item?.id).filter(Boolean));
