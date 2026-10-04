@@ -26,12 +26,13 @@
 - [ ] Roles docente / administrador / estudiante.
 
 ## Etapa 4 · Creación y publicación
-- [ ] Crear una cátedra desde STUDIO.
-- [ ] Subir bibliografía y corpus.
-- [ ] Asistir la estructuración de conceptos.
-- [ ] Configurar modalidades y actividades.
-- [ ] Validar el curso antes de publicar.
-- [ ] Publicar una instancia del asistente.
+- [x] Crear una cátedra como borrador desde STUDIO.
+- [x] Editar bibliografía y corpus; importar TXT/Markdown/JSON de corpus.
+- [x] Configurar conceptos, ejemplos, modalidades y actividades.
+- [x] Configurar comisiones sin duplicar el contenido de la cátedra.
+- [x] Validar el course pack antes de exportarlo.
+- [ ] Extracción directa de PDF/DOCX.
+- [ ] Publicar una instancia del asistente desde STUDIO.
 - [ ] Administrar versiones del course pack.
 
 ## Implementación actual
