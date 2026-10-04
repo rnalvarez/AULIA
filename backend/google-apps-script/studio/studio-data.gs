@@ -262,7 +262,7 @@ function handleStudioSaveCourse(body) {
   const expectedUpdatedAt = String(body.expectedUpdatedAt || "").trim();
   const access = studioRequireCourseAccess(session.teacher.email, courseId, true);
 
-  if (expectedUpdatedAt && access.course.updatedAt !== expectedUpdatedAt) {
+  if (access.course.updatedAt && expectedUpdatedAt !== access.course.updatedAt) {
     studioAudit(session.teacher.email, "save-course", courseId, "conflict", "versión remota modificada");
     return {
       success: false,
