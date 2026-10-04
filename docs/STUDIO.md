@@ -73,7 +73,7 @@ La IA no reemplaza la extracción: el material se procesa localmente primero. Ta
 
 Para reducir consumo, Studio puede seleccionar una representación del corpus cuando el material excede el tamaño de contexto elegido para esta primera versión. El estado de la interfaz informa cuando se analizó una selección en lugar de todo el corpus.
 
-El servicio de propuesta usa el endpoint LLM configurado en el course pack y, para la configuración de Groq actual de AULIA, prioriza los modelos definidos allí. Groq documenta Structured Outputs con JSON Schema y soporte estricto para `openai/gpt-oss-20b`, `openai/gpt-oss-120b` y `qwen/qwen3.8-27b`. citeturn257822view0
+El servicio de propuesta usa el endpoint LLM configurado en el course pack y, para la configuración de Groq actual de AULIA, prioriza los modelos definidos allí. Groq documenta Structured Outputs con JSON Schema y soporte estricto para `openai/gpt-oss-20b`, `openai/gpt-oss-120b` y `qwen/qwen3.8-27b`.
 
 ## Seguridad del piloto
 
