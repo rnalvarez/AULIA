@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Avatar from "./Avatar.jsx";
 import { retrieveFromCourse } from "../core/retrieval.js";
 import { createLLMClient } from "../services/llm/llmClient.js";
+import { createSheetsClient } from "../services/tracking/sheetsClient.js";
 
 function useIsMobile() {
   const [mobile, setMobile] = useState(() => window.innerWidth < 640);
@@ -45,7 +46,7 @@ function speakText(text, onStart, onEnd) {
   window.speechSynthesis.speak(utterance);
 }
 
-export default function ChatInterface({ course, student, onLogoutStudent }) {
+export default function ChatInterface({ course, student, apiKey, onLogoutApiKey, onLogoutStudent }) {
   const mobile = useIsMobile();
   const assistant = course.assistant || {};
   const modes = course.modes || [];
@@ -65,16 +66,22 @@ export default function ChatInterface({ course, student, onLogoutStudent }) {
   const recognitionRef = useRef(null);
   const abortRef = useRef(false);
 
+  const sheets = useMemo(() => createSheetsClient(course, student), [course, student]);
+
   const llm = useMemo(() => createLLMClient({
-    endpoint: course.tracking?.endpoint || "",
-    getToken: async () => student?.authToken || "",
-  }), [course, student]);
+    courseId: course.id,
+    apiKey,
+    endpoint: course.llm?.endpoint || "",
+    models: course.llm?.models || [],
+    generation: course.llm?.generation || {},
+  }), [course, apiKey]);
 
   useEffect(() => {
     bottomRef.current && bottomRef.current.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
   useEffect(() => {
+    sheets.flushPending().catch(() => {});
     return () => {
       recognitionRef.current && recognitionRef.current.stop();
       window.speechSynthesis && window.speechSynthesis.cancel();
@@ -138,6 +145,24 @@ export default function ChatInterface({ course, student, onLogoutStudent }) {
       if (!reply) throw new Error("Respuesta vacía.");
       if (!abortRef.current) {
         setMessages(current => current.slice(0, -1).concat({ role: "assistant", content: reply }));
+
+        const logResult = await sheets.logInteraction({
+          courseId: course.id,
+          sessionId: undefined,
+          question: text,
+          response: reply,
+          retrievedIds: retrieved.map(item => item.id),
+          studentId: student?.dni || null,
+          model: result.model || "",
+          modeId: activeMode.id,
+        });
+
+        if (!logResult.ok && logResult.queued) {
+          setServiceStatus("La consulta se respondió, pero quedó en cola para registrarse en la cátedra.");
+        } else if (!logResult.ok && !logResult.disabled) {
+          setServiceStatus("La consulta se respondió, pero no pudo registrarse en la cátedra.");
+        }
+
         if (voiceMode && window.speechSynthesis) {
           setIsSpeaking(true);
           speakText(reply, () => setIsSpeaking(true), () => setIsSpeaking(false));
@@ -164,7 +189,7 @@ export default function ChatInterface({ course, student, onLogoutStudent }) {
     } finally {
       setGenerating(false);
     }
-  }, [activeMode, assistant, course, generating, input, llm, messages, stopAudio, voiceMode]);
+  }, [activeMode, apiKey, assistant, course, generating, input, llm, messages, sheets, stopAudio, student, voiceMode]);
 
   function handleModeChange(mode, force) {
     if (mode.id === activeMode.id && !force) return;
@@ -244,6 +269,7 @@ export default function ChatInterface({ course, student, onLogoutStudent }) {
           )}
           <button className="ch-icon-button" onClick={exportConversation} title="Exportar conversación">⬇{!mobile && <em>Exportar</em>}</button>
           <button className="ch-icon-button" onClick={reset} title="Nueva conversación">↺{!mobile && <em>Reiniciar</em>}</button>
+          <button className="ch-icon-button" onClick={() => onLogoutApiKey?.()} title="Cambiar API key">🔑</button>
           <button className="ch-icon-button" onClick={() => { if (window.confirm("¿Cerrar tu sesión?")) onLogoutStudent(); }} title="Cerrar sesión">⏻</button>
         </div>
       </header>
