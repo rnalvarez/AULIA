@@ -110,7 +110,7 @@ function studioWritePack(course, pack) {
   if (String(pack.id || "") !== String(course.courseId)) throw new Error("El course pack no coincide con la cátedra.");
 
   const serialized = JSON.stringify(pack, null, 2);
-  const now = studioNow();
+  const now = new Date().toISOString();
 
   if (course.fileId) {
     DriveApp.getFileById(course.fileId).setContent(serialized);
@@ -237,7 +237,7 @@ function handleStudioCreateCourse(body) {
   const sheet = studioSheet(STUDIO_SHEETS.courses, "courses");
   const folder = studioDriveFolder();
   const file = folder.createFile(pack.id + "-course-pack.json", JSON.stringify(pack, null, 2), MimeType.PLAIN_TEXT);
-  const now = studioNow();
+  const now = new Date().toISOString();
 
   sheet.appendRow([pack.id, pack.title, session.teacher.email, "draft", file.getId(), now]);
 
