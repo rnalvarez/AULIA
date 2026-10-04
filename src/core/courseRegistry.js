@@ -38,6 +38,7 @@ function buildRegistry() {
         modes: pack["modes"],
         activities: pack["activities"],
         examples: pack["examples"],
+        commissions: pack["commissions"] || (pack["course"] || {}).commissions || [],
         tracking: pack["tracking"],
         corpus: pack["corpus"] || [],
         llm: pack["llm"] || null,
