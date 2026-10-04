@@ -22,6 +22,7 @@ export function courseToPack(course) {
     modes: cloneCourse(course.modes || []),
     activities: cloneCourse(course.activities || []),
     tracking: cloneCourse(course.tracking || {}),
+    llm: cloneCourse(course.llm || null),
   };
 }
 
@@ -39,6 +40,7 @@ export function packToCourse(pack) {
     modes: pack.modes || [],
     activities: pack.activities || [],
     tracking: pack.tracking || {},
+    llm: pack.llm || null,
   };
 
   const validation = validateCourse(course);
