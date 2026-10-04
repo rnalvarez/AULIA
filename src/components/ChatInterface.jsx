@@ -129,8 +129,8 @@ export default function ChatInterface({ course, student, apiKey, onLogoutApiKey,
     setServiceStatus("");
     abortRef.current = false;
 
-    const retrieved = retrieveFromCourse(course, text);
-    const history = updated.slice(1).slice(-10);
+    const retrieved = retrieveFromCourse(course, text, { modeId: activeMode.id });
+    const history = updated.slice(1).slice(-6);
 
     try {
       const result = await llm.generate({
