@@ -6,7 +6,7 @@ import { requestTeacherProposal } from "../services/llm/teacherProposal.js";
 import { clearStudioApiKey, isGroqApiKey, loadStudioApiKey, saveStudioApiKey } from "../utils/studioStorage.js";
 
 const STORAGE_PREFIX = "aulia:studio:";
-const VERSION = "0.3";
+const VERSION = "0.4";
 const STEPS = [
   ["overview", "01", "Cátedra"],
   ["material", "02", "Material"],
