@@ -16,13 +16,17 @@
 - [ ] Versionar corpus y configuración.
 
 ## Etapa 3 · Plataforma institucional
-- [ ] Backend/API — piloto CHIONIA preparado; falta despliegue y prueba extremo a extremo.
-- [ ] Proxy para proveedores LLM — primera capa server-side preparada para el piloto.
-- [ ] Autenticación con sesión temporal y bloqueo básico — implementada, pendiente de prueba real.
-- [ ] Padrón aislado por cátedra — preparado para una instancia backend por Sheet/cátedra.
-- [ ] Tracking aislado por curso — preparado server-side; pendiente de prueba real.
+- [x] Diseñar backend de Teacher Studio sobre Google Apps Script.
+- [x] Autenticación docente con sesión temporal y bloqueo básico.
+- [x] Autorización por cátedra con owner/editor/viewer.
+- [x] Persistencia de course packs en Google Drive.
+- [x] Control de concurrencia para evitar sobrescritura accidental.
+- [ ] Despliegue y prueba extremo a extremo del backend.
+- [ ] Padrón aislado por cátedra.
+- [ ] Tracking aislado por curso.
 - [ ] Sesiones y exportación de datos.
-- [ ] Roles docente / administrador / estudiante.
+- [ ] Identidad institucional / OAuth.
+- [ ] Rol administrador central.
 
 ## Etapa 4 · Creación y publicación
 - [x] Crear una cátedra como borrador desde STUDIO.
@@ -34,14 +38,22 @@
 - [x] Validar el course pack antes de exportarlo.
 - [x] Extracción local de PDF/DOCX con trazabilidad de archivo y página.
 - [ ] OCR para PDFs escaneados sin capa de texto.
-- [ ] Análisis semántico asistido para proponer conceptos, relaciones y referencias.
+- [x] Análisis semántico asistido para proponer conceptos, ejemplos y actividades.
 - [ ] Revisión pedagógica más rica antes de publicar.
 - [ ] Publicar una instancia del asistente desde STUDIO.
 - [ ] Administrar versiones del course pack.
 
 ## Implementación actual
 
-Studio v0.2 reorganiza la autoría alrededor de la tarea docente y deja la estructura técnica en una capa avanzada. El backend piloto está documentado en `docs/BACKEND_PILOT.md`.
+Studio tiene autenticación docente y autorización por cátedra preparadas para un backend de Google Apps Script.
+
+El backend de Teacher Studio utiliza una Google Sheet administrativa como panel de control y Google Drive para persistir los course packs. El frontend no recibe cátedras no autorizadas.
+
+El endpoint del backend todavía debe configurarse en:
+
+`src/core/studioConfig.js`
+
+y luego desplegarse como Web App.
 
 ## Criterio de arquitectura
 
