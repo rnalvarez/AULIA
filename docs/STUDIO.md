@@ -7,20 +7,24 @@ AULIA Studio es la superficie de autoría de la plataforma. Está separada del a
 La interfaz está organizada alrededor de la tarea docente, no del esquema interno de datos:
 
 ```text
+AUTENTICACIÓN DOCENTE
+        ↓
+CÁTEDRAS AUTORIZADAS
+        ↓
 CÁTEDRA
-  ↓
+        ↓
 MATERIAL
-  ↓
+        ↓
 PROPUESTA PEDAGÓGICA
-  ↓
+        ↓
 INTERACCIÓN
-  ↓
+        ↓
 COMISIONES
-  ↓
-REVISIÓN / EXPORTACIÓN
+        ↓
+REVISIÓN / GUARDADO
 ```
 
-La idea central es que el docente **carga material primero**. AULIA propone una estructura pedagógica y el docente la revisa, edita o elimina antes de usarla.
+La idea central es que el docente **solo pueda entrar a las cátedras que tiene asignadas**. Cada cátedra tiene un responsable y permisos opcionales para colaboradores.
 
 ## Acceso
 
@@ -28,37 +32,65 @@ En GitHub Pages se sirve como:
 
 `/AULIA/studio.html`
 
-También acepta `?course=chion` o `?course=montaje`.
+Studio ya no construye su lista de cátedras a partir de los course packs públicos del frontend. La lista se obtiene del backend de Teacher Studio después de autenticar al docente.
 
-## Qué hace Studio v0.3
+La URL del backend se configura en:
 
-- Define identidad de cátedra y la identidad visible del asistente.
-- Registra bibliografía sin exigir la carga manual de conceptos.
-- Importa PDF, DOCX, TXT, Markdown y JSON como material de trabajo.
-- Divide material de texto en fragmentos reutilizables y los incorpora al corpus.
-- Acepta course packs JSON completos para importar/exportar.
-- Genera una **propuesta rápida local** usando títulos y capítulos del corpus existente; sirve como fallback y no necesita conexión de IA.
-- Genera una **propuesta semántica asistida por IA** que puede proponer conceptos, ejemplos y actividades a partir del material.
-- La propuesta semántica usa una API key propia del docente en el navegador. La clave se mantiene en `sessionStorage`, no se envía al backend y no forma parte del course pack.
-- La salida del LLM se recibe como JSON estructurado mediante Structured Outputs cuando el modelo lo soporta y se incorpora como elementos marcados como sugeridos para revisión.
-- Configura modalidades de interacción desde presets pedagógicos, escondiendo la estrategia CORE en Avanzado.
-- Configura actividades y comisiones.
-- Guarda borradores del course pack en `localStorage`.
-- Valida referencias antes de exportar.
-- Mantiene separadas las claves del docente y de cada estudiante.
+`src/core/studioConfig.js`
 
-## Cómo funciona la propuesta con IA
+o mediante `VITE_AULIA_STUDIO_API` durante el build.
 
-El proceso es:
+## Roles
+
+- `owner`: docente responsable de la cátedra.
+- `editor`: puede editar y guardar el course pack.
+- `viewer`: consulta en modo solo lectura.
+
+El backend vuelve a comprobar el permiso en cada lectura y guardado. El frontend no es la autoridad.
+
+## Persistencia
+
+El backend de Teacher Studio utiliza:
+
+- Google Sheet administrativa: docentes, cátedras, permisos y auditoría.
+- Google Drive privado: course packs JSON.
+
+Esto evita almacenar grandes corpus dentro de celdas de la Sheet y mantiene separados contenido y control administrativo.
+
+## Control de concurrencia
+
+Cada cátedra tiene una marca de versión temporal. Studio envía la versión que cargó al intentar guardar.
+
+Si otro editor modificó la cátedra, el backend rechaza el guardado y Studio solicita recargar la versión remota. De esta manera no se sobrescriben cambios silenciosamente.
+
+## Qué hace Studio
+
+- Define identidad de cátedra y asistente.
+- Importa PDF, DOCX, TXT, Markdown y JSON como material.
+- Mantiene trazabilidad de archivo y página cuando corresponde.
+- Genera una propuesta rápida local cuando no se dispone de IA.
+- Genera una propuesta semántica asistida por IA usando una API key propia del docente en el navegador.
+- Propone conceptos, ejemplos y actividades.
+- Permite revisar, editar o eliminar cada propuesta antes de guardar.
+- Configura modalidades de interacción, actividades y comisiones.
+- Valida el course pack.
+- Guarda el course pack en el backend cuando el docente tiene permiso de escritura.
+- Exporta una copia JSON cuando hace falta.
+
+## IA docente
+
+La IA no reemplaza la extracción: el material se procesa localmente primero.
+
+El flujo es:
 
 ```text
 PDF / DOCX / TXT / MD / JSON
     ↓
 extracción local
     ↓
-fragmentos del corpus
+fragmentos
     ↓
-selección representativa si el material es muy grande
+selección representativa si el corpus es grande
     ↓
 LLM del docente
     ↓
@@ -69,24 +101,21 @@ revisión docente
 course pack
 ```
 
-La IA no reemplaza la extracción: el material se procesa localmente primero. Tampoco publica automáticamente la propuesta.
+La clave de la IA docente se mantiene en `sessionStorage` y no forma parte del course pack.
 
-Para reducir consumo, Studio puede seleccionar una representación del corpus cuando el material excede el tamaño de contexto elegido para esta primera versión. El estado de la interfaz informa cuando se analizó una selección en lugar de todo el corpus.
+La IA estudiantil sigue siendo independiente: cada alumno introduce su propia API key en la aplicación de estudiante.
 
-El servicio de propuesta usa el endpoint LLM configurado en el course pack y, para la configuración de Groq actual de AULIA, prioriza los modelos definidos allí. Groq documenta Structured Outputs con JSON Schema y soporte estricto para `openai/gpt-oss-20b`, `openai/gpt-oss-120b` y `qwen/qwen3.8-27b`.
+## Estado actual
 
-## Seguridad del piloto
+El código del frontend y del backend del modelo multi-docente está implementado.
 
-La clave del docente se utiliza directamente desde el navegador para la operación de Studio. No se guarda en el course pack ni en Google Sheets. La clave del estudiante continúa siendo independiente y se utiliza exclusivamente desde la aplicación de estudiante.
+Para ponerlo operativo todavía hay que:
 
-Este modelo sigue siendo apropiado para el piloto de AULIA, donde cada usuario aporta su propia clave de proveedor.
+1. crear una Google Sheet administrativa;
+2. crear/desplegar el Apps Script de `backend/google-apps-script/studio/`;
+3. ejecutar `initializeStudio()`;
+4. crear al menos un docente con `provisionTeacher(...)`;
+5. configurar el endpoint en `src/core/studioConfig.js`;
+6. volver a desplegar GitHub Pages.
 
-## Qué todavía no hace
-
-- OCR para PDFs escaneados sin capa de texto.
-- Autenticación institucional de docentes.
-- Publicación remota del course pack.
-- Versionado institucional.
-- Revisión semántica multi-etapa o comparación entre versiones de una propuesta.
-
-La separación entre CORE, COURSE PACK, ACCESS y TRACKING se mantiene.
+La implementación institucional definitiva podrá sustituir la autenticación por email + contraseña por Google Workspace/OAuth y agregar un rol administrador central.
