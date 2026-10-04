@@ -21,23 +21,26 @@
 - [ ] Autenticación con sesión temporal y bloqueo básico — implementada, pendiente de prueba real.
 - [ ] Padrón aislado por cátedra — preparado para una instancia backend por Sheet/cátedra.
 - [ ] Tracking aislado por curso — preparado server-side; pendiente de prueba real.
-
 - [ ] Sesiones y exportación de datos.
 - [ ] Roles docente / administrador / estudiante.
 
 ## Etapa 4 · Creación y publicación
 - [x] Crear una cátedra como borrador desde STUDIO.
-- [x] Editar bibliografía y corpus; importar TXT/Markdown/JSON de corpus.
+- [x] Rediseñar STUDIO como flujo docente: Cátedra → Material → Propuesta → Interacción → Comisiones.
+- [x] Editar bibliografía y corpus; importar TXT/Markdown/JSON.
+- [x] Generar una primera propuesta automática de unidades a partir del corpus, para revisión docente.
 - [x] Configurar conceptos, ejemplos, modalidades y actividades.
 - [x] Configurar comisiones sin duplicar el contenido de la cátedra.
 - [x] Validar el course pack antes de exportarlo.
 - [ ] Extracción directa de PDF/DOCX.
+- [ ] Análisis semántico asistido para proponer conceptos, relaciones y referencias.
+- [ ] Revisión pedagógica más rica antes de publicar.
 - [ ] Publicar una instancia del asistente desde STUDIO.
 - [ ] Administrar versiones del course pack.
 
 ## Implementación actual
 
-El backend piloto está documentado en `docs/BACKEND_PILOT.md`. Antes de marcar la Etapa 3 como terminada hay que desplegarlo contra una copia de la Sheet de CHIONIA y ejecutar las pruebas del circuito completo.
+Studio v0.2 reorganiza la autoría alrededor de la tarea docente y deja la estructura técnica en una capa avanzada. El backend piloto está documentado en `docs/BACKEND_PILOT.md`.
 
 ## Criterio de arquitectura
 
