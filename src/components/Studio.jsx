@@ -123,9 +123,9 @@ export default function Studio({ course, onCourseChanged }) {
         ...current,
         corpus: [...(current.corpus || []), ...collected],
         bibliography: mergeImportedBibliography(current.bibliography || [], bibliography),
-      }), \`\${collected.length} fragmentos incorporados desde \${files.length} documento\${files.length === 1 ? "" : "s"}.\` +
-        (pages ? \` · \${pages} páginas.\` : "") +
-        (warnings ? \` · \${warnings} aviso(s) de conversión.\` : ""));
+      }), `${collected.length} fragmentos incorporados desde ${files.length} documento${files.length === 1 ? "" : "s"}.` +
+        (pages ? ` · ${pages} páginas.` : "") +
+        (warnings ? ` · ${warnings} aviso(s) de conversión.` : ""));
     } catch (err) {
       setStatus(err.message);
     } finally {
