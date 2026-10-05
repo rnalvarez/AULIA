@@ -22,7 +22,7 @@ El cliente nunca acepta un acceso libre cuando el endpoint falla.
 
 ## Tracking
 
-Cada interacción se envía al endpoint de la cátedra con courseId, sesión, identidad del alumno, modalidad, actividad, modelo, pregunta, respuesta y unidades recuperadas.
+Cada interacción se envía al endpoint de la cátedra con courseId, sesión, identidad del alumno, modalidad, actividad, modelo, pregunta, respuesta, unidades recuperadas, conceptos tratados y nivel de posible confusión. Los conceptos válidos se resuelven contra la versión publicada del Course Pack, junto con sus referencias bibliográficas.
 
 Si el envío falla, la interacción se guarda temporalmente en una cola local para reintento.
 
@@ -136,3 +136,28 @@ COURSE PACK
 
 El backend es la autoridad final para leer y modificar esos recursos.
 
+
+
+## Analítica docente de la cátedra
+
+La Sheet de alumnos no es solo un padrón: también funciona como registro y lectura pedagógica.
+
+Cada cátedra publicada mantiene:
+
+- `📋 Padrón`
+- `📝 Interacciones`
+- `👤 Por alumno`
+- `🧠 Conceptos`
+- `📊 Resumen`
+- una pestaña por cada comisión declarada, por ejemplo `🟦 Comisión A`, `🟩 Comisión B`
+
+Las hojas derivadas se calculan a partir del padrón y de las interacciones. El docente no necesita mantener contadores manualmente.
+
+Los conceptos pertenecen al Course Pack de la cátedra y pueden estar vinculados a fragmentos del corpus y a referencias de la bibliografía mediante `sourceCorpusIds` y `sourceBibliographyIds`. Pueden incluir `confusionCriteria` generados a partir del material y revisados por el docente.
+
+La clasificación de posible confusión utiliza una escala 0–2 y es un indicador pedagógico, no un diagnóstico:
+- 0: sin indicio;
+- 1: posible dificultad o comprensión incompleta;
+- 2: confusión clara o reiterada.
+
+`📊 Resumen` permite leer la participación global, comparar comisiones, observar modos de interacción, identificar conceptos más trabajados y detectar conceptos con mayor concentración de posibles confusiones.
