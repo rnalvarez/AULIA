@@ -495,7 +495,9 @@ function handleStudioPublishCourse(body) {
   const publishedAtCol = studioColumn(headers, ["Publicado"]);
   const slugCol = studioColumn(headers, ["Public Slug"]);
 
-  const publicSlug = access.course.publicSlug || studioUniquePublicSlug(pack.title, courseId);
+  const publicSlug = access.course.publishedFileId
+    ? (access.course.publicSlug || studioUniquePublicSlug(pack.title, courseId))
+    : studioUniquePublicSlug(pack.title, courseId);
   access.course.sheet.getRange(access.course.rowIndex, statusCol + 1).setValue("published");
   access.course.sheet.getRange(access.course.rowIndex, publishedFileCol + 1).setValue(publishedFileId);
   access.course.sheet.getRange(access.course.rowIndex, publishedAtCol + 1).setValue(new Date().toISOString());
