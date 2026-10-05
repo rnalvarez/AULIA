@@ -40,6 +40,65 @@ function studioJson(payload) {
 // Función de entrada para la configuración inicial del backend.
 // Puede ejecutarse directamente desde el selector de funciones de Apps Script.
 function setupStudio() {
+  // Inicializa la estructura base y luego aplica las migraciones de columnas.
   initializeStudio();
-  return "AULIA Studio inicializado correctamente.";
+
+  const ss = studioSpreadsheet();
+  const migrations = {
+    "📚 Cátedras": [
+      "Course ID",
+      "Título",
+      "Owner Email",
+      "Estado",
+      "Drive File ID",
+      "Public Slug",
+      "Published Drive File ID",
+      "Actualizado",
+      "Publicado",
+    ],
+    "👩‍🏫 Docentes": [
+      "Email",
+      "Nombre",
+      "Password Hash",
+      "Salt",
+      "Activo",
+      "Creado",
+      "Último acceso",
+    ],
+  };
+
+  Object.entries(migrations).forEach(([sheetName, expectedHeaders]) => {
+    let sheet = ss.getSheetByName(sheetName);
+    if (!sheet) sheet = ss.insertSheet(sheetName);
+
+    const lastColumn = Math.max(sheet.getLastColumn(), 1);
+    const currentHeaders = sheet
+      .getRange(1, 1, 1, lastColumn)
+      .getValues()[0]
+      .map(value => String(value || "").trim());
+
+    const normalized = new Set(currentHeaders.map(value => value.toLowerCase()));
+    const missing = expectedHeaders.filter(header => !normalized.has(header.toLowerCase()));
+
+    if (missing.length) {
+      sheet
+        .getRange(1, lastColumn + 1, 1, missing.length)
+        .setValues([missing]);
+    }
+
+    sheet.setFrozenRows(1);
+    try {
+      sheet.getRange(1, 1, 1, sheet.getLastColumn()).setFontWeight("bold");
+    } catch (e) {}
+
+    if (sheetName === "👩‍🏫 Docentes" && sheet.getMaxColumns() >= 4) {
+      try {
+        sheet.hideColumns(3, 2);
+      } catch (e) {}
+    }
+  });
+
+  console.log("✓ Migración de estructura Studio completada.");
+  console.log("Sheet: " + ss.getId());
+  return "AULIA Studio inicializado y estructura actualizada.";
 }
