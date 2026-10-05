@@ -603,14 +603,14 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
           </div>
 
           {courseMeta?.status === "published" && courseMeta?.publicUrl && (
-            <div className="studio-wf-ai-ready">
+            <div className="studio-wf-ai-ready studio-wf-publish-status">
               <span>✓ Versión publicada disponible</span>
               <small>{courseMeta.publicUrl}</small>
             </div>
           )}
 
           {courseMeta?.studentSheetUrl && (
-            <div className="studio-wf-ai-ready">
+            <div className="studio-wf-ai-ready studio-wf-publish-status">
               <span>✓ Padrón de alumnos vinculado</span>
               <small>La Sheet de alumnos es independiente de la administración de AULIA.</small>
               <button
