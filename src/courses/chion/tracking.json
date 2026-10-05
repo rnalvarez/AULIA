@@ -4,7 +4,7 @@
   "identitySource": "padron",
   "interactionSource": "interactions",
   "sessionSource": "sessions",
-  "endpoint": "",
+  "endpoint": "https://script.google.com/macros/s/AKfycbx5UeaunyNjnSYI3C-QPcoHI0279AYD1gutzxcRIXl5j_5ITB9jPlrWFpzVK2Zfif-v/exec",
   "actions": {
     "check": "check",
     "register": "registrar",
