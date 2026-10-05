@@ -102,3 +102,13 @@ export async function saveTeacherCourse(token, courseId, course, expectedUpdated
     course,
   });
 }
+
+export async function publishTeacherCourse(token, courseId, course, expectedUpdatedAt = "") {
+  return request({
+    action: "publish-course",
+    token,
+    courseId,
+    expectedUpdatedAt,
+    course,
+  });
+}
