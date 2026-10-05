@@ -51,14 +51,34 @@ function mergeTeacherProposal(course, proposal) {
   for (const item of proposal.concepts || []) {
     const title = String(item?.title || "").trim();
     const key = slug(title);
-    if (!title || conceptByKey.has(key)) {
+    if (!title) {
       skippedConcepts += 1;
       continue;
     }
+
+    const existing = conceptByKey.get(key);
     const sourceCorpusIds = (item.sourceIds || []).filter((id) => corpusIds.has(id));
     const bibliographyIds = new Set((course.bibliography || []).map((ref) => ref?.id).filter(Boolean));
     const sourceBibliographyIds = (item.sourceBibliographyIds || [])
       .filter((id) => bibliographyIds.has(id));
+
+    if (existing) {
+      const enriched = {
+        ...existing,
+        sourceCorpusIds: existing.sourceCorpusIds?.length ? existing.sourceCorpusIds : sourceCorpusIds,
+        sourceBibliographyIds: existing.sourceBibliographyIds?.length
+          ? existing.sourceBibliographyIds
+          : sourceBibliographyIds.slice(0, 8),
+        confusionCriteria: existing.confusionCriteria?.length
+          ? existing.confusionCriteria
+          : (item.confusionCriteria || []).filter(Boolean).slice(0, 5),
+      };
+      conceptByKey.set(key, enriched);
+      const index = concepts.findIndex(concept => concept.id === existing.id);
+      if (index >= 0) concepts[index] = enriched;
+      skippedConcepts += 1;
+      continue;
+    }
     const concept = {
       id: uniqueId(key || "concepto", [...concepts, ...newConcepts]),
       title,
