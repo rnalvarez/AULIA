@@ -1321,3 +1321,64 @@ button { border: 0; }
   line-height: 1.55;
 }
 .studio-wf-concept-criteria li { margin: 3px 0; }
+
+
+/* Cátedras del panel lateral: selección + eliminación */
+.studio-course-item {
+  position: relative;
+  display: flex;
+  align-items: stretch;
+  gap: 2px;
+  border: 1px solid transparent;
+  border-radius: 10px;
+}
+
+.studio-course-item.active {
+  border-color: #5f381e;
+  background: #1c0e04;
+}
+
+.studio-course-item .studio-course-select {
+  flex: 1;
+  min-width: 0;
+  width: auto;
+  border: 0;
+  border-radius: 9px;
+}
+
+.studio-course-item .studio-course-delete {
+  width: 28px;
+  min-width: 28px;
+  align-self: center;
+  margin-right: 4px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  color: #8d665e;
+  background: transparent;
+  font-size: 18px;
+  line-height: 24px;
+  cursor: pointer;
+}
+
+.studio-course-item .studio-course-delete:hover {
+  border-color: #6f3d36;
+  color: #efaba0;
+  background: #2a1917;
+}
+
+.studio-course-item .studio-course-delete:focus-visible {
+  outline: 2px solid #b7753b;
+  outline-offset: 1px;
+}
+
+@media (max-width: 639px) {
+  .studio-course-item {
+    min-width: 190px;
+  }
+
+  .studio-course-item .studio-course-delete {
+    width: 26px;
+    min-width: 26px;
+  }
+}
