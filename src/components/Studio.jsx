@@ -609,6 +609,21 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
             </div>
           )}
 
+          {courseMeta?.studentSheetUrl && (
+            <div className="studio-wf-ai-ready">
+              <span>✓ Padrón de alumnos vinculado</span>
+              <small>La Sheet de alumnos es independiente de la administración de AULIA.</small>
+              <button
+                className="ghost"
+                type="button"
+                onClick={() => window.open(courseMeta.studentSheetUrl, "_blank", "noopener,noreferrer")}
+                disabled={busy}
+              >
+                Abrir padrón de alumnos ↗
+              </button>
+            </div>
+          )}
+
           {courseMeta?.status === "changes-pending" && (
             <div className="studio-wf-ai-ready">
               <span>• Cambios guardados sin publicar</span>
