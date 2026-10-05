@@ -173,7 +173,7 @@ function Row({ title, meta, onRemove, children }) {
   return <article className="studio-wf-row"><div className="studio-wf-row-main"><div className="studio-wf-row-title"><strong>{title || "Sin título"}</strong>{meta && <span>{meta}</span>}</div>{children}</div><button className="studio-wf-danger" type="button" onClick={onRemove}>Eliminar</button></article>;
 }
 
-export default function Studio({ course, courseMeta = null, canEdit = true, onCourseChanged, onSaveCourse, onPublishCourse, onReloadCourse }) {
+export default function Studio({ course, courseMeta = null, canEdit = true, onCourseChanged, onSaveCourse, onPublishCourse, onDeleteCourse, onReloadCourse }) {
   const storageKey = useMemo(() => STORAGE_PREFIX + course.id, [course.id]);
   const [draft, setDraft] = useState(() => cloneCourse(course));
   const [step, setStep] = useState("overview");
@@ -299,6 +299,30 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
       setBusy(false);
     }
   }
+  async function deleteCourse() {
+    if (!canEdit || busy || courseMeta?.role !== "owner" || courseMeta?.status !== "draft" || !onDeleteCourse) return;
+
+    const title = String(draft.title || "Nueva cátedra").trim();
+    const confirmed = window.confirm(
+      'Vas a eliminar la cátedra "' + title +
+      '". Esta acción quitará el borrador de Studio y enviará su Course Pack a la papelera de Drive.\n\n' +
+      "Las cátedras ya publicadas no pueden eliminarse desde esta opción.\n\n¿Continuar?"
+    );
+
+    if (!confirmed) return;
+
+    setBusy(true);
+    setStatus("Eliminando cátedra…");
+    try {
+      localStorage.removeItem(storageKey);
+      await onDeleteCourse();
+    } catch (err) {
+      setStatus(err.message || "No se pudo eliminar la cátedra.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   function restore() {
     const fresh = cloneCourse(course);
     localStorage.removeItem(storageKey); setDraft(fresh); onCourseChanged?.(fresh);
@@ -684,6 +708,11 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
             <button className="primary" type="button" onClick={publish} disabled={!canEdit || courseMeta?.role !== "owner" || busy}>
               {courseMeta?.status === "published" ? "Publicar nueva versión" : "Publicar cátedra"}
             </button>
+            {courseMeta?.status === "draft" && courseMeta?.role === "owner" && (
+              <button className="studio-wf-danger" type="button" onClick={deleteCourse} disabled={busy}>
+                Eliminar cátedra
+              </button>
+            )}
           </div>
 
           {courseMeta?.role !== "owner" && canEdit && (
