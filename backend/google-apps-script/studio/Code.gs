@@ -53,6 +53,8 @@ function setupStudio() {
       "Drive File ID",
       "Public Slug",
       "Published Drive File ID",
+      "Student Sheet ID",
+      "Student Sheet URL",
       "Actualizado",
       "Publicado",
     ],
