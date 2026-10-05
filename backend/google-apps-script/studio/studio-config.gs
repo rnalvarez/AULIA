@@ -2,6 +2,9 @@
 const STUDIO_BACKEND_VERSION = "0.1.0";
 const STUDIO_TIMEZONE = "America/Argentina/Buenos_Aires";
 const STUDIO_SESSION_TTL_SECONDS = 6 * 60 * 60;
+const STUDIO_STUDENT_BACKEND_ENDPOINT = String(
+  PropertiesService.getScriptProperties().getProperty("STUDENT_BACKEND_ENDPOINT") || ""
+).trim();
 const STUDIO_LOGIN_MAX_FAILURES = 5;
 const STUDIO_LOGIN_WINDOW_SECONDS = 10 * 60;
 const STUDIO_LOGIN_LOCK_SECONDS = 15 * 60;
@@ -15,7 +18,7 @@ const STUDIO_SHEETS = {
 
 const STUDIO_HEADERS = {
   teachers: ["Email", "Nombre", "Password Hash", "Salt", "Activo", "Creado", "Último acceso"],
-  courses: ["Course ID", "Título", "Owner Email", "Estado", "Drive File ID", "Public Slug", "Published Drive File ID", "Actualizado", "Publicado"],
+  courses: ["Course ID", "Título", "Owner Email", "Estado", "Drive File ID", "Public Slug", "Published Drive File ID", "Student Sheet ID", "Student Sheet URL", "Actualizado", "Publicado"],
   permissions: ["Email", "Course ID", "Rol", "Activo", "Creado", "Actualizado"],
   audit: ["Fecha", "Email", "Acción", "Course ID", "Resultado", "Detalle"],
 };
