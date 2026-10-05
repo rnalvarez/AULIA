@@ -1290,3 +1290,13 @@ button { border: 0; }
   .studio-no-course { margin:55px auto; }
   .studio-no-course h1 { font-size:24px; }
 }
+
+/* Estados principales de publicación */
+.studio-wf-publish-status span {
+  font-size: 13px;
+  font-weight: 700;
+}
+.studio-wf-publish-status small {
+  font-size: 10px;
+  line-height: 1.45;
+}
