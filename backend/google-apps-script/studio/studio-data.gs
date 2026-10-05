@@ -1,5 +1,73 @@
 // AULIA — Teacher Studio courses, authorization and publication
 
+function studioCourseSheetIds(course) {
+  const headers = course.sheet.getRange(1, 1, 1, course.sheet.getLastColumn()).getValues()[0];
+  return {
+    studentSheetId: studioColumn(headers, ["Student Sheet ID"]),
+    studentSheetUrl: studioColumn(headers, ["Student Sheet URL"]),
+  };
+}
+
+function studioInitializeStudentWorkbook(title) {
+  const ss = SpreadsheetApp.create("AULIA · " + String(title || "Cátedra") + " · Alumnos");
+  const configs = {
+    "📋 Padrón": ["DNI", "Apellido", "Nombre", "Comisión", "Activo (Sí/No)", "PIN Hash (no tocar)", "Fecha registro PIN"],
+    "📝 Interacciones": ["Fecha", "Hora", "SID", "DNI", "Nombre y Apellido", "Comisión", "Modo", "Pregunta del alumno", "Respuesta del asistente", "Modelo"],
+    "👤 Por alumno": ["ID/DNI", "Nombre y Apellido", "Comisión", "Consultas", "Primera consulta", "Última consulta"],
+    "📊 Resumen": ["Métrica", "Valor"],
+  };
+
+  const first = ss.getSheets()[0];
+  first.setName("📋 Padrón");
+
+  Object.entries(configs).forEach(([name, headers]) => {
+    const sheet = name === "📋 Padrón"
+      ? first
+      : ss.insertSheet(name);
+
+    sheet.clearContents();
+    sheet.getRange(1, 1, 1, headers.length).setValues([headers]);
+    sheet.setFrozenRows(1);
+    try {
+      sheet.getRange(1, 1, 1, headers.length).setFontWeight("bold");
+    } catch (e) {}
+  });
+
+  first.setColumnWidths(1, 7, 150);
+  return {
+    id: ss.getId(),
+    url: ss.getUrl(),
+  };
+}
+
+function studioEnsureStudentWorkbook(course) {
+  const ids = studioCourseSheetIds(course);
+  if (ids.studentSheetId >= 0) {
+    const existingId = studioCell(
+      course.sheet.getRange(course.rowIndex, 1, 1, course.sheet.getLastColumn()).getValues()[0],
+      ids.studentSheetId
+    );
+    if (existingId) {
+      return {
+        id: existingId,
+        url: ids.studentSheetUrl >= 0
+          ? studioCell(
+              course.sheet.getRange(course.rowIndex, 1, 1, course.sheet.getLastColumn()).getValues()[0],
+              ids.studentSheetUrl
+            )
+          : "https://docs.google.com/spreadsheets/d/" + existingId + "/edit",
+      };
+    }
+  }
+
+  const workbook = studioInitializeStudentWorkbook(course.title);
+  course.sheet.getRange(course.rowIndex, ids.studentSheetId + 1).setValue(workbook.id);
+  if (ids.studentSheetUrl >= 0) {
+    course.sheet.getRange(course.rowIndex, ids.studentSheetUrl + 1).setValue(workbook.url);
+  }
+  return workbook;
+}
+
 function studioFindCourseRow(courseId) {
   const target = String(courseId || "").trim();
   if (!target) return null;
@@ -16,6 +84,8 @@ function studioFindCourseRow(courseId) {
   const publishedFileCol = studioColumn(headers, ["Published Drive File ID"]);
   const updatedCol = studioColumn(headers, ["Actualizado"]);
   const publishedAtCol = studioColumn(headers, ["Publicado"]);
+  const studentSheetIdCol = studioColumn(headers, ["Student Sheet ID"]);
+  const studentSheetUrlCol = studioColumn(headers, ["Student Sheet URL"]);
 
   for (let i = 1; i < values.length; i += 1) {
     if (studioCell(values[i], idCol) !== target) continue;
@@ -31,6 +101,8 @@ function studioFindCourseRow(courseId) {
       publishedFileId: studioCell(values[i], publishedFileCol),
       updatedAt: studioCell(values[i], updatedCol),
       publishedAt: studioCell(values[i], publishedAtCol),
+      studentSheetId: studioCell(values[i], studentSheetIdCol),
+      studentSheetUrl: studioCell(values[i], studentSheetUrlCol),
     };
   }
   return null;
@@ -255,8 +327,8 @@ function studioValidatePublishPack(course, pack) {
   if (!Array.isArray(pack?.llm?.models) || !pack.llm.models.length) {
     errors.push("Falta configurar al menos un modelo de IA.");
   }
-  if (!String(pack?.tracking?.endpoint || "").trim()) {
-    errors.push("Falta configurar el endpoint de acceso/seguimiento de la cátedra.");
+  if (!String(STUDIO_STUDENT_BACKEND_ENDPOINT || "").trim()) {
+    errors.push("Falta configurar STUDENT_BACKEND_ENDPOINT en las propiedades del backend de Studio.");
   }
 
   return errors;
@@ -269,6 +341,8 @@ function studioMeta(course, role) {
     status: course.status,
     role,
     publicSlug: course.publicSlug,
+    studentSheetId: course.studentSheetId,
+    studentSheetUrl: course.studentSheetUrl,
     updatedAt: course.updatedAt,
     publishedAt: course.publishedAt,
     publicUrl: course.publicSlug
@@ -333,7 +407,7 @@ function blankStudioCourse(owner) {
       identitySource: "padron",
       interactionSource: "interactions",
       sessionSource: "sessions",
-      endpoint: "",
+      endpoint: STUDIO_STUDENT_BACKEND_ENDPOINT,
       actions: {
         check: "check",
         register: "registrar",
@@ -461,7 +535,12 @@ function handleStudioPublishCourse(body) {
     };
   }
 
-  const pack = body.course;
+  const pack = JSON.parse(JSON.stringify(body.course || {}));
+  pack.tracking = {
+    ...(pack.tracking || {}),
+    endpoint: STUDIO_STUDENT_BACKEND_ENDPOINT,
+  };
+
   const errors = studioValidatePublishPack(access.course, pack);
   if (errors.length) {
     studioAudit(session.teacher.email, "publish-course", courseId, "invalid", errors.join(" | "));
@@ -471,6 +550,9 @@ function handleStudioPublishCourse(body) {
       msg: "La cátedra no puede publicarse todavía. Revisá los requisitos indicados.",
     };
   }
+
+  // La primera publicación provisiona automáticamente la Sheet de alumnos.
+  const studentWorkbook = studioEnsureStudentWorkbook(access.course);
 
   // Se guarda primero como borrador para asegurar que Studio y la versión publicada
   // parten exactamente del mismo contenido.
@@ -491,6 +573,8 @@ function handleStudioPublishCourse(body) {
 
   const headers = access.course.sheet.getRange(1, 1, 1, access.course.sheet.getLastColumn()).getValues()[0];
   const statusCol = studioColumn(headers, ["Estado"]);
+  const studentSheetIdCol = studioColumn(headers, ["Student Sheet ID"]);
+  const studentSheetUrlCol = studioColumn(headers, ["Student Sheet URL"]);
   const publishedFileCol = studioColumn(headers, ["Published Drive File ID"]);
   const publishedAtCol = studioColumn(headers, ["Publicado"]);
   const slugCol = studioColumn(headers, ["Public Slug"]);
@@ -500,6 +584,8 @@ function handleStudioPublishCourse(body) {
     : studioUniquePublicSlug(pack.title, courseId);
   access.course.sheet.getRange(access.course.rowIndex, statusCol + 1).setValue("published");
   access.course.sheet.getRange(access.course.rowIndex, publishedFileCol + 1).setValue(publishedFileId);
+  access.course.sheet.getRange(access.course.rowIndex, studentSheetIdCol + 1).setValue(studentWorkbook.id);
+  access.course.sheet.getRange(access.course.rowIndex, studentSheetUrlCol + 1).setValue(studentWorkbook.url);
   access.course.sheet.getRange(access.course.rowIndex, publishedAtCol + 1).setValue(new Date().toISOString());
   access.course.sheet.getRange(access.course.rowIndex, slugCol + 1).setValue(publicSlug);
 
