@@ -490,7 +490,64 @@ function analysisHeaders() {
   ];
 }
 
+function interactionHeaders() {
+  return [
+    "Fecha", "Hora", "SID", "DNI", "Nombre y Apellido", "Comisión", "Modo",
+    "Concepto IDs", "Conceptos", "Fuentes bibliográficas", "Confusión",
+    "Nivel confusión", "Pregunta del alumno", "Respuesta del asistente", "Modelo"
+  ];
+}
+
+function sameHeaderSet(current, expected) {
+  if (current.length !== expected.length) return false;
+  return expected.every((value, index) =>
+    normalizeText(current[index]) === normalizeText(value)
+  );
+}
+
+function migrateInteractionSheet(ss) {
+  const sheet = ss.getSheetByName("📝 Interacciones");
+  const headers = interactionHeaders();
+
+  if (!sheet) {
+    studentSheet(ss, "📝 Interacciones", headers);
+    return;
+  }
+
+  const lastColumn = Math.max(sheet.getLastColumn(), 1);
+  const currentHeaders = sheet.getRange(1, 1, 1, lastColumn).getValues()[0].map(value => String(value || "").trim());
+  if (sameHeaderSet(currentHeaders.slice(0, headers.length), headers)) return;
+
+  const values = sheet.getDataRange().getValues();
+  const oldHeaders = values[0] || [];
+  const col = name => studentColumn(oldHeaders, [name]);
+  const rows = values.slice(1).map(row => [
+    col("Fecha") >= 0 ? row[col("Fecha")] : "",
+    col("Hora") >= 0 ? row[col("Hora")] : "",
+    col("SID") >= 0 ? row[col("SID")] : "",
+    col("DNI") >= 0 ? row[col("DNI")] : "",
+    col("Nombre y Apellido") >= 0 ? row[col("Nombre y Apellido")] : "",
+    col("Comisión") >= 0 ? row[col("Comisión")] : "",
+    col("Modo") >= 0 ? row[col("Modo")] : "",
+    col("Concepto IDs") >= 0 ? row[col("Concepto IDs")] : "",
+    col("Conceptos") >= 0 ? row[col("Conceptos")] : "",
+    col("Fuentes bibliográficas") >= 0 ? row[col("Fuentes bibliográficas")] : "",
+    col("Confusión") >= 0 ? row[col("Confusión")] : "",
+    col("Nivel confusión") >= 0 ? row[col("Nivel confusión")] : 0,
+    col("Pregunta del alumno") >= 0 ? row[col("Pregunta del alumno")] : "",
+    col("Respuesta del asistente") >= 0 ? row[col("Respuesta del asistente")] : "",
+    col("Modelo") >= 0 ? row[col("Modelo")] : "",
+  ]);
+
+  sheet.clearContents();
+  sheet.getRange(1, 1, 1, headers.length).setValues([headers]);
+  if (rows.length) sheet.getRange(2, 1, rows.length, headers.length).setValues(rows);
+  sheet.setFrozenRows(1);
+}
+
 function ensureAnalysisSheets(ss, pack) {
+  migrateInteractionSheet(ss);
+
   const interactionHeaders = [
     "Fecha", "Hora", "SID", "DNI", "Nombre y Apellido", "Comisión", "Modo",
     "Concepto IDs", "Conceptos", "Fuentes bibliográficas", "Confusión",
@@ -538,11 +595,8 @@ function readRoster(ss) {
 }
 
 function readInteractions(ss) {
-  const sheet = studentSheet(ss, "📝 Interacciones", [
-    "Fecha", "Hora", "SID", "DNI", "Nombre y Apellido", "Comisión", "Modo",
-    "Concepto IDs", "Conceptos", "Fuentes bibliográficas", "Confusión",
-    "Nivel confusión", "Pregunta del alumno", "Respuesta del asistente", "Modelo"
-  ]);
+  migrateInteractionSheet(ss);
+  const sheet = studentSheet(ss, "📝 Interacciones", interactionHeaders());
   const values = sheet.getDataRange().getValues();
   if (values.length < 2) return [];
   const headers = values[0];
@@ -984,11 +1038,7 @@ function handleLog(body) {
     const model = String(body.model || "").trim();
     const analytics = analyticsForInteraction(pack, body, q);
 
-    const log = studentSheet(ss, "📝 Interacciones", [
-      "Fecha", "Hora", "SID", "DNI", "Nombre y Apellido", "Comisión", "Modo",
-      "Concepto IDs", "Conceptos", "Fuentes bibliográficas", "Confusión",
-      "Nivel confusión", "Pregunta del alumno", "Respuesta del asistente", "Modelo"
-    ]);
+    const log = studentSheet(ss, "📝 Interacciones", interactionHeaders());
     log.insertRowAfter(1);
     log.getRange(2, 1, 1, 15).setValues([[
       fecha,
