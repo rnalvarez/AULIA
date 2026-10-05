@@ -105,6 +105,21 @@ La clave de la IA docente se mantiene en `sessionStorage` y no forma parte del c
 
 La IA estudiantil sigue siendo independiente: cada alumno introduce su propia API key en la aplicación de estudiante.
 
+### Administración de docentes
+
+La hoja `👩‍🏫 Docentes` es el punto de administración del acceso docente. Las columnas visibles permiten gestionar email, nombre, estado y fechas; los campos técnicos de autenticación (hash y salt) permanecen ocultos.
+
+Desde el menú **AULIA** del Sheet se puede:
+
+- abrir el panel de alta/restablecimiento de acceso;
+- crear un docente o actualizar su contraseña;
+- activar o desactivar el acceso de un docente seleccionado.
+
+La contraseña se introduce en un formulario temporal y no se guarda en texto plano en la Sheet. El backend conserva únicamente hash + salt.
+
+La función `provisionTeacher(...)` sigue existiendo como función interna de soporte; no es necesario editar código para el alta cotidiana de docentes.
+
+
 ## Estado actual
 
 El código del frontend y del backend del modelo multi-docente está implementado.
@@ -114,7 +129,7 @@ Para ponerlo operativo todavía hay que:
 1. crear una Google Sheet administrativa;
 2. crear/desplegar el Apps Script de `backend/google-apps-script/studio/`;
 3. ejecutar `initializeStudio()`;
-4. crear al menos un docente con `provisionTeacher(...)`;
+4. abrir el menú **AULIA → Abrir administración de docentes** y crear al menos un docente;
 5. configurar el endpoint en `src/core/studioConfig.js`;
 6. volver a desplegar GitHub Pages.
 
