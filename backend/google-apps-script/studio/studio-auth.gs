@@ -105,6 +105,14 @@ function handleTeacherLogin(body) {
   }
 
   CacheService.getScriptCache().remove(studioLoginKey(email));
+
+  // Registrar el último acceso sin exponer credenciales.
+  if (teacher.lastAccessCol >= 0) {
+    studioTeacherSheet()
+      .getRange(teacher.rowIndex, teacher.lastAccessCol + 1)
+      .setValue(studioNow());
+  }
+
   const session = issueTeacherSession(teacher);
   studioAudit(email, "login", "", "ok", "inicio de sesión");
   return session;
