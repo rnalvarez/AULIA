@@ -113,3 +113,11 @@ export async function publishTeacherCourse(token, courseId, course, expectedUpda
     course,
   });
 }
+
+export async function deleteTeacherCourse(token, courseId) {
+  return request({
+    action: "delete-course",
+    token,
+    courseId,
+  });
+}
