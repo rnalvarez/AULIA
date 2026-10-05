@@ -318,7 +318,7 @@ function blankStudioCourse(owner) {
     llm: {
       provider: "groq",
       endpoint: "https://api.groq.com/openai/v1/chat/completions",
-      models: ["openai/gpt-oss-120b", "openai/gpt-20b", "qwen/qwen3.8-27b"],
+      models: ["openai/gpt-oss-120b", "openai/gpt-oss-20b", "qwen/qwen3.8-27b"],
       generation: {
         temperature: 0.4,
         max_tokens: 800,
