@@ -40,6 +40,22 @@ export function validateCourse(course) {
     if (!chunk?.content) errors.push(`Corpus[${index}] no tiene content`);
   }
 
+  const bibliographyIds = new Set((course?.bibliography || []).map((item) => item?.id).filter(Boolean));
+  const corpusIds = new Set((course?.corpus || []).map((item) => item?.id).filter(Boolean));
+
+  for (const concept of course?.concepts || []) {
+    for (const sourceId of concept?.sourceBibliographyIds || []) {
+      if (!bibliographyIds.has(sourceId)) {
+        errors.push(`El concepto "${concept?.id || "sin id"}" referencia una fuente bibliográfica inexistente: ${sourceId}`);
+      }
+    }
+    for (const sourceId of concept?.sourceCorpusIds || []) {
+      if (corpusIds.size && !corpusIds.has(sourceId)) {
+        errors.push(`El concepto "${concept?.id || "sin id"}" referencia un fragmento inexistente: ${sourceId}`);
+      }
+    }
+  }
+
   const modeIds = new Set((course?.modes || []).map((item) => item?.id).filter(Boolean));
   const conceptIds = new Set((course?.concepts || []).map((item) => item?.id).filter(Boolean));
 
