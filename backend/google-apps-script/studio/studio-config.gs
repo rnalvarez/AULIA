@@ -14,7 +14,7 @@ const STUDIO_SHEETS = {
 };
 
 const STUDIO_HEADERS = {
-  teachers: ["Email", "Nombre", "Password Hash", "Salt", "Activo", "Creado"],
+  teachers: ["Email", "Nombre", "Password Hash", "Salt", "Activo", "Creado", "Último acceso"],
   courses: ["Course ID", "Título", "Owner Email", "Estado", "Drive File ID", "Actualizado"],
   permissions: ["Email", "Course ID", "Rol", "Activo", "Creado", "Actualizado"],
   audit: ["Fecha", "Email", "Acción", "Course ID", "Resultado", "Detalle"],
@@ -46,7 +46,31 @@ function studioSheet(name, headersKey) {
     sheet.getRange(1, 1, 1, STUDIO_HEADERS[headersKey].length)
       .setValues([STUDIO_HEADERS[headersKey]]);
     sheet.setFrozenRows(1);
+    try {
+      sheet.getRange(1, 1, 1, STUDIO_HEADERS[headersKey].length).setFontWeight("bold");
+    } catch (e) {}
   }
+  return sheet;
+}
+
+function studioTeacherSheet() {
+  const sheet = studioSheet(STUDIO_SHEETS.teachers, "teachers");
+  const lastColumn = Math.max(sheet.getLastColumn(), 1);
+  const headers = sheet.getRange(1, 1, 1, lastColumn).getValues()[0];
+  const lastAccessIndex = studioColumn(headers, ["Último acceso"]);
+
+  if (lastAccessIndex < 0) {
+    sheet.getRange(1, lastColumn + 1).setValue("Último acceso");
+  }
+
+  // Hash y salt son datos técnicos. Quedan ocultos en la hoja de administración.
+  try {
+    if (sheet.getMaxColumns() >= 4) {
+      sheet.hideColumns(3, 2);
+    }
+  } catch (e) {}
+
+  sheet.setFrozenRows(1);
   return sheet;
 }
 
@@ -121,12 +145,18 @@ function initializeStudio() {
   for (const key of Object.keys(STUDIO_SHEETS)) {
     studioSheet(STUDIO_SHEETS[key], key);
   }
+
+  // La hoja Docentes recibe además la columna de último acceso y oculta
+  // los campos técnicos de autenticación.
+  studioTeacherSheet();
+
   const folderId = PropertiesService.getScriptProperties().getProperty("COURSE_PACK_FOLDER_ID");
   if (!folderId) {
     const folder = DriveApp.createFolder("AULIA · Course Packs");
     PropertiesService.getScriptProperties().setProperty("COURSE_PACK_FOLDER_ID", folder.getId());
     console.log("COURSE_PACK_FOLDER_ID=" + folder.getId());
   }
+
   console.log("STUDIO_SHEET_ID=" + ss.getId());
   console.log("✓ AULIA Studio backend inicializado.");
 }
@@ -135,37 +165,94 @@ function provisionTeacher(email, name, password) {
   const normalizedEmail = normalizeStudioEmail(email);
   const cleanName = String(name || "").trim();
   const cleanPassword = String(password || "");
+
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail)) {
     throw new Error("Email docente inválido.");
+  }
+  if (cleanName.length < 2) {
+    throw new Error("Ingresá el nombre del docente.");
   }
   if (cleanPassword.length < 10) {
     throw new Error("La contraseña docente debe tener al menos 10 caracteres.");
   }
 
-  const sheet = studioSheet(STUDIO_SHEETS.teachers, "teachers");
+  const sheet = studioTeacherSheet();
   const values = sheet.getDataRange().getValues();
-  const headers = values[0];
+  const headers = values[0] || [];
   const emailCol = studioColumn(headers, ["Email"]);
+  const nameCol = studioColumn(headers, ["Nombre"]);
+  const hashCol = studioColumn(headers, ["Password Hash"]);
+  const saltCol = studioColumn(headers, ["Salt"]);
+  const activeCol = studioColumn(headers, ["Activo"]);
+  const createdCol = studioColumn(headers, ["Creado"]);
+  const lastAccessCol = studioColumn(headers, ["Último acceso"]);
 
   for (let i = 1; i < values.length; i += 1) {
     if (normalizeStudioEmail(values[i][emailCol]) !== normalizedEmail) continue;
+
     const salt = studioRandomSalt();
     const hash = studioHashPassword(normalizedEmail, cleanPassword, salt);
-    sheet.getRange(i + 1, 1, 1, STUDIO_HEADERS.teachers.length).setValues([[
-      normalizedEmail, cleanName, hash, salt, "Sí", studioNow()
+    const created = studioCell(values[i], createdCol) || studioNow();
+    const lastAccess = studioCell(values[i], lastAccessCol);
+
+    sheet.getRange(i + 1, 1, 1, headers.length).setValues([[
+      normalizedEmail,
+      cleanName,
+      hash,
+      salt,
+      "Sí",
+      created,
+      lastAccess,
     ]]);
-    return { updated: true, email: normalizedEmail };
+
+    return {
+      updated: true,
+      email: normalizedEmail,
+      name: cleanName,
+    };
   }
 
   const salt = studioRandomSalt();
   const hash = studioHashPassword(normalizedEmail, cleanPassword, salt);
-  sheet.appendRow([normalizedEmail, cleanName, hash, salt, "Sí", studioNow()]);
-  return { created: true, email: normalizedEmail };
+  sheet.appendRow([
+    normalizedEmail,
+    cleanName,
+    hash,
+    salt,
+    "Sí",
+    studioNow(),
+    "",
+  ]);
+
+  return {
+    created: true,
+    email: normalizedEmail,
+    name: cleanName,
+  };
+}
+
+function setTeacherActive(email, active) {
+  const normalizedEmail = normalizeStudioEmail(email);
+  if (!normalizedEmail) throw new Error("Falta el email docente.");
+
+  const sheet = studioTeacherSheet();
+  const values = sheet.getDataRange().getValues();
+  const headers = values[0] || [];
+  const emailCol = studioColumn(headers, ["Email"]);
+  const activeCol = studioColumn(headers, ["Activo"]);
+
+  for (let i = 1; i < values.length; i += 1) {
+    if (normalizeStudioEmail(values[i][emailCol]) !== normalizedEmail) continue;
+    sheet.getRange(i + 1, activeCol + 1).setValue(active ? "Sí" : "No");
+    return { email: normalizedEmail, active: Boolean(active) };
+  }
+
+  throw new Error("No existe un docente con ese email.");
 }
 
 function getActiveTeacher(email) {
   const normalizedEmail = normalizeStudioEmail(email);
-  const sheet = studioSheet(STUDIO_SHEETS.teachers, "teachers");
+  const sheet = studioTeacherSheet();
   const values = sheet.getDataRange().getValues();
   if (!values.length) return null;
 
@@ -175,6 +262,7 @@ function getActiveTeacher(email) {
   const hashCol = studioColumn(headers, ["Password Hash"]);
   const saltCol = studioColumn(headers, ["Salt"]);
   const activeCol = studioColumn(headers, ["Activo"]);
+  const lastAccessCol = studioColumn(headers, ["Último acceso"]);
 
   for (let i = 1; i < values.length; i += 1) {
     if (normalizeStudioEmail(values[i][emailCol]) !== normalizedEmail) continue;
@@ -186,6 +274,7 @@ function getActiveTeacher(email) {
       name: studioCell(values[i], nameCol),
       passwordHash: studioCell(values[i], hashCol),
       salt: studioCell(values[i], saltCol),
+      lastAccessCol,
     };
   }
   return null;
