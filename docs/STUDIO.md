@@ -134,3 +134,11 @@ Para ponerlo operativo todavía hay que:
 6. volver a desplegar GitHub Pages.
 
 La implementación institucional definitiva podrá sustituir la autenticación por email + contraseña por Google Workspace/OAuth y agregar un rol administrador central.
+
+
+### Archivos del administrador de docentes
+
+En el proyecto de Apps Script, los archivos deben conservar estos nombres distintos:
+
+- `studio-admin.gs`
+- `studio-admin-panel.html`
