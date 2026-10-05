@@ -6,7 +6,7 @@ import { requestTeacherProposal } from "../services/llm/teacherProposal.js";
 import { clearStudioApiKey, isGroqApiKey, loadStudioApiKey, saveStudioApiKey } from "../utils/studioStorage.js";
 
 const STORAGE_PREFIX = "aulia:studio:";
-const VERSION = "0.4";
+const VERSION = "0.5";
 const STEPS = [
   ["overview", "01", "Cátedra"],
   ["material", "02", "Material"],
@@ -146,7 +146,7 @@ function Row({ title, meta, onRemove, children }) {
   return <article className="studio-wf-row"><div className="studio-wf-row-main"><div className="studio-wf-row-title"><strong>{title || "Sin título"}</strong>{meta && <span>{meta}</span>}</div>{children}</div><button className="studio-wf-danger" type="button" onClick={onRemove}>Eliminar</button></article>;
 }
 
-export default function Studio({ course, courseMeta = null, canEdit = true, onCourseChanged, onSaveCourse, onReloadCourse }) {
+export default function Studio({ course, courseMeta = null, canEdit = true, onCourseChanged, onSaveCourse, onPublishCourse, onReloadCourse }) {
   const storageKey = useMemo(() => STORAGE_PREFIX + course.id, [course.id]);
   const [draft, setDraft] = useState(() => cloneCourse(course));
   const [step, setStep] = useState("overview");
@@ -231,6 +231,42 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
         setStatus(err.message + " Usá “Recargar remoto” para continuar.");
       } else {
         setStatus(err.message || "No se pudo guardar la cátedra.");
+      }
+    } finally {
+      setBusy(false);
+    }
+  }
+  async function publish() {
+    if (!canEdit || busy) return;
+
+    const result = validateCourse(draft);
+    if (!result.valid) {
+      setValidation(result);
+      setStatus("Corregí los problemas antes de publicar.");
+      return;
+    }
+
+    if (!onPublishCourse) {
+      setStatus("La publicación todavía no está conectada.");
+      return;
+    }
+
+    setBusy(true);
+    setStatus("Publicando la versión que acabás de validar…");
+    try {
+      const published = await onPublishCourse(cloneCourse(draft), courseMeta?.updatedAt || "");
+      const version = published?.meta?.updatedAt || new Date().toISOString();
+      localStorage.setItem(storageKey, JSON.stringify({ version, draft: cloneCourse(published?.course || draft) }));
+      setValidation({ valid: true, errors: [] });
+      setStatus("✓ Cátedra publicada. Esta es la versión que pueden utilizar los estudiantes.");
+    } catch (err) {
+      if (err?.conflict) {
+        setStatus(err.message + " Usá “Recargar remoto” para continuar.");
+      } else if (err?.validation) {
+        setValidation(err.validation);
+        setStatus(err.message || "La cátedra no puede publicarse todavía.");
+      } else {
+        setStatus(err.message || "No se pudo publicar la cátedra.");
       }
     } finally {
       setBusy(false);
@@ -453,7 +489,18 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
       </div>
     </header>
 
-    <div className="studio-wf-local-note"><span><b>Flujo de autoría:</b> Cátedra → Material → Propuesta pedagógica → Interacción → Comisiones.</span><small>{canEdit ? "Los cambios se guardan en el backend." : "Esta cátedra está disponible en modo solo lectura."}</small></div>
+    <div className="studio-wf-local-note">
+      <span><b>Flujo de autoría:</b> Cátedra → Material → Propuesta pedagógica → Interacción → Comisiones.</span>
+      <small>
+        {canEdit
+          ? courseMeta?.status === "published"
+            ? "Versión publicada activa. Los cambios que guardes quedan como borrador hasta volver a publicar."
+            : courseMeta?.status === "changes-pending"
+              ? "Hay cambios guardados que todavía no fueron publicados. Los estudiantes siguen usando la versión anterior."
+              : "Los cambios se guardan como borrador en el backend."
+          : "Esta cátedra está disponible en modo solo lectura."}
+      </small>
+    </div>
 
     <nav className="studio-wf-steps">{STEPS.map(([id, n, label], i) => <button key={id} type="button" className={step === id ? "active" : ""} onClick={() => setStep(id)}><b>{n}</b><span>{label}</span>{counts[id] > 0 && <i>{counts[id]}</i>}{i < STEPS.length - 1 && <em>→</em>}</button>)}</nav>
 
@@ -537,9 +584,60 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
         <Panel eyebrow="CURSADA" title="Comisiones" description="Agregar una comisión no duplica el contenido." actions={<button className="ghost" type="button" onClick={addCommission} disabled={!canEdit}>+ Agregar comisión</button>}>
           {draft.commissions?.length ? <div className="studio-wf-stack">{draft.commissions.map((x, i) => <Row key={x.id || i} title={x.title} meta={x.code} onRemove={() => remove("commissions", i)}><div className="studio-wf-grid"><Field label="Nombre" value={x.title} onChange={(v) => edit("commissions", i, {title:v})}/><Field label="Código" value={x.code} onChange={(v) => edit("commissions", i, {code:v})} placeholder="Ej. A · lunes 18:00"/></div></Row>)}</div> : <Empty title="Todavía no definiste comisiones." text="Podés hacerlo ahora o dejarlo para la publicación."/>}
         </Panel>
-        <Panel eyebrow="CIERRE" title="Antes de publicar" description="La publicación docente todavía no está conectada. Guardá, validá y exportá el borrador.">
-          <div className="studio-wf-review-grid"><div><span>Cátedra</span><strong>{draft.title || "Sin definir"}</strong></div><div><span>Fuentes</span><strong>{draft.bibliography?.length || 0}</strong></div><div><span>Fragmentos</span><strong>{draft.corpus?.length || 0}</strong></div><div><span>Unidades</span><strong>{draft.concepts?.length || 0}</strong></div><div><span>Modos</span><strong>{draft.modes?.length || 0}</strong></div><div><span>Actividades</span><strong>{draft.activities?.length || 0}</strong></div><div><span>Comisiones</span><strong>{draft.commissions?.length || 0}</strong></div></div>
-          <div className="studio-wf-final-actions"><button className="primary" type="button" onClick={save}>Guardar borrador</button><button className="ghost" type="button" onClick={validate}>Validar</button><button className="ghost" type="button" onClick={() => { const r = validateCourse(draft); setValidation(r); if (r.valid) downloadCoursePack(draft); else setStatus("Corregí los problemas antes de exportar."); }}>Exportar course pack</button><button className="ghost" type="button" disabled>Publicar (próximamente)</button></div>
+        <Panel
+          eyebrow="CIERRE"
+          title="Probar, ajustar y publicar"
+          description={courseMeta?.status === "published"
+            ? "La versión publicada sigue activa mientras trabajás sobre el borrador. Guardá los cambios, probá nuevamente y publicá cuando estén listos."
+            : "Validá la cátedra antes de publicar. Una vez publicada podés probarla como estudiante y volver al Studio para seguir editando."}
+        >
+          <div className="studio-wf-review-grid">
+            <div><span>Cátedra</span><strong>{draft.title || "Sin definir"}</strong></div>
+            <div><span>Fuentes</span><strong>{draft.bibliography?.length || 0}</strong></div>
+            <div><span>Fragmentos</span><strong>{draft.corpus?.length || 0}</strong></div>
+            <div><span>Unidades</span><strong>{draft.concepts?.length || 0}</strong></div>
+            <div><span>Modos</span><strong>{draft.modes?.length || 0}</strong></div>
+            <div><span>Actividades</span><strong>{draft.activities?.length || 0}</strong></div>
+            <div><span>Comisiones</span><strong>{draft.commissions?.length || 0}</strong></div>
+            <div><span>Estado</span><strong>{courseMeta?.status === "published" ? "Publicada" : courseMeta?.status === "changes-pending" ? "Cambios pendientes" : "Borrador"}</strong></div>
+          </div>
+
+          {courseMeta?.status === "published" && courseMeta?.publicUrl && (
+            <div className="studio-wf-ai-ready">
+              <span>✓ Versión publicada disponible</span>
+              <small>{courseMeta.publicUrl}</small>
+            </div>
+          )}
+
+          {courseMeta?.status === "changes-pending" && (
+            <div className="studio-wf-ai-ready">
+              <span>• Cambios guardados sin publicar</span>
+              <small>Los estudiantes todavía utilizan la versión publicada anterior.</small>
+            </div>
+          )}
+
+          <div className="studio-wf-final-actions">
+            <button className="primary" type="button" onClick={save} disabled={!canEdit || busy}>Guardar cambios</button>
+            <button className="ghost" type="button" onClick={validate} disabled={busy}>Validar</button>
+            <button className="ghost" type="button" onClick={() => {
+              const r = validateCourse(draft);
+              setValidation(r);
+              if (r.valid) downloadCoursePack(draft);
+              else setStatus("Corregí los problemas antes de exportar.");
+            }} disabled={busy}>Exportar course pack</button>
+            {courseMeta?.status === "published" && courseMeta?.publicUrl && (
+              <button className="ghost" type="button" onClick={() => window.open(courseMeta.publicUrl, "_blank", "noopener,noreferrer")} disabled={busy}>
+                Probar versión publicada ↗
+              </button>
+            )}
+            <button className="primary" type="button" onClick={publish} disabled={!canEdit || courseMeta?.role !== "owner" || busy}>
+              {courseMeta?.status === "published" ? "Publicar nueva versión" : "Publicar cátedra"}
+            </button>
+          </div>
+
+          {courseMeta?.role !== "owner" && canEdit && (
+            <p className="studio-wf-security-note">Solo el responsable de la cátedra puede publicar. Un editor puede preparar y guardar cambios para que el responsable los publique.</p>
+          )}
         </Panel>
       </>}
 
