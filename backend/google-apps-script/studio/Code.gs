@@ -36,3 +36,10 @@ function studioJson(payload) {
     .createTextOutput(JSON.stringify(payload))
     .setMimeType(ContentService.MimeType.JSON);
 }
+
+// Función de entrada para la configuración inicial del backend.
+// Puede ejecutarse directamente desde el selector de funciones de Apps Script.
+function setupStudio() {
+  initializeStudio();
+  return "AULIA Studio inicializado correctamente.";
+}
