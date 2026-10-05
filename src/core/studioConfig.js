@@ -4,4 +4,4 @@
 // Example:
 // export const STUDIO_API_ENDPOINT = "https://script.google.com/macros/s/XXXXXXXX/exec";
 
-export const STUDIO_API_ENDPOINT = import.meta.env.VITE_AULIA_STUDIO_API || "https://script.google.com/macros/s/AKfycbyW1sWYs2TmKZ8-8gPjc94xywacDu-8b173oMuk1GVeoSGuMviZSXG4C3Y74cc0C8CE/exec";
+export const STUDIO_API_ENDPOINT = import.meta.env.VITE_AULIA_STUDIO_API || "https://script.google.com/macros/s/AKfycbyYLKIXRhmFxQELb9ye0Ku59iPjmz1bsRfmuBTjc5RP8e1ukvmnpTGuc9_4QYxP1aGI/exec";
