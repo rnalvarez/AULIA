@@ -10,6 +10,7 @@ import {
   logoutTeacher,
   resumeTeacherSession,
   saveTeacherCourse,
+  publishTeacherCourse,
 } from "./services/auth/studioAccess.js";
 import StudioLogin from "./components/StudioLogin.jsx";
 import Studio from "./components/Studio.jsx";
@@ -160,7 +161,42 @@ export default function StudioApp() {
     setCourses((current) =>
       current.map((item) =>
         item.courseId === result.meta.courseId
-          ? { ...item, title: result.meta.title, updatedAt: result.meta.updatedAt }
+          ? {
+              ...item,
+              title: result.meta.title,
+              status: result.meta.status,
+              publicSlug: result.meta.publicSlug,
+              updatedAt: result.meta.updatedAt,
+            }
+          : item
+      )
+    );
+    return result;
+  }
+
+  async function handlePublishCourse(nextCourse, expectedUpdatedAt) {
+    if (!session?.token || !courseMeta?.courseId) throw new Error("Sesión docente no disponible.");
+    if (courseMeta.role !== "owner") throw new Error("Solo el responsable de la cátedra puede publicar.");
+
+    const result = await publishTeacherCourse(
+      session.token,
+      courseMeta.courseId,
+      nextCourse,
+      expectedUpdatedAt
+    );
+
+    setCourse(result.course);
+    setCourseMeta(result.meta);
+    setCourses((current) =>
+      current.map((item) =>
+        item.courseId === result.meta.courseId
+          ? {
+              ...item,
+              title: result.meta.title,
+              status: result.meta.status,
+              publicSlug: result.meta.publicSlug,
+              updatedAt: result.meta.updatedAt,
+            }
           : item
       )
     );
@@ -210,7 +246,7 @@ export default function StudioApp() {
                 onClick={() => selectCourse(item.courseId)}
               >
                 <strong>{item.title || "Sin título"}</strong>
-                <span>{item.role === "owner" ? "Responsable" : item.role === "editor" ? "Editor" : "Solo lectura"}</span>
+                <span>{item.role === "owner" ? "Responsable" : item.role === "editor" ? "Editor" : "Solo lectura"} · {item.status === "published" ? "Publicada" : item.status === "changes-pending" ? "Cambios pendientes" : "Borrador"}</span>
               </button>
             )) : (
               <div className="studio-course-empty">Todavía no tenés cátedras asignadas.</div>
@@ -237,6 +273,7 @@ export default function StudioApp() {
             canEdit={courseMeta.role !== "viewer"}
             onCourseChanged={() => {}}
             onSaveCourse={handleSaveCourse}
+            onPublishCourse={handlePublishCourse}
             onReloadCourse={() => selectCourse(courseMeta.courseId)}
           />
         ) : (
