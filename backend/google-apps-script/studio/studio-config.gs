@@ -15,7 +15,7 @@ const STUDIO_SHEETS = {
 
 const STUDIO_HEADERS = {
   teachers: ["Email", "Nombre", "Password Hash", "Salt", "Activo", "Creado", "Último acceso"],
-  courses: ["Course ID", "Título", "Owner Email", "Estado", "Drive File ID", "Actualizado"],
+  courses: ["Course ID", "Título", "Owner Email", "Estado", "Drive File ID", "Public Slug", "Published Drive File ID", "Actualizado", "Publicado"],
   permissions: ["Email", "Course ID", "Rol", "Activo", "Creado", "Actualizado"],
   audit: ["Fecha", "Email", "Acción", "Course ID", "Resultado", "Detalle"],
 };
@@ -42,14 +42,23 @@ function studioSheet(name, headersKey) {
   const ss = studioSpreadsheet();
   let sheet = ss.getSheetByName(name);
   if (!sheet) sheet = ss.insertSheet(name);
+
+  const expected = STUDIO_HEADERS[headersKey] || [];
   if (sheet.getLastRow() === 0) {
-    sheet.getRange(1, 1, 1, STUDIO_HEADERS[headersKey].length)
-      .setValues([STUDIO_HEADERS[headersKey]]);
-    sheet.setFrozenRows(1);
-    try {
-      sheet.getRange(1, 1, 1, STUDIO_HEADERS[headersKey].length).setFontWeight("bold");
-    } catch (e) {}
+    sheet.getRange(1, 1, 1, expected.length).setValues([expected]);
+  } else {
+    const lastColumn = Math.max(sheet.getLastColumn(), 1);
+    const current = sheet.getRange(1, 1, 1, lastColumn).getValues()[0].map(v => String(v || "").trim());
+    const missing = expected.filter(header => !current.some(h => h.toLowerCase() === header.toLowerCase()));
+    if (missing.length) {
+      sheet.getRange(1, lastColumn + 1, 1, missing.length).setValues([missing]);
+    }
   }
+
+  sheet.setFrozenRows(1);
+  try {
+    sheet.getRange(1, 1, 1, Math.max(sheet.getLastColumn(), expected.length)).setFontWeight("bold");
+  } catch (e) {}
   return sheet;
 }
 
