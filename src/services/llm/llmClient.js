@@ -8,6 +8,26 @@ function saveModel(courseId, model) {
 }
 
 function buildSystemPrompt({ course, assistant, mode, retrieved }) {
+  const bibliography = new Map((course?.bibliography || []).map(item => [String(item?.id || ""), item]));
+  const conceptItems = (retrieved || [])
+    .filter(item => (course?.concepts || []).some(concept => concept?.id === item?.id))
+    .map(item => {
+      const sourceIds = Array.isArray(item?.sourceBibliographyIds) ? item.sourceBibliographyIds : [];
+      const sources = sourceIds
+        .map(id => bibliography.get(String(id)))
+        .filter(Boolean)
+        .map(ref => [ref?.title, ref?.author, ref?.year].filter(Boolean).join(" · "));
+      return [
+        "ID: " + String(item?.id || ""),
+        "CONCEPTO: " + String(item?.title || ""),
+        "DEFINICIÓN/RESUMEN: " + String(item?.explanation || item?.summary || ""),
+        sources.length ? "BIBLIOGRAFÍA: " + sources.join(" | ") : "",
+        Array.isArray(item?.confusionCriteria) && item.confusionCriteria.length
+          ? "CRITERIOS DE POSIBLE CONFUSIÓN: " + item.confusionCriteria.join(" | ")
+          : "",
+      ].filter(Boolean).join("\n");
+    }).join("\n\n");
+
   const context = (retrieved || []).map(item => {
     const title = String(item?.title || item?.id || "Unidad");
     const text = String(item?.explanation || item?.summary || item?.content || "");
@@ -20,8 +40,19 @@ function buildSystemPrompt({ course, assistant, mode, retrieved }) {
     "Modo: " + String(mode?.title || ""),
     "Objetivo: " + String(mode?.pedagogicalGoal || ""),
     "Instrucciones: " + String(mode?.instructions || ""),
+    conceptItems
+      ? "CONCEPTOS AUTORIZADOS PARA EL ANÁLISIS DE ESTA INTERACCIÓN:\n" + conceptItems
+      : "No hay conceptos recuperados para clasificar esta interacción.",
     "Corpus recuperado:",
     context || "Sin fragmentos específicos recuperados.",
+    "",
+    "IMPORTANTE — SALIDA ESTRUCTURADA:",
+    "Respondé únicamente como JSON válido con estas claves:",
+    '{"reply":"respuesta para el estudiante","conceptIds":["id-de-concepto"],"confusionLevel":0}',
+    "reply debe contener solamente la respuesta pedagógica que verá el estudiante.",
+    "conceptIds debe incluir únicamente IDs de los conceptos autorizados arriba que realmente fueron tratados en la pregunta o respuesta. Si ninguno, usá [].",
+    "confusionLevel debe ser 0, 1 o 2. 0 = no hay indicio de confusión; 1 = posible dificultad, comprensión incompleta o pedido de aclaración; 2 = confusión clara o reiterada respecto de un concepto.",
+    "La clasificación de conceptos y confusión debe basarse exclusivamente en las definiciones, criterios y bibliografía de la cátedra proporcionados arriba. No diagnostiques al estudiante ni inventes conceptos.",
   ].join("\n");
 }
 
