@@ -11,6 +11,7 @@ import {
   resumeTeacherSession,
   saveTeacherCourse,
   publishTeacherCourse,
+  deleteTeacherCourse,
 } from "./services/auth/studioAccess.js";
 import StudioLogin from "./components/StudioLogin.jsx";
 import Studio from "./components/Studio.jsx";
@@ -203,6 +204,25 @@ export default function StudioApp() {
     return result;
   }
 
+  async function handleDeleteCourse() {
+    if (!session?.token || !courseMeta?.courseId) return;
+
+    const courseId = courseMeta.courseId;
+    setError("");
+    try {
+      await deleteTeacherCourse(session.token, courseId);
+      setCourses((current) => current.filter((item) => item.courseId !== courseId));
+      setCourse(null);
+      setCourseMeta(null);
+
+      const url = new URL(window.location.href);
+      url.searchParams.delete("course");
+      window.history.replaceState({}, "", url);
+    } catch (err) {
+      setError(err.message || "No se pudo eliminar la cátedra.");
+    }
+  }
+
   async function handleLogout() {
     await logoutTeacher();
     setSession(null);
@@ -274,6 +294,7 @@ export default function StudioApp() {
             onCourseChanged={() => {}}
             onSaveCourse={handleSaveCourse}
             onPublishCourse={handlePublishCourse}
+            onDeleteCourse={handleDeleteCourse}
             onReloadCourse={() => selectCourse(courseMeta.courseId)}
           />
         ) : (
