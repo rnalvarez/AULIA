@@ -1300,3 +1300,15 @@ button { border: 0; }
   font-size: 10px;
   line-height: 1.45;
 }
+
+.studio-wf-concept-source {
+  margin: -2px 0 10px;
+  padding: 7px 9px;
+  border-left: 2px solid #5a5147;
+  color: #8d857a;
+  font-size: 9px;
+  line-height: 1.5;
+}
+.studio-wf-concept-source strong {
+  color: #b2a99d;
+}
