@@ -8,12 +8,60 @@ function studioCourseSheetIds(course) {
   };
 }
 
-function studioInitializeStudentWorkbook(title) {
+function studioCommissionSheetName(commission, index) {
+  const colors = ["🟦", "🟩", "🟨", "🟪", "🟧", "🟥", "⬜"];
+  const code = String(commission?.code || "").trim();
+  const title = String(commission?.title || "").trim();
+  const label = code || title || ("Comisión " + (index + 1));
+  return (colors[index % colors.length] + " Comisión " + label).slice(0, 100);
+}
+
+function studioEnsureCommissionSheets(ss, commissions = []) {
+  const headers = [
+    "DNI", "Nombre y Apellido", "Comisión", "Consultas", "Sesiones",
+    "Modos utilizados", "Conceptos trabajados", "Posibles confusiones",
+    "Confusiones reiteradas", "Primera actividad", "Última actividad", "Estado"
+  ];
+
+  (commissions || []).forEach((commission, index) => {
+    const name = studioCommissionSheetName(commission, index);
+    let sheet = ss.getSheetByName(name);
+    if (!sheet) sheet = ss.insertSheet(name);
+
+    sheet.getRange(1, 1, 1, headers.length).setValues([headers]);
+    sheet.setFrozenRows(1);
+    try {
+      sheet.getRange(1, 1, 1, headers.length).setFontWeight("bold");
+      sheet.setColumnWidths(1, headers.length, 125);
+      sheet.setColumnWidth(2, 190);
+      sheet.setColumnWidth(7, 220);
+    } catch (e) {}
+  });
+}
+
+function studioInitializeStudentWorkbook(title, commissions = []) {
   const ss = SpreadsheetApp.create("AULIA · " + String(title || "Cátedra") + " · Alumnos");
   const configs = {
-    "📋 Padrón": ["DNI", "Apellido", "Nombre", "Comisión", "Activo (Sí/No)", "PIN Hash (no tocar)", "Fecha registro PIN"],
-    "📝 Interacciones": ["Fecha", "Hora", "SID", "DNI", "Nombre y Apellido", "Comisión", "Modo", "Pregunta del alumno", "Respuesta del asistente", "Modelo"],
-    "👤 Por alumno": ["ID/DNI", "Nombre y Apellido", "Comisión", "Consultas", "Primera consulta", "Última consulta"],
+    "📋 Padrón": [
+      "DNI", "Apellido", "Nombre", "Comisión", "Activo (Sí/No)",
+      "PIN Hash (no tocar)", "Fecha registro PIN"
+    ],
+    "📝 Interacciones": [
+      "Fecha", "Hora", "SID", "DNI", "Nombre y Apellido", "Comisión",
+      "Modo", "Concepto IDs", "Conceptos", "Fuentes bibliográficas",
+      "Confusión", "Nivel confusión", "Pregunta del alumno",
+      "Respuesta del asistente", "Modelo"
+    ],
+    "👤 Por alumno": [
+      "ID/DNI", "Nombre y Apellido", "Comisión", "Consultas", "Sesiones",
+      "Modos utilizados", "Conceptos trabajados", "Posibles confusiones",
+      "Confusiones reiteradas", "Primera consulta", "Última consulta", "Estado"
+    ],
+    "🧠 Conceptos": [
+      "Concepto", "Fuentes bibliográficas", "Alumnos", "Interacciones",
+      "Posibles confusiones", "Confusiones reiteradas", "Total confusión",
+      "% confusión", "Última actividad"
+    ],
     "📊 Resumen": ["Métrica", "Valor"],
   };
 
@@ -30,38 +78,40 @@ function studioInitializeStudentWorkbook(title) {
     sheet.setFrozenRows(1);
     try {
       sheet.getRange(1, 1, 1, headers.length).setFontWeight("bold");
+      sheet.autoResizeColumns(1, headers.length);
     } catch (e) {}
   });
 
   first.setColumnWidths(1, 7, 150);
+  studioEnsureCommissionSheets(ss, commissions);
+
   return {
     id: ss.getId(),
     url: ss.getUrl(),
   };
 }
 
-function studioEnsureStudentWorkbook(course) {
+function studioEnsureStudentWorkbook(course, commissions = []) {
   const ids = studioCourseSheetIds(course);
   if (ids.studentSheetId >= 0) {
-    const existingId = studioCell(
-      course.sheet.getRange(course.rowIndex, 1, 1, course.sheet.getLastColumn()).getValues()[0],
-      ids.studentSheetId
-    );
+    const row = course.sheet.getRange(course.rowIndex, 1, 1, course.sheet.getLastColumn()).getValues()[0];
+    const existingId = studioCell(row, ids.studentSheetId);
     if (existingId) {
+      const existing = SpreadsheetApp.openById(existingId);
+      studioEnsureCommissionSheets(existing, commissions);
       return {
         id: existingId,
         url: ids.studentSheetUrl >= 0
-          ? studioCell(
-              course.sheet.getRange(course.rowIndex, 1, 1, course.sheet.getLastColumn()).getValues()[0],
-              ids.studentSheetUrl
-            )
+          ? studioCell(row, ids.studentSheetUrl)
           : "https://docs.google.com/spreadsheets/d/" + existingId + "/edit",
       };
     }
   }
 
-  const workbook = studioInitializeStudentWorkbook(course.title);
-  course.sheet.getRange(course.rowIndex, ids.studentSheetId + 1).setValue(workbook.id);
+  const workbook = studioInitializeStudentWorkbook(course.title, commissions);
+  if (ids.studentSheetId >= 0) {
+    course.sheet.getRange(course.rowIndex, ids.studentSheetId + 1).setValue(workbook.id);
+  }
   if (ids.studentSheetUrl >= 0) {
     course.sheet.getRange(course.rowIndex, ids.studentSheetUrl + 1).setValue(workbook.url);
   }
@@ -552,7 +602,7 @@ function handleStudioPublishCourse(body) {
   }
 
   // La primera publicación provisiona automáticamente la Sheet de alumnos.
-  const studentWorkbook = studioEnsureStudentWorkbook(access.course);
+  const studentWorkbook = studioEnsureStudentWorkbook(access.course, pack.commissions || []);
 
   // Se guarda primero como borrador para asegurar que Studio y la versión publicada
   // parten exactamente del mismo contenido.
