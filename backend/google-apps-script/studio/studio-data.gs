@@ -91,6 +91,85 @@ function studioInitializeStudentWorkbook(title, commissions = []) {
   };
 }
 
+function studioStudentInteractionHeaders() {
+  return [
+    "Fecha", "Hora", "SID", "DNI", "Nombre y Apellido", "Comisión", "Modo",
+    "Concepto IDs", "Conceptos", "Fuentes bibliográficas", "Confusión",
+    "Nivel confusión", "Pregunta del alumno", "Respuesta del asistente", "Modelo"
+  ];
+}
+
+function studioMigrateStudentInteractionSheet(ss) {
+  const headers = studioStudentInteractionHeaders();
+  let sheet = ss.getSheetByName("📝 Interacciones");
+  if (!sheet) {
+    sheet = ss.insertSheet("📝 Interacciones");
+    sheet.getRange(1, 1, 1, headers.length).setValues([headers]);
+    return;
+  }
+
+  const currentHeaders = sheet.getRange(1, 1, 1, Math.max(sheet.getLastColumn(), 1))
+    .getValues()[0].map(value => String(value || "").trim());
+  const same = currentHeaders.length === headers.length &&
+    headers.every((value, index) => String(currentHeaders[index] || "").trim().toLowerCase() === value.toLowerCase());
+  if (same) return;
+
+  const values = sheet.getDataRange().getValues();
+  const oldHeaders = values[0] || [];
+  const col = name => {
+    const normalized = oldHeaders.map(value => String(value || "").trim().toLowerCase());
+    return normalized.indexOf(String(name).trim().toLowerCase());
+  };
+  const rows = values.slice(1).map(row => [
+    col("Fecha") >= 0 ? row[col("Fecha")] : "",
+    col("Hora") >= 0 ? row[col("Hora")] : "",
+    col("SID") >= 0 ? row[col("SID")] : "",
+    col("DNI") >= 0 ? row[col("DNI")] : "",
+    col("Nombre y Apellido") >= 0 ? row[col("Nombre y Apellido")] : "",
+    col("Comisión") >= 0 ? row[col("Comisión")] : "",
+    col("Modo") >= 0 ? row[col("Modo")] : "",
+    col("Concepto IDs") >= 0 ? row[col("Concepto IDs")] : "",
+    col("Conceptos") >= 0 ? row[col("Conceptos")] : "",
+    col("Fuentes bibliográficas") >= 0 ? row[col("Fuentes bibliográficas")] : "",
+    col("Confusión") >= 0 ? row[col("Confusión")] : "",
+    col("Nivel confusión") >= 0 ? row[col("Nivel confusión")] : 0,
+    col("Pregunta del alumno") >= 0 ? row[col("Pregunta del alumno")] : "",
+    col("Respuesta del asistente") >= 0 ? row[col("Respuesta del asistente")] : "",
+    col("Modelo") >= 0 ? row[col("Modelo")] : "",
+  ]);
+
+  sheet.clearContents();
+  sheet.getRange(1, 1, 1, headers.length).setValues([headers]);
+  if (rows.length) sheet.getRange(2, 1, rows.length, headers.length).setValues(rows);
+  sheet.setFrozenRows(1);
+}
+
+function studioEnsureStudentAnalysisSheets(ss, commissions = []) {
+  studioMigrateStudentInteractionSheet(ss);
+
+  const porAlumno = ss.getSheetByName("👤 Por alumno") || ss.insertSheet("👤 Por alumno");
+  porAlumno.getRange(1, 1, 1, 12).setValues([[
+    "ID/DNI", "Nombre y Apellido", "Comisión", "Consultas", "Sesiones",
+    "Modos utilizados", "Conceptos trabajados", "Posibles confusiones",
+    "Confusiones reiteradas", "Primera consulta", "Última consulta", "Estado"
+  ]]);
+  porAlumno.setFrozenRows(1);
+
+  const conceptos = ss.getSheetByName("🧠 Conceptos") || ss.insertSheet("🧠 Conceptos");
+  conceptos.getRange(1, 1, 1, 9).setValues([[
+    "Concepto", "Fuentes bibliográficas", "Alumnos", "Interacciones",
+    "Posibles confusiones", "Confusiones reiteradas", "Total confusión",
+    "% confusión", "Última actividad"
+  ]]);
+  conceptos.setFrozenRows(1);
+
+  const resumen = ss.getSheetByName("📊 Resumen") || ss.insertSheet("📊 Resumen");
+  if (resumen.getLastRow() === 0) resumen.getRange(1, 1, 1, 2).setValues([["Métrica", "Valor"]]);
+  resumen.setFrozenRows(1);
+
+  studioEnsureCommissionSheets(ss, commissions);
+}
+
 function studioEnsureStudentWorkbook(course, commissions = []) {
   const ids = studioCourseSheetIds(course);
   if (ids.studentSheetId >= 0) {
@@ -98,7 +177,7 @@ function studioEnsureStudentWorkbook(course, commissions = []) {
     const existingId = studioCell(row, ids.studentSheetId);
     if (existingId) {
       const existing = SpreadsheetApp.openById(existingId);
-      studioEnsureCommissionSheets(existing, commissions);
+      studioEnsureStudentAnalysisSheets(existing, commissions);
       return {
         id: existingId,
         url: ids.studentSheetUrl >= 0
@@ -109,6 +188,8 @@ function studioEnsureStudentWorkbook(course, commissions = []) {
   }
 
   const workbook = studioInitializeStudentWorkbook(course.title, commissions);
+  const initialized = SpreadsheetApp.openById(workbook.id);
+  studioEnsureStudentAnalysisSheets(initialized, commissions);
   if (ids.studentSheetId >= 0) {
     course.sheet.getRange(course.rowIndex, ids.studentSheetId + 1).setValue(workbook.id);
   }
