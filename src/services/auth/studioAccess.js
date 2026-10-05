@@ -39,6 +39,7 @@ async function request(payload) {
       {
         conflict: Boolean(data.conflict),
         remoteUpdatedAt: data.remoteUpdatedAt || "",
+        validation: data.validation || null,
       }
     );
   }
