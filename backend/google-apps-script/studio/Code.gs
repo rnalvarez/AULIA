@@ -12,6 +12,8 @@ function doPost(e) {
       case "get-course": return studioJson(handleStudioGetCourse(body));
       case "create-course": return studioJson(handleStudioCreateCourse(body));
       case "save-course": return studioJson(handleStudioSaveCourse(body));
+      case "publish-course": return studioJson(handleStudioPublishCourse(body));
+      case "public-course": return studioJson(handlePublicCourse(body));
       default: return studioJson({ success: false, error: "Acción no reconocida." });
     }
   } catch (err) {
