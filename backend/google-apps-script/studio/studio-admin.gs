@@ -12,7 +12,7 @@ function onOpen() {
 
 function openTeacherAdmin() {
   const html = HtmlService
-    .createHtmlOutputFromFile("studio-admin")
+    .createHtmlOutputFromFile("studio-admin-panel")
     .setTitle("AULIA · Docentes");
   SpreadsheetApp.getUi().showSidebar(html);
 }
