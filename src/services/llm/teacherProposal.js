@@ -26,6 +26,8 @@ const PROPOSAL_SCHEMA = {
           aliases: { type: "array", items: { type: "string" } },
           keywords: { type: "array", items: { type: "string" } },
           sourceIds: { type: "array", items: { type: "string" } },
+          sourceBibliographyIds: { type: "array", items: { type: "string" } },
+          confusionCriteria: { type: "array", items: { type: "string" } },
         },
         required: [
           "title",
@@ -35,6 +37,8 @@ const PROPOSAL_SCHEMA = {
           "aliases",
           "keywords",
           "sourceIds",
+          "sourceBibliographyIds",
+          "confusionCriteria",
         ],
         additionalProperties: false,
       },
@@ -139,7 +143,12 @@ function buildMaterialContext(corpus, maxChars = 26000) {
 function buildPrompt({ course, bibliography, materialText, truncated }) {
   const refs = (bibliography || [])
     .slice(0, 20)
-    .map((item) => [item.title, item.author, item.year].filter(Boolean).join(" · "))
+    .map((item) => [
+      "[BIB-ID:" + String(item?.id || "") + "]",
+      String(item?.title || ""),
+      item?.author,
+      item?.year
+    ].filter(Boolean).join(" · "))
     .filter(Boolean)
     .join("\n");
 
@@ -148,6 +157,8 @@ function buildPrompt({ course, bibliography, materialText, truncated }) {
     "Trabajá exclusivamente con el material incluido en este pedido. No inventes autores, obras, conceptos ni afirmaciones que no puedan sostenerse con el corpus.",
     "Tu tarea NO es resumir cada fragmento. Detectá una organización docente útil: conceptos centrales, unidades o capítulos a los que pertenecen, ejemplos/casos que el propio material permita relacionar y actividades de aprendizaje.",
     "Los sourceIds deben copiar EXACTAMENTE los IDs [ID:...] del material. No inventes IDs.",
+    "La bibliografía declarada aparece identificada con [BIB-ID:...]. sourceBibliographyIds debe copiar EXACTAMENTE esos IDs y solo incluir fuentes que realmente sostengan el concepto.",
+    "Cada concepto debe incluir confusionCriteria: entre 2 y 5 descripciones breves de errores, confusiones o comprensiones insuficientes que podrían indicar dificultad con ese concepto. Deben estar fundamentadas exclusivamente en la bibliografía y el corpus disponibles; no inventes criterios generales.",
     "Un concepto debe ser una idea enseñable y reutilizable, no una frase cualquiera del texto.",
     "La explicación debe ayudar al docente a revisar la propuesta, no reemplazar su criterio.",
     "Las actividades deben poder implementarse con alguno de los modos disponibles y usar la estrategia indicada.",
