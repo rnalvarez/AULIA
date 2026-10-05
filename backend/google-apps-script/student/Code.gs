@@ -1,6 +1,7 @@
 // AULIA — shared student backend
 // One public endpoint serves all published courses.
-// Course access and student data are resolved by courseId from the Studio admin Sheet.
+// Student data stays separated by course in its own Google Sheet.
+// Pedagogical analytics are derived from the published Course Pack + interactions.
 
 function doPost(e) {
   try {
@@ -57,6 +58,7 @@ function studentAdminCourse(ref) {
   const slugCol = studentColumn(headers, ["Public Slug"]);
   const statusCol = studentColumn(headers, ["Estado"]);
   const studentSheetCol = studentColumn(headers, ["Student Sheet ID"]);
+  const publishedFileCol = studentColumn(headers, ["Published Drive File ID"]);
 
   for (let i = 1; i < values.length; i += 1) {
     const id = studentCell(values[i], idCol);
@@ -65,6 +67,7 @@ function studentAdminCourse(ref) {
 
     const status = studentCell(values[i], statusCol);
     const studentSheetId = studentCell(values[i], studentSheetCol);
+    const publishedFileId = studentCell(values[i], publishedFileCol);
 
     if (status !== "published") {
       throw new Error("La cátedra no está publicada.");
@@ -77,6 +80,7 @@ function studentAdminCourse(ref) {
       courseId: id,
       publicSlug: slug,
       studentSheetId,
+      publishedFileId,
     };
   }
 
@@ -87,19 +91,25 @@ function studentSpreadsheetForCourse(course) {
   return SpreadsheetApp.openById(course.studentSheetId);
 }
 
+function loadPublishedPack(course) {
+  if (!course?.publishedFileId) {
+    throw new Error("La cátedra no tiene una versión publicada disponible.");
+  }
+  const raw = DriveApp.getFileById(course.publishedFileId).getBlob().getDataAsString("UTF-8");
+  const pack = JSON.parse(raw);
+  if (String(pack?.id || "") !== String(course.courseId || "")) {
+    throw new Error("El Course Pack publicado no coincide con la cátedra.");
+  }
+  return pack;
+}
+
 function studentSheet(ss, name, headers) {
   let sheet = ss.getSheetByName(name);
   if (!sheet) sheet = ss.insertSheet(name);
 
-  if (headers && sheet.getLastColumn() < headers.length) {
+  if (headers) {
     sheet.getRange(1, 1, 1, headers.length).setValues([headers]);
-  } else if (headers) {
-    const current = sheet.getRange(1, 1, 1, headers.length).getValues()[0];
-    if (current.every(value => !String(value || "").trim())) {
-      sheet.getRange(1, 1, 1, headers.length).setValues([headers]);
-    }
   }
-
   sheet.setFrozenRows(1);
   return sheet;
 }
@@ -356,68 +366,657 @@ function handleVerify(body) {
   return issueSession(course, student);
 }
 
+function clampConfusion(value) {
+  const number = Number(value);
+  if (!isFinite(number)) return 0;
+  return Math.max(0, Math.min(2, Math.round(number)));
+}
+
+function confusionLabel(level) {
+  return level === 2 ? "Reiterada" : level === 1 ? "Posible" : "Sin indicio";
+}
+
+function questionShowsConfusion(question) {
+  const text = normalizeText(question);
+  return /\b(no entiendo|no entiend(o|e)|no me queda claro|no comprendo|no comprendi|no logro entender|me confunde|estoy confundido|que significa|qué significa|no se si|no sé si|no entiendo por que|por que es que|entonces.*es|es lo mismo|seria lo mismo)\b/.test(text);
+}
+
+function listFromCell(value, separator) {
+  return String(value || "")
+    .split(separator || "|")
+    .map(item => item.trim())
+    .filter(Boolean);
+}
+
+function dateStampValue(fecha, hora) {
+  const f = String(fecha || "").trim();
+  const h = String(hora || "00:00").trim();
+  const match = f.match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
+  if (!match) return 0;
+  return new Date(
+    Number(match[3]),
+    Number(match[2]) - 1,
+    Number(match[1]),
+    Number((h.split(":")[0] || "0")),
+    Number((h.split(":")[1] || "0"))
+  ).getTime();
+}
+
+function formatStampFromDate(date) {
+  if (!(date instanceof Date) || isNaN(date.getTime())) return "";
+  return Utilities.formatDate(date, STUDENT_TIMEZONE, "dd/MM/yyyy HH:mm");
+}
+
+function conceptMapFromPack(pack) {
+  const map = {};
+  for (const concept of pack?.concepts || []) {
+    const id = String(concept?.id || "").trim();
+    if (!id) continue;
+    map[id] = concept;
+  }
+  return map;
+}
+
+function bibliographyMapFromPack(pack) {
+  const map = {};
+  for (const item of pack?.bibliography || []) {
+    const id = String(item?.id || "").trim();
+    if (!id) continue;
+    map[id] = item;
+  }
+  return map;
+}
+
+function analyticsForInteraction(pack, body, question) {
+  const concepts = conceptMapFromPack(pack);
+  const requested = Array.isArray(body.conceptIds) ? body.conceptIds : [];
+  const conceptIds = [...new Set(requested.map(id => String(id || "").trim()).filter(id => id && concepts[id]))];
+
+  let level = clampConfusion(body.confusionLevel);
+  if (level === 0 && questionShowsConfusion(question) && conceptIds.length) level = 1;
+
+  const bibliography = bibliographyMapFromPack(pack);
+  const sourceIds = [...new Set(conceptIds.flatMap(id => Array.isArray(concepts[id]?.sourceBibliographyIds)
+    ? concepts[id].sourceBibliographyIds.map(value => String(value || "").trim()).filter(value => bibliography[value])
+    : []))];
+
+  const conceptTitles = conceptIds.map(id => String(concepts[id]?.title || id));
+  const sourceTitles = sourceIds.map(id => {
+    const ref = bibliography[id];
+    return [ref?.title, ref?.author, ref?.year].filter(Boolean).join(" · ");
+  }).filter(Boolean);
+
+  return {
+    conceptIds,
+    conceptTitles,
+    sourceIds,
+    sourceTitles,
+    confusionLevel: level,
+    confusion: confusionLabel(level),
+  };
+}
+
+function commissionDescriptors(pack) {
+  return (pack?.commissions || []).map((item, index) => ({
+    index,
+    id: String(item?.id || "").trim(),
+    title: String(item?.title || "").trim(),
+    code: String(item?.code || "").trim(),
+  }));
+}
+
+function commissionMatches(value, descriptor) {
+  const target = normalizeText(value);
+  if (!target) return false;
+  const code = normalizeText(descriptor?.code);
+  const title = normalizeText(descriptor?.title);
+  const full = normalizeText("comision " + (descriptor?.code || descriptor?.title || ""));
+  return target === code || target === title || target === full ||
+    (code && target.includes(code) && target.includes("comision")) ||
+    (title && target.includes(title));
+}
+
+function commissionSheetName(descriptor, index) {
+  const colors = ["🟦", "🟩", "🟨", "🟪", "🟧", "🟥", "⬜"];
+  const label = descriptor?.code || descriptor?.title || ("Comisión " + (index + 1));
+  return (colors[index % colors.length] + " Comisión " + label).slice(0, 100);
+}
+
+function analysisHeaders() {
+  return [
+    "DNI", "Nombre y Apellido", "Comisión", "Consultas", "Sesiones",
+    "Modos utilizados", "Conceptos trabajados", "Posibles confusiones",
+    "Confusiones reiteradas", "Primera actividad", "Última actividad", "Estado"
+  ];
+}
+
+function ensureAnalysisSheets(ss, pack) {
+  const interactionHeaders = [
+    "Fecha", "Hora", "SID", "DNI", "Nombre y Apellido", "Comisión", "Modo",
+    "Concepto IDs", "Conceptos", "Fuentes bibliográficas", "Confusión",
+    "Nivel confusión", "Pregunta del alumno", "Respuesta del asistente", "Modelo"
+  ];
+  studentSheet(ss, "📝 Interacciones", interactionHeaders);
+  studentSheet(ss, "👤 Por alumno", analysisHeaders());
+  studentSheet(ss, "🧠 Conceptos", [
+    "Concepto", "Fuentes bibliográficas", "Alumnos", "Interacciones",
+    "Posibles confusiones", "Confusiones reiteradas", "Total confusión",
+    "% confusión", "Última actividad"
+  ]);
+  studentSheet(ss, "📊 Resumen", ["Métrica", "Valor"]);
+
+  commissionDescriptors(pack).forEach((descriptor, index) => {
+    studentSheet(ss, commissionSheetName(descriptor, index), analysisHeaders());
+  });
+}
+
+function readRoster(ss) {
+  const sheet = studentSheet(ss, "📋 Padrón", [
+    "DNI", "Apellido", "Nombre", "Comisión", "Activo (Sí/No)",
+    "PIN Hash (no tocar)", "Fecha registro PIN"
+  ]);
+  const values = sheet.getDataRange().getValues();
+  const headers = values[0] || [];
+  const dniCol = studentColumn(headers, ["DNI"]);
+  const lastCol = studentColumn(headers, ["Apellido"]);
+  const nameCol = studentColumn(headers, ["Nombre"]);
+  const commissionCol = studentColumn(headers, ["Comisión", "Comision"]);
+  const activeCol = studentColumn(headers, ["Activo (Sí/No)", "Activo"]);
+
+  const rows = [];
+  for (let i = 1; i < values.length; i += 1) {
+    const dni = normalizeDni(values[i][dniCol]);
+    if (!dni) continue;
+    rows.push({
+      dni,
+      nombre: [studentCell(values[i], lastCol), studentCell(values[i], nameCol)].filter(Boolean).join(", ") || dni,
+      comision: studentCell(values[i], commissionCol),
+      activo: activeCol < 0 ? true : isActive(values[i][activeCol]),
+    });
+  }
+  return rows;
+}
+
+function readInteractions(ss) {
+  const sheet = studentSheet(ss, "📝 Interacciones", [
+    "Fecha", "Hora", "SID", "DNI", "Nombre y Apellido", "Comisión", "Modo",
+    "Concepto IDs", "Conceptos", "Fuentes bibliográficas", "Confusión",
+    "Nivel confusión", "Pregunta del alumno", "Respuesta del asistente", "Modelo"
+  ]);
+  const values = sheet.getDataRange().getValues();
+  if (values.length < 2) return [];
+  const headers = values[0];
+
+  const ix = {
+    fecha: studentColumn(headers, ["Fecha"]),
+    hora: studentColumn(headers, ["Hora"]),
+    sid: studentColumn(headers, ["SID"]),
+    dni: studentColumn(headers, ["DNI"]),
+    name: studentColumn(headers, ["Nombre y Apellido"]),
+    commission: studentColumn(headers, ["Comisión", "Comision"]),
+    mode: studentColumn(headers, ["Modo"]),
+    conceptIds: studentColumn(headers, ["Concepto IDs"]),
+    concepts: studentColumn(headers, ["Conceptos"]),
+    sources: studentColumn(headers, ["Fuentes bibliográficas"]),
+    confusion: studentColumn(headers, ["Confusión"]),
+    level: studentColumn(headers, ["Nivel confusión"]),
+    question: studentColumn(headers, ["Pregunta del alumno"]),
+  };
+
+  return values.slice(1).map(row => ({
+    fecha: studentCell(row, ix.fecha),
+    hora: studentCell(row, ix.hora),
+    sid: studentCell(row, ix.sid),
+    dni: normalizeDni(studentCell(row, ix.dni)),
+    nombre: studentCell(row, ix.name),
+    comision: studentCell(row, ix.commission),
+    mode: studentCell(row, ix.mode),
+    conceptIds: listFromCell(row[ix.conceptIds], "|"),
+    concepts: listFromCell(row[ix.concepts], ";"),
+    sources: listFromCell(row[ix.sources], ";"),
+    confusion: studentCell(row, ix.confusion),
+    level: clampConfusion(studentCell(row, ix.level)),
+    question: studentCell(row, ix.question),
+    timestamp: dateStampValue(studentCell(row, ix.fecha), studentCell(row, ix.hora)),
+  })).filter(row => row.dni);
+}
+
+function uniqueSorted(values) {
+  return [...new Set(values.filter(Boolean))].sort((a, b) => String(a).localeCompare(String(b), "es"));
+}
+
+function writeTable(sheet, startRow, startCol, headers, rows) {
+  const width = headers.length;
+  const clearRows = Math.max(sheet.getLastRow() - startRow + 1, rows.length + 2, 3);
+  sheet.getRange(startRow, startCol, clearRows, width).clearContent();
+  sheet.getRange(startRow, startCol, 1, width).setValues([headers]);
+  if (rows.length) sheet.getRange(startRow + 1, startCol, rows.length, width).setValues(rows);
+  return rows.length;
+}
+
+function styleHeader(range) {
+  range
+    .setFontWeight("bold")
+    .setFontColor("#ffffff")
+    .setBackground("#30343b");
+}
+
+function styleSection(range) {
+  range
+    .setFontWeight("bold")
+    .setBackground("#e8eaed");
+}
+
+function formatAnalysisSheet(sheet, widths) {
+  try {
+    widths.forEach((width, index) => sheet.setColumnWidth(index + 1, width));
+    sheet.setFrozenRows(1);
+    sheet.getRange(1, 1, 1, widths.length).setFontWeight("bold").setBackground("#30343b").setFontColor("#ffffff");
+  } catch (e) {}
+}
+
+function buildStudentStats(roster, interactions) {
+  const stats = {};
+  roster.forEach(student => {
+    stats[student.dni] = {
+      ...student,
+      interactions: 0,
+      sessions: new Set(),
+      modes: new Set(),
+      concepts: new Set(),
+      possibleConfusion: 0,
+      repeatedConfusion: 0,
+      firstTs: 0,
+      lastTs: 0,
+    };
+  });
+
+  interactions.forEach(item => {
+    const entry = stats[item.dni] || (stats[item.dni] = {
+      dni: item.dni,
+      nombre: item.nombre || item.dni,
+      comision: item.comision || "",
+      activo: true,
+      interactions: 0,
+      sessions: new Set(),
+      modes: new Set(),
+      concepts: new Set(),
+      possibleConfusion: 0,
+      repeatedConfusion: 0,
+      firstTs: 0,
+      lastTs: 0,
+    });
+
+    entry.interactions += 1;
+    if (item.sid) entry.sessions.add(item.sid);
+    if (item.mode) entry.modes.add(item.mode);
+    item.conceptIds.forEach(id => entry.concepts.add(id));
+    if (item.level >= 1) entry.possibleConfusion += 1;
+    if (item.level >= 2) entry.repeatedConfusion += 1;
+    if (item.timestamp) {
+      if (!entry.firstTs || item.timestamp < entry.firstTs) entry.firstTs = item.timestamp;
+      if (!entry.lastTs || item.timestamp > entry.lastTs) entry.lastTs = item.timestamp;
+    }
+  });
+
+  return stats;
+}
+
+function buildConceptStats(pack, roster, interactions) {
+  const concepts = conceptMapFromPack(pack);
+  const stats = {};
+  Object.keys(concepts).forEach(id => {
+    const concept = concepts[id];
+    stats[id] = {
+      id,
+      title: String(concept?.title || id),
+      sourceIds: Array.isArray(concept?.sourceBibliographyIds) ? concept.sourceBibliographyIds : [],
+      students: new Set(),
+      interactions: 0,
+      possibleConfusion: 0,
+      repeatedConfusion: 0,
+      lastTs: 0,
+    };
+  });
+
+  interactions.forEach(item => {
+    item.conceptIds.forEach(id => {
+      if (!stats[id]) return;
+      const entry = stats[id];
+      entry.interactions += 1;
+      if (item.dni) entry.students.add(item.dni);
+      if (item.level >= 1) entry.possibleConfusion += 1;
+      if (item.level >= 2) entry.repeatedConfusion += 1;
+      if (item.timestamp && item.timestamp > entry.lastTs) entry.lastTs = item.timestamp;
+    });
+  });
+
+  return stats;
+}
+
+function buildCommissionStats(pack, roster, interactions, studentStats) {
+  const descriptors = commissionDescriptors(pack);
+  const groups = descriptors.map((descriptor, index) => ({
+    key: "declared-" + index,
+    descriptor,
+    sheetName: commissionSheetName(descriptor, index),
+    students: roster.filter(student => commissionMatches(student.comision, descriptor)),
+    interactions: interactions.filter(item => commissionMatches(item.comision, descriptor)),
+  }));
+
+  const assigned = new Set();
+  groups.forEach(group => group.students.forEach(student => assigned.add(student.dni)));
+  const extraValues = uniqueSorted(roster.map(student => student.comision).filter(value =>
+    value && !descriptors.some(descriptor => commissionMatches(value, descriptor))
+  ));
+
+  extraValues.forEach((value, index) => {
+    groups.push({
+      key: "extra-" + index,
+      descriptor: { id: "", title: value, code: value },
+      sheetName: commissionSheetName({ title: value, code: value }, descriptors.length + index),
+      students: roster.filter(student => normalizeText(student.comision) === normalizeText(value)),
+      interactions: interactions.filter(item => normalizeText(item.comision) === normalizeText(value)),
+    });
+  });
+
+  return groups.map(group => {
+    const activeStudents = group.students.filter(student => (studentStats[student.dni]?.interactions || 0) > 0).length;
+    const confusion = group.interactions.filter(item => item.level >= 1).length;
+    return { ...group, activeStudents, confusion };
+  });
+}
+
+function renderStudentRows(students, studentStats, concepts) {
+  return students
+    .map(student => {
+      const stat = studentStats[student.dni] || {};
+      const conceptTitles = [...(stat.concepts || new Set())]
+        .map(id => concepts[id]?.title || id)
+        .sort((a, b) => String(a).localeCompare(String(b), "es"));
+      return [
+        student.dni,
+        stat.nombre || student.nombre || student.dni,
+        stat.comision || student.comision || "",
+        Number(stat.interactions || 0),
+        (stat.sessions instanceof Set ? stat.sessions.size : 0),
+        uniqueSorted(stat.modes instanceof Set ? [...stat.modes] : []).join(" · "),
+        conceptTitles.join(" · "),
+        Number(stat.possibleConfusion || 0),
+        Number(stat.repeatedConfusion || 0),
+        stat.firstTs ? formatStampFromDate(new Date(stat.firstTs)) : "—",
+        stat.lastTs ? formatStampFromDate(new Date(stat.lastTs)) : "—",
+        stat.interactions > 0 ? "Activo" : "Sin actividad",
+      ];
+    })
+    .sort((a, b) => String(a[1]).localeCompare(String(b[1]), "es"));
+}
+
+function updateCommissionSheets(ss, commissionGroups, studentStats, concepts) {
+  const headers = analysisHeaders();
+  commissionGroups.forEach(group => {
+    const sheet = studentSheet(ss, group.sheetName, headers);
+    const rows = renderStudentRows(group.students, studentStats, concepts);
+    writeTable(sheet, 1, 1, headers, rows);
+    formatAnalysisSheet(sheet, [110, 190, 120, 85, 80, 190, 240, 110, 115, 135, 135, 100]);
+
+    const total = group.students.length;
+    const active = group.activeStudents;
+    const interactions = group.interactions.length;
+    const confusion = group.confusion;
+
+    sheet.getRange(1, 14, 4, 2).setValues([
+      ["ALUMNOS", total],
+      ["CON ACTIVIDAD", active],
+      ["INTERACCIONES", interactions],
+      ["POSIBLES CONFUSIONES", confusion],
+    ]);
+    sheet.getRange(1, 14, 4, 1).setFontWeight("bold").setBackground("#e8eaed");
+    sheet.getRange(1, 15, 4, 1).setFontWeight("bold");
+  });
+}
+
+function updatePorAlumno(ss, studentStats, concepts) {
+  const rosterStudents = Object.values(studentStats);
+  const rows = rosterStudents.map(stat => {
+    const conceptTitles = [...stat.concepts].map(id => concepts[id]?.title || id).sort((a, b) => String(a).localeCompare(String(b), "es"));
+    return [
+      stat.dni,
+      stat.nombre,
+      stat.comision,
+      stat.interactions,
+      stat.sessions.size,
+      uniqueSorted([...stat.modes]).join(" · "),
+      conceptTitles.join(" · "),
+      stat.possibleConfusion,
+      stat.repeatedConfusion,
+      stat.firstTs ? formatStampFromDate(new Date(stat.firstTs)) : "—",
+      stat.lastTs ? formatStampFromDate(new Date(stat.lastTs)) : "—",
+      stat.interactions > 0 ? "Activo" : "Sin actividad",
+    ];
+  }).sort((a, b) => String(a[1]).localeCompare(String(b[1]), "es"));
+
+  const sheet = studentSheet(ss, "👤 Por alumno", analysisHeaders());
+  writeTable(sheet, 1, 1, analysisHeaders(), rows);
+  formatAnalysisSheet(sheet, [110, 190, 120, 85, 80, 190, 240, 110, 115, 135, 135, 100]);
+}
+
+function updateConceptsSheet(ss, pack, interactions) {
+  const stats = buildConceptStats(pack, readRoster(ss), interactions);
+  const bibliography = bibliographyMapFromPack(pack);
+  const rows = Object.values(stats).map(stat => {
+    const sourceTitles = stat.sourceIds.map(id => bibliography[id]).filter(Boolean).map(ref =>
+      [ref.title, ref.author, ref.year].filter(Boolean).join(" · ")
+    );
+    const totalConfusion = stat.possibleConfusion;
+    const ratio = stat.interactions ? totalConfusion / stat.interactions : 0;
+    return [
+      stat.title,
+      sourceTitles.join(" · "),
+      stat.students.size,
+      stat.interactions,
+      stat.possibleConfusion,
+      stat.repeatedConfusion,
+      totalConfusion,
+      ratio,
+      stat.lastTs ? formatStampFromDate(new Date(stat.lastTs)) : "—",
+    ];
+  }).sort((a, b) => Number(b[3]) - Number(a[3]) || Number(b[4]) - Number(a[4]));
+
+  const sheet = studentSheet(ss, "🧠 Conceptos", [
+    "Concepto", "Fuentes bibliográficas", "Alumnos", "Interacciones",
+    "Posibles confusiones", "Confusiones reiteradas", "Total confusión",
+    "% confusión", "Última actividad"
+  ]);
+  writeTable(sheet, 1, 1, [
+    "Concepto", "Fuentes bibliográficas", "Alumnos", "Interacciones",
+    "Posibles confusiones", "Confusiones reiteradas", "Total confusión",
+    "% confusión", "Última actividad"
+  ], rows);
+  formatAnalysisSheet(sheet, [190, 280, 80, 100, 120, 130, 110, 100, 135]);
+  if (rows.length) sheet.getRange(2, 8, rows.length, 1).setNumberFormat("0.0%");
+}
+
+function modeStats(interactions) {
+  const map = {};
+  interactions.forEach(item => {
+    const key = item.mode || "Sin modo";
+    map[key] = (map[key] || 0) + 1;
+  });
+  return Object.entries(map).sort((a, b) => b[1] - a[1]);
+}
+
+function updateSummary(ss, pack, roster, interactions, studentStats, commissionGroups, conceptStats) {
+  const sheet = studentSheet(ss, "📊 Resumen", ["Métrica", "Valor"]);
+  sheet.clearContents();
+
+  const activeStudents = Object.values(studentStats).filter(stat => stat.interactions > 0).length;
+  const totalInteractions = interactions.length;
+  const possibleConfusion = interactions.filter(item => item.level >= 1).length;
+  const repeatedConfusion = interactions.filter(item => item.level >= 2).length;
+  const avg = activeStudents ? totalInteractions / activeStudents : 0;
+  const lastTs = interactions.reduce((max, item) => Math.max(max, item.timestamp || 0), 0);
+
+  sheet.getRange(1, 1, 1, 2).merge().setValue("AULIA · " + String(pack?.title || "Cátedra") + " · RESUMEN");
+  sheet.getRange(1, 1).setFontWeight("bold").setFontSize(16).setBackground("#30343b").setFontColor("#ffffff");
+
+  sheet.getRange(3, 1, 1, 2).setValues([["VISIÓN GENERAL", ""]]);
+  styleSection(sheet.getRange(3, 1, 1, 2));
+  sheet.getRange(4, 1, 7, 2).setValues([
+    ["Alumnos en padrón", roster.length],
+    ["Alumnos con actividad", activeStudents],
+    ["Sin actividad", Math.max(0, roster.length - activeStudents)],
+    ["Interacciones", totalInteractions],
+    ["Promedio por alumno activo", avg],
+    ["Posibles confusiones", possibleConfusion],
+    ["Confusiones reiteradas", repeatedConfusion],
+  ]);
+  sheet.getRange(4, 2).setNumberFormat("0.0");
+
+  let row = 12;
+  sheet.getRange(row, 1, 1, 4).setValues([["POR COMISIÓN", "", "", ""]]);
+  styleSection(sheet.getRange(row, 1, 1, 4));
+  row += 1;
+  sheet.getRange(row, 1, 1, 4).setValues([["Comisión", "Alumnos", "Con actividad", "Interacciones"]]);
+  styleHeader(sheet.getRange(row, 1, 1, 4));
+  row += 1;
+  const commissionRows = commissionGroups.map(group => [
+    group.descriptor.code || group.descriptor.title || "Sin comisión",
+    group.students.length,
+    group.activeStudents,
+    group.interactions.length,
+  ]);
+  if (commissionRows.length) sheet.getRange(row, 1, commissionRows.length, 4).setValues(commissionRows);
+  row += Math.max(commissionRows.length, 1) + 1;
+
+  sheet.getRange(row, 1, 1, 3).setValues([["MODOS MÁS UTILIZADOS", "", ""]]);
+  styleSection(sheet.getRange(row, 1, 1, 3));
+  row += 1;
+  sheet.getRange(row, 1, 1, 3).setValues([["Modo", "Interacciones", "%"]]);
+  styleHeader(sheet.getRange(row, 1, 1, 3));
+  row += 1;
+  const modes = modeStats(interactions);
+  const modeRows = modes.map(([mode, count]) => [mode, count, totalInteractions ? count / totalInteractions : 0]);
+  if (modeRows.length) sheet.getRange(row, 1, modeRows.length, 3).setValues(modeRows);
+  if (modeRows.length) sheet.getRange(row, 3, modeRows.length, 1).setNumberFormat("0.0%");
+  row += Math.max(modeRows.length, 1) + 2;
+
+  const sortedConcepts = Object.values(conceptStats).sort((a, b) =>
+    b.interactions - a.interactions || b.possibleConfusion - a.possibleConfusion
+  );
+  sheet.getRange(row, 1, 1, 4).setValues([["CONCEPTOS MÁS TRABAJADOS", "", "", ""]]);
+  styleSection(sheet.getRange(row, 1, 1, 4));
+  row += 1;
+  sheet.getRange(row, 1, 1, 4).setValues([["Concepto", "Alumnos", "Interacciones", "Posibles confusiones"]]);
+  styleHeader(sheet.getRange(row, 1, 1, 4));
+  row += 1;
+  const conceptRows = sortedConcepts.slice(0, 12).map(stat => [
+    stat.title, stat.students.size, stat.interactions, stat.possibleConfusion
+  ]);
+  if (conceptRows.length) sheet.getRange(row, 1, conceptRows.length, 4).setValues(conceptRows);
+  row += Math.max(conceptRows.length, 1) + 2;
+
+  const confusedConcepts = [...sortedConcepts].sort((a, b) =>
+    b.possibleConfusion - a.possibleConfusion || b.interactions - a.interactions
+  );
+  sheet.getRange(row, 1, 1, 4).setValues([["CONCEPTOS CON MÁS POSIBLE CONFUSIÓN", "", "", ""]]);
+  styleSection(sheet.getRange(row, 1, 1, 4));
+  row += 1;
+  sheet.getRange(row, 1, 1, 4).setValues([["Concepto", "Interacciones", "Posibles confusiones", "% confusión"]]);
+  styleHeader(sheet.getRange(row, 1, 1, 4));
+  row += 1;
+  const confusionRows = confusedConcepts.filter(stat => stat.interactions > 0).slice(0, 12).map(stat => [
+    stat.title,
+    stat.interactions,
+    stat.possibleConfusion,
+    stat.interactions ? stat.possibleConfusion / stat.interactions : 0,
+  ]);
+  if (confusionRows.length) {
+    sheet.getRange(row, 1, confusionRows.length, 4).setValues(confusionRows);
+    sheet.getRange(row, 4, confusionRows.length, 1).setNumberFormat("0.0%");
+  }
+  row += Math.max(confusionRows.length, 1) + 2;
+
+  sheet.getRange(row, 1, 1, 2).setValues([["ÚLTIMA ACTIVIDAD", lastTs ? formatStampFromDate(new Date(lastTs)) : "—"]]);
+  styleSection(sheet.getRange(row, 1, 1, 1));
+
+  sheet.setColumnWidth(1, 260);
+  sheet.setColumnWidth(2, 150);
+  sheet.setColumnWidth(3, 150);
+  sheet.setColumnWidth(4, 180);
+  sheet.setFrozenRows(1);
+}
+
+function refreshAnalytics(ss, pack) {
+  const roster = readRoster(ss);
+  const interactions = readInteractions(ss);
+  ensureAnalysisSheets(ss, pack);
+
+  const studentStats = buildStudentStats(roster, interactions);
+  const concepts = conceptMapFromPack(pack);
+  const conceptStats = buildConceptStats(pack, roster, interactions);
+  const commissionGroups = buildCommissionStats(pack, roster, interactions, studentStats);
+
+  updatePorAlumno(ss, studentStats, concepts);
+  updateConceptsSheet(ss, pack, interactions);
+  updateCommissionSheets(ss, commissionGroups, studentStats, concepts);
+  updateSummary(ss, pack, roster, interactions, studentStats, commissionGroups, conceptStats);
+}
+
 function handleLog(body) {
   const auth = requireSession(body);
   const ss = studentSpreadsheetForCourse(auth.course);
-  const student = auth.student;
-  const now = new Date();
-  const fecha = Utilities.formatDate(now, STUDENT_TIMEZONE, "dd/MM/yyyy");
-  const hora = Utilities.formatDate(now, STUDENT_TIMEZONE, "HH:mm");
-  const sid = String(body.sid || Utilities.getUuid()).toUpperCase().substring(0, 8);
-  const mode = String(body.modeId || "consulta").trim();
-  const q = String(body.q || "").trim().substring(0, 500);
-  const r = String(body.r || "").trim().substring(0, 1000);
-  const model = String(body.model || "").trim();
+  const pack = loadPublishedPack(auth.course);
 
-  const log = studentSheet(ss, "📝 Interacciones", [
-    "Fecha","Hora","SID","DNI","Nombre y Apellido","Comisión","Modo",
-    "Pregunta del alumno","Respuesta del asistente","Modelo"
-  ]);
-  log.insertRowAfter(1);
-  log.getRange(2, 1, 1, 10).setValues([[
-    fecha, hora, sid, student.dni,
-    [student.apellido, student.nombre].filter(Boolean).join(", ") || student.dni,
-    student.comision, mode, q, r, model
-  ]]);
+  const lock = LockService.getScriptLock();
+  lock.waitLock(15000);
 
-  const students = studentSheet(ss, "👤 Por alumno", [
-    "ID/DNI","Nombre y Apellido","Comisión","Consultas","Primera consulta","Última consulta"
-  ]);
-  const data = students.getDataRange().getValues();
-  let rowIndex = -1;
+  try {
+    ensureAnalysisSheets(ss, pack);
 
-  for (let i = 1; i < data.length; i += 1) {
-    if (normalizeDni(data[i][0]) === student.dni) {
-      rowIndex = i + 1;
-      break;
-    }
-  }
+    const now = new Date();
+    const fecha = Utilities.formatDate(now, STUDENT_TIMEZONE, "dd/MM/yyyy");
+    const hora = Utilities.formatDate(now, STUDENT_TIMEZONE, "HH:mm");
+    const sid = String(body.sid || Utilities.getUuid()).toUpperCase().substring(0, 8);
+    const mode = String(body.modeId || "consulta").trim();
+    const q = String(body.q || "").trim().substring(0, 500);
+    const r = String(body.r || "").trim().substring(0, 1000);
+    const model = String(body.model || "").trim();
+    const analytics = analyticsForInteraction(pack, body, q);
 
-  const stamp = fecha + " " + hora;
-  const displayName = [student.apellido, student.nombre].filter(Boolean).join(", ") || student.dni;
-
-  if (rowIndex < 0) {
-    students.insertRowAfter(1);
-    students.getRange(2, 1, 1, 6).setValues([[
-      student.dni, displayName, student.comision, 1, stamp, stamp
+    const log = studentSheet(ss, "📝 Interacciones", [
+      "Fecha", "Hora", "SID", "DNI", "Nombre y Apellido", "Comisión", "Modo",
+      "Concepto IDs", "Conceptos", "Fuentes bibliográficas", "Confusión",
+      "Nivel confusión", "Pregunta del alumno", "Respuesta del asistente", "Modelo"
+    ]);
+    log.insertRowAfter(1);
+    log.getRange(2, 1, 1, 15).setValues([[
+      fecha,
+      hora,
+      sid,
+      auth.student.dni,
+      [auth.student.apellido, auth.student.nombre].filter(Boolean).join(", ") || auth.student.dni,
+      auth.student.comision,
+      mode,
+      analytics.conceptIds.join("|"),
+      analytics.conceptTitles.join("; "),
+      analytics.sourceTitles.join("; "),
+      analytics.confusion,
+      analytics.confusionLevel,
+      q,
+      r,
+      model
     ]]);
-  } else {
-    const previousCount = Number(data[rowIndex - 1][3]) || 0;
-    students.getRange(rowIndex, 2).setValue(displayName);
-    students.getRange(rowIndex, 3).setValue(student.comision || data[rowIndex - 1][2] || "");
-    students.getRange(rowIndex, 4).setValue(previousCount + 1);
-    students.getRange(rowIndex, 6).setValue(stamp);
+
+    refreshAnalytics(ss, pack);
+    return {
+      ok: true,
+      tracked: true,
+      total: Math.max(0, log.getLastRow() - 1),
+      concepts: analytics.conceptIds,
+      confusionLevel: analytics.confusionLevel,
+    };
+  } finally {
+    lock.releaseLock();
   }
-
-  const summary = studentSheet(ss, "📊 Resumen", ["Métrica", "Valor"]);
-  summary.clearContents();
-  summary.getRange(1, 1, 1, 2).setValues([["Métrica","Valor"]]);
-  summary.getRange(2, 1, 4, 2).setValues([
-    ["Interacciones", Math.max(0, log.getLastRow() - 1)],
-    ["Alumnos con actividad", Math.max(0, students.getLastRow() - 1)],
-    ["Última actualización", stamp],
-    ["Estado", "Activo"],
-  ]);
-
-  return { ok: true, tracked: true, total: Math.max(0, log.getLastRow() - 1) };
 }
