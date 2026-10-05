@@ -37,6 +37,8 @@ export function createSheetsClient(course, student = null) {
       model: event.model || "",
       modeId: event.modeId || "",
       activityId: event.activityId || "",
+      conceptIds: event.conceptIds || [],
+      confusionLevel: Number(event.confusionLevel || 0),
       retrievedIds: event.retrievedIds || [],
     };
 
