@@ -40,8 +40,10 @@
 - [ ] OCR para PDFs escaneados sin capa de texto.
 - [x] Análisis semántico asistido para proponer conceptos, ejemplos y actividades.
 - [ ] Revisión pedagógica más rica antes de publicar.
-- [ ] Publicar una instancia del asistente desde STUDIO.
-- [ ] Administrar versiones del course pack.
+- [x] Publicar una instancia del asistente desde STUDIO.
+- [x] Separar borrador y versión publicada para permitir editar después de probar.
+- [x] Resolver instancias estudiantiles dinámicamente desde `?course=<slug>`.
+- [ ] Administrar historial de versiones del course pack.
 
 ## Implementación actual
 
