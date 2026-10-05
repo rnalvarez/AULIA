@@ -55,19 +55,40 @@ export function createLLMClient({ courseId, apiKey, endpoint, models = [], gener
 
     let lastModelError = null;
     for (const model of orderedModels) {
-      const response = await fetch(endpoint, {
+      const requestBody = {
+        model,
+        messages: requestMessages,
+        temperature: limits.temperature,
+        max_tokens: limits.max_tokens,
+        top_p: limits.top_p,
+        stream: false,
+        response_format: { type: "json_object" },
+      };
+
+      let response = await fetch(endpoint, {
         method: "POST",
         headers: { Authorization: "Bearer " + apiKey, "Content-Type": "application/json" },
-        body: JSON.stringify({
-          model,
-          messages: requestMessages,
-          temperature: limits.temperature,
-          max_tokens: limits.max_tokens,
-          top_p: limits.top_p,
-          stream: false,
-        }),
+        body: JSON.stringify(requestBody),
         signal,
       });
+
+      // JSON Object Mode is supported by Groq's Chat Completions API. If a provider
+      // compatibility layer rejects response_format, retry once in plain-text mode
+      // rather than blocking the student.
+      if (response.status === 400 || response.status === 422) {
+        const retryData = await response.clone().json().catch(() => ({}));
+        const retryMessage = retryData?.error?.message || retryData?.message || "";
+        if (/response_format|json/i.test(retryMessage)) {
+          const fallbackBody = { ...requestBody };
+          delete fallbackBody.response_format;
+          response = await fetch(endpoint, {
+            method: "POST",
+            headers: { Authorization: "Bearer " + apiKey, "Content-Type": "application/json" },
+            body: JSON.stringify(fallbackBody),
+            signal,
+          });
+        }
+      }
 
       if (response.status === 404) {
         lastModelError = new Error("El modelo " + model + " no está disponible.");
@@ -82,10 +103,20 @@ export function createLLMClient({ courseId, apiKey, endpoint, models = [], gener
         throw new Error("Error " + response.status + (providerMessage ? ": " + providerMessage : "."));
       }
 
-      const reply = data?.choices?.[0]?.message?.content || data?.reply || data?.output || "";
-      if (!reply) throw new Error("El proveedor de IA devolvió una respuesta vacía.");
+      const rawContent = data?.choices?.[0]?.message?.content || data?.reply || data?.output || "";
+      if (!rawContent) throw new Error("El proveedor de IA devolvió una respuesta vacía.");
+
+      let parsed = null;
+      try { parsed = JSON.parse(rawContent); } catch {}
+
+      const reply = parsed?.reply || rawContent;
+      const analytics = {
+        conceptIds: Array.isArray(parsed?.conceptIds) ? parsed.conceptIds.filter(Boolean) : [],
+        confusionLevel: Math.max(0, Math.min(2, Number(parsed?.confusionLevel) || 0)),
+      };
+
       saveModel(courseId, model);
-      return { ...data, reply, model: data?.model || model };
+      return { ...data, reply, analytics, model: data?.model || model };
     }
     throw lastModelError || new Error("Ningún modelo configurado está disponible.");
   }
