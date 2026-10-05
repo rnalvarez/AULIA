@@ -2,9 +2,13 @@
 
 ## Student runtime
 
-La aplicación estudiantil representa una sola instancia de cátedra.
+La aplicación estudiantil representa una sola instancia de cátedra, pero la instancia se resuelve dinámicamente a partir del enlace público.
 
-En producción, `VITE_AULIA_COURSE_ID` fija el course pack que puede utilizar esa instancia. El cliente no presenta un selector de cátedras.
+Formato:
+
+`https://rnalvarez.github.io/AULIA/?course=<slug>`
+
+El cliente no presenta un selector de cátedras. La raíz sin `course` no elige una cátedra por defecto.
 
 El acceso del alumno se valida contra el endpoint externo configurado por ese course pack.
 
@@ -89,6 +93,30 @@ La autenticación docente del piloto usa email + contraseña con hash SHA-256 y 
 La implementación institucional definitiva podrá sustituir este acceso por Google Workspace/OAuth u otro proveedor de identidad.
 
 Google Apps Script permite desplegar Web Apps con distintas identidades de ejecución; para este diseño se evita depender de `Session.getActiveUser().getEmail()` porque Google indica que el email puede quedar vacío en determinados contextos, entre ellos Web Apps ejecutadas como el propietario. citeturn912173search1turn912173search0
+
+## Publicación y ciclo de edición
+
+Una cátedra tiene una versión de trabajo y, cuando corresponde, una versión publicada separada.
+
+```
+BORRADOR
+  ↓ guardar
+STUDIO
+  ↓ probar
+PUBLICAR
+  ↓
+VERSIÓN PUBLICADA
+```
+
+Al guardar cambios sobre una cátedra ya publicada, la versión pública anterior no se modifica. El estado pasa a `changes-pending`. El docente puede probar la versión publicada, volver al Studio, editar y publicar una nueva versión cuando esté conforme.
+
+La publicación crea o actualiza un segundo course pack privado en Google Drive. El runtime estudiantil solo puede cargar ese archivo publicado.
+
+La URL pública no requiere una nueva página ni una nueva aplicación por cátedra. Cada cátedra utiliza la misma aplicación de GitHub Pages y un identificador en la query:
+
+`https://rnalvarez.github.io/AULIA/?course=montaje`
+
+El acceso del estudiante sigue dependiendo del padrón configurado en el course pack.
 
 ## Principio central
 
