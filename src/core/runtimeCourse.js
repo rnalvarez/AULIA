@@ -1,10 +1,19 @@
-import { COURSE_REGISTRY } from "./courseRegistry.js";
 import { STUDIO_API_ENDPOINT } from "./studioConfig.js";
 import { validateCourse } from "./courseContract.js";
 
 export function getRequestedCourseId() {
   const params = new URLSearchParams(window.location.search);
   return params.get("course") || "";
+}
+
+async function staticDevFallback(courseRef) {
+  if (!import.meta.env.DEV) return null;
+  try {
+    const module = await import("./courseRegistry.js");
+    return module.COURSE_REGISTRY.find(course => course.id === courseRef) || null;
+  } catch {
+    return null;
+  }
 }
 
 async function requestPublishedCourse(courseRef) {
@@ -33,7 +42,10 @@ async function requestPublishedCourse(courseRef) {
 
   const validation = validateCourse(course);
   if (!validation.valid) {
-    throw new Error("La versión publicada no cumple el contrato de AULIA: " + validation.errors.join(" "));
+    throw new Error(
+      "La versión publicada no cumple el contrato de AULIA: " +
+      validation.errors.join(" ")
+    );
   }
 
   return { status: "published", course };
@@ -50,14 +62,9 @@ export async function loadRuntimeCourse() {
     }
     return { course: result.course, status: "published" };
   } catch (error) {
-    // Compatibilidad con los cursos estáticos existentes durante la transición.
-    const fallback = COURSE_REGISTRY.find(course => course.id === ref);
-    if (fallback) return { course: fallback, status: "static-fallback" };
+    // Solo durante desarrollo se permite probar course packs estáticos.
+    const fallback = await staticDevFallback(ref);
+    if (fallback) return { course: fallback, status: "static-dev" };
     return { course: null, status: "error", error };
   }
-}
-
-export function resolveRuntimeCourse() {
-  const ref = getRequestedCourseId();
-  return ref ? COURSE_REGISTRY.find(course => course.id === ref) || null : null;
 }
