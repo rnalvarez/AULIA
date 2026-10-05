@@ -204,20 +204,30 @@ export default function StudioApp() {
     return result;
   }
 
-  async function handleDeleteCourse() {
-    if (!session?.token || !courseMeta?.courseId) return;
+  async function handleDeleteCourse(courseId, title = "esta cátedra") {
+    if (!session?.token || !courseId) return;
 
-    const courseId = courseMeta.courseId;
+    const confirmed = window.confirm(
+      'Vas a eliminar la cátedra "' + String(title || "Nueva cátedra") + '".\n\n' +
+      "Solo puede eliminarse porque todavía está en borrador y no fue publicada. " +
+      "Su Course Pack se enviará a la papelera de Drive.\n\n¿Continuar?"
+    );
+
+    if (!confirmed) return;
+
     setError("");
     try {
       await deleteTeacherCourse(session.token, courseId);
-      setCourses((current) => current.filter((item) => item.courseId !== courseId));
-      setCourse(null);
-      setCourseMeta(null);
 
-      const url = new URL(window.location.href);
-      url.searchParams.delete("course");
-      window.history.replaceState({}, "", url);
+      setCourses((current) => current.filter((item) => item.courseId !== courseId));
+
+      if (courseMeta?.courseId === courseId) {
+        setCourse(null);
+        setCourseMeta(null);
+        const url = new URL(window.location.href);
+        url.searchParams.delete("course");
+        window.history.replaceState({}, "", url);
+      }
     } catch (err) {
       setError(err.message || "No se pudo eliminar la cátedra.");
     }
@@ -259,15 +269,33 @@ export default function StudioApp() {
           <div className="studio-sidebar-label">MIS CÁTEDRAS</div>
           <div className="studio-course-list">
             {courses.length ? courses.map((item) => (
-              <button
-                type="button"
+              <div
+                className={"studio-course-item" + (courseMeta?.courseId === item.courseId ? " active" : "")}
                 key={item.courseId}
-                className={courseMeta?.courseId === item.courseId ? "active" : ""}
-                onClick={() => selectCourse(item.courseId)}
               >
-                <strong>{item.title || "Sin título"}</strong>
-                <span>{item.role === "owner" ? "Responsable" : item.role === "editor" ? "Editor" : "Solo lectura"} · {item.status === "published" ? "Publicada" : item.status === "changes-pending" ? "Cambios pendientes" : "Borrador"}</span>
-              </button>
+                <button
+                  type="button"
+                  className="studio-course-select"
+                  onClick={() => selectCourse(item.courseId)}
+                >
+                  <strong>{item.title || "Sin título"}</strong>
+                  <span>{item.role === "owner" ? "Responsable" : item.role === "editor" ? "Editor" : "Solo lectura"} · {item.status === "published" ? "Publicada" : item.status === "changes-pending" ? "Cambios pendientes" : "Borrador"}</span>
+                </button>
+                {item.status === "draft" && item.role === "owner" && (
+                  <button
+                    type="button"
+                    className="studio-course-delete"
+                    title="Eliminar cátedra"
+                    aria-label={'Eliminar cátedra ' + (item.title || "sin título")}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      handleDeleteCourse(item.courseId, item.title);
+                    }}
+                  >
+                    ×
+                  </button>
+                )}
+              </div>
             )) : (
               <div className="studio-course-empty">Todavía no tenés cátedras asignadas.</div>
             )}
