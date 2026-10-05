@@ -65,6 +65,12 @@ function mergeTeacherProposal(course, proposal) {
       aliases: Array.isArray(item.aliases) ? item.aliases.filter(Boolean).slice(0, 8) : [],
       keywords: Array.isArray(item.keywords) ? item.keywords.filter(Boolean).slice(0, 12) : [],
       sourceCorpusIds,
+      sourceBibliographyIds: Array.isArray(item.sourceBibliographyIds)
+        ? item.sourceBibliographyIds.filter(Boolean).slice(0, 8)
+        : [],
+      confusionCriteria: Array.isArray(item.confusionCriteria)
+        ? item.confusionCriteria.filter(Boolean).slice(0, 5)
+        : [],
       suggested: true,
       suggestionSource: "llm",
     };
