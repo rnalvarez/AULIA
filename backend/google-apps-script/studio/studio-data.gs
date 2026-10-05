@@ -569,6 +569,66 @@ function handleStudioGetCourse(body) {
   };
 }
 
+function handleStudioDeleteCourse(body) {
+  const session = requireTeacherSession(body);
+  const courseId = String(body.courseId || "").trim();
+  if (!courseId) throw new Error("Falta identificar la cátedra.");
+
+  const access = studioRequireCourseAccess(session.teacher.email, courseId, false);
+
+  if (access.role !== "owner") {
+    throw new Error("Solo el responsable de la cátedra puede eliminarla.");
+  }
+
+  // Por seguridad, desde Studio solo se pueden eliminar cátedras
+  // que todavía no fueron publicadas y no tienen una versión publicada.
+  if (access.course.status !== "draft" || access.course.publishedFileId) {
+    throw new Error("Solo se pueden eliminar cátedras en borrador que todavía no fueron publicadas.");
+  }
+
+  // Una cátedra recién creada no debería tener Student Sheet.
+  // Si existe por una intervención externa, evitamos eliminarla silenciosamente.
+  if (access.course.studentSheetId) {
+    throw new Error("La cátedra tiene una Sheet de alumnos asociada y no puede eliminarse desde Studio.");
+  }
+
+  if (access.course.fileId) {
+    try {
+      DriveApp.getFileById(access.course.fileId).setTrashed(true);
+    } catch (err) {
+      console.error("No se pudo enviar a la papelera el Course Pack: " + err);
+    }
+  }
+
+  // Limpiar permisos asociados para no dejar referencias huérfanas.
+  try {
+    const permissions = studioSheet(STUDIO_SHEETS.permissions, "permissions");
+    const values = permissions.getDataRange().getValues();
+    const headers = values[0] || [];
+    const courseCol = studioColumn(headers, ["Course ID"]);
+
+    if (courseCol >= 0) {
+      for (let row = values.length - 1; row >= 1; row -= 1) {
+        if (studioCell(values[row], courseCol) === courseId) {
+          permissions.deleteRow(row + 1);
+        }
+      }
+    }
+  } catch (err) {
+    console.error("No se pudieron limpiar permisos de la cátedra eliminada: " + err);
+  }
+
+  const title = access.course.title;
+  access.course.sheet.deleteRow(access.course.rowIndex);
+  studioAudit(session.teacher.email, "delete-course", courseId, "ok", title);
+
+  return {
+    success: true,
+    courseId,
+    title,
+  };
+}
+
 function handleStudioCreateCourse(body) {
   const session = requireTeacherSession(body);
   const title = String(body.title || "Nueva cátedra").trim().slice(0, 160);
