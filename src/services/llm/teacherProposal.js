@@ -174,15 +174,18 @@ function buildMaterialContext(corpus) {
 
   const outlineSeen = new Set();
   const outline = [];
+  let outlineChars = 0;
   for (const unit of units) {
     const path = unit.path.join(" › ");
     const key = unit.source + "::" + path;
     if (outlineSeen.has(key)) continue;
+    const line =
+      "- " + compact(unit.source, 80) + " · " + compact(path, 150) +
+      (unit.pageStart ? " · pp. " + unit.pageStart + (unit.pageEnd && unit.pageEnd !== unit.pageStart ? "-" + unit.pageEnd : "") : "");
+    if (outlineChars + line.length + 1 > 5000) break;
     outlineSeen.add(key);
-    outline.push(
-      "- " + compact(unit.source, 90) + " · " + compact(path, 180) +
-      (unit.pageStart ? " · pp. " + unit.pageStart + (unit.pageEnd && unit.pageEnd !== unit.pageStart ? "-" + unit.pageEnd : "") : "")
-    );
+    outline.push(line);
+    outlineChars += line.length + 1;
   }
 
   const header = [
@@ -197,7 +200,7 @@ function buildMaterialContext(corpus) {
 
   for (const unit of selected.units) {
     const line = [
-      "[ID:" + unit.ids.join(",") + "]",
+      unit.ids.map((id) => "[ID:" + id + "]").join(" "),
       "FUENTE: " + compact(unit.source, 100),
       "SECCIÓN: " + compact(unit.path.join(" › "), 190),
       unit.pageStart ? "PÁGINAS: " + unit.pageStart + (unit.pageEnd && unit.pageEnd !== unit.pageStart ? "-" + unit.pageEnd : "") : "",
@@ -262,6 +265,34 @@ function buildPrompt({ course, bibliography, materialText, sampled }) {
     refs ? "Bibliografía declarada:\n" + refs : "",
     "MATERIAL ESTRUCTURADO:\n" + materialText,
   ].filter(Boolean).join("\n\n");
+}
+
+function simpleHash(value) {
+  let hash = 2166136261;
+  for (let i = 0; i < String(value || "").length; i += 1) {
+    hash ^= String(value)[i].charCodeAt(0);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(16).padStart(8, "0");
+}
+
+function analysisCacheKey(course, corpus, bibliography) {
+  const materialSignature = (corpus || []).map((item) => [
+    item?.id,
+    item?.documentId,
+    item?.sourcePageStart,
+    item?.sourcePageEnd,
+    item?.title,
+    item?.content,
+  ]);
+  const bibliographySignature = (bibliography || []).map((item) => [
+    item?.id,
+    item?.title,
+    item?.author,
+    item?.year,
+  ]);
+  return "aulia:teacher-analysis:" + String(course?.id || "course") + ":" +
+    simpleHash(JSON.stringify({ materialSignature, bibliographySignature }));
 }
 
 async function request(endpoint, apiKey, model, prompt, responseFormat, signal) {
@@ -338,6 +369,22 @@ export async function requestTeacherProposal({
   if (!endpoint) throw new Error("No hay un endpoint de IA configurado.");
   if (!corpus.length) throw new Error("Primero cargá material.");
 
+  const cacheKey = analysisCacheKey(course, corpus, bibliography);
+  try {
+    const cached = sessionStorage.getItem(cacheKey);
+    if (cached) {
+      const parsed = JSON.parse(cached);
+      if (parsed?.proposal) {
+        return {
+          ...parsed,
+          cached: true,
+          requestCount: 0,
+          warning: "Se reutilizó la revisión de esta bibliografía guardada en esta sesión.",
+        };
+      }
+    }
+  } catch {}
+
   const context = buildMaterialContext(corpus);
   const orderedModels = Array.from(
     new Set((Array.isArray(models) && models.length ? models : DEFAULT_MODELS).filter(Boolean))
@@ -370,7 +417,7 @@ export async function requestTeacherProposal({
         throw new Error("La propuesta de IA no tiene la estructura esperada.");
       }
 
-      return {
+      const cacheResult = {
         ...result,
         proposal,
         model: result.model || model,
@@ -384,6 +431,10 @@ export async function requestTeacherProposal({
         usage: result.usage || null,
         warning: "",
       };
+      try {
+        sessionStorage.setItem(cacheKey, JSON.stringify(cacheResult));
+      } catch {}
+      return cacheResult;
     } catch (error) {
       lastError = error;
       if (error?.status !== 404) break;
