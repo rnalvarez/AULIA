@@ -472,10 +472,11 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
         models: draft.llm?.models,
       });
       const merged = mergeTeacherProposal(draft, result.proposal);
-      const suffix = result.partial || result.truncated
-        ? " · se analizó una selección del corpus"
-        : " · se analizó todo el corpus";
-      const requestSuffix = result.requestCount ? " · " + result.requestCount + " consulta(s) a Groq" : "";
+      const suffix = result.truncated
+        ? " · se revisaron " + result.usedFragments + " de " + result.totalFragments + " unidades representativas"
+        : " · se revisaron " + result.totalFragments + " unidades";
+      const requestSuffix = result.requestCount ? " · " + result.requestCount + " consulta a Groq" : "";
+      const cacheSuffix = result.cached ? " · sin consumir una consulta nueva" : "";
       const warningSuffix = result.warning ? " · " + result.warning : "";
       mutate(() => merged.course,
         "Propuesta IA incorporada: " +
@@ -484,6 +485,7 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
         merged.stats.activities + " actividades" +
         suffix +
         requestSuffix +
+        cacheSuffix +
         warningSuffix +
         ".");
       setStatus(
