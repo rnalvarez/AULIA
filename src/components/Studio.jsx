@@ -636,8 +636,8 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
       </>}
 
       {step === "proposal" && <>
-        <div className="studio-wf-hero"><div className="eyebrow">PASO 03 · PROPUESTA</div><h1>Ahora AULIA propone cómo organizar ese material.</h1><p>AULIA puede analizar las unidades detectadas y proponer conceptos, ejemplos y actividades. El análisis se hace en lotes pequeños para respetar las limitaciones de las cuentas gratuitas de Groq. Nada se publica automáticamente: todo queda como propuesta editable para la cátedra.</p></div>
-        <Panel eyebrow="UNIDADES / CONCEPTOS" title="Núcleo pedagógico" description="La propuesta semántica usa tu propia clave de IA docente. AULIA no envía esa clave al backend ni la guarda en el course pack." actions={<>
+        <div className="studio-wf-hero"><div className="eyebrow">PASO 03 · PROPUESTA</div><h1>Ahora AULIA propone cómo organizar ese material.</h1><p>AULIA analiza las unidades detectadas y primero propone una organización pedagógica. Después genera conceptos derivados para sostener la recuperación del asistente. La revisión usa una sola consulta compacta para respetar las limitaciones de las cuentas gratuitas de Groq. Nada se publica automáticamente: todo queda como propuesta editable para la cátedra.</p></div>
+        <Panel eyebrow="CONCEPTOS DERIVADOS" title="Detalle pedagógico y recuperación" description="La propuesta semántica usa tu propia clave de IA docente. AULIA no envía esa clave al backend ni la guarda en el course pack." actions={<>
           <button className="primary" type="button" onClick={analyzeWithAI} disabled={!canEdit || !draft.corpus?.length || busy}>{busy ? "Analizando…" : "Revisar material con IA"}</button>
           <button className="ghost" type="button" onClick={() => setShowStudioKey((value) => !value)} disabled={!canEdit}>{studioApiKey ? "Cambiar clave IA" : "Configurar IA docente"}</button>
         </>}>
@@ -658,6 +658,82 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
               <button className="ghost" type="button" onClick={() => mutate((c) => ({...c, concepts:[...(c.concepts || []), {id:uniqueId("concepto",c.concepts), title:"Nuevo concepto", aliases:[], keywords:[], summary:"", explanation:""}]}))}>Agregar concepto manualmente</button>
             </div>
           </details>
+
+          <Panel
+            eyebrow="ORGANIZACIÓN PEDAGÓGICA"
+            title="Mapa sugerido por AULIA"
+            description="Estas unidades son la propuesta principal. Revisá el sentido de cada bloque y aprobalo, editá el nombre/objetivo o descartalo. Descartar una unidad no elimina el material original."
+            actions={pending > 0 ? <button className="primary" type="button" onClick={approveAllPedagogicalUnits} disabled={!canEdit || busy}>✓ Aprobar todas ({pending})</button> : null}
+          >
+            {draft.pedagogicalUnits?.length ? (
+              <div className="studio-wf-stack">
+                {draft.pedagogicalUnits.map((unit, i) => {
+                  const unitConcepts = (unit.conceptIds || [])
+                    .map((id) => draft.concepts?.find((concept) => concept.id === id)?.title)
+                    .filter(Boolean);
+                  const approved = unit.reviewStatus === "approved";
+                  return (
+                    <article className="studio-wf-concept" key={unit.id || i}>
+                      <div className="studio-wf-concept-head">
+                        <div>
+                          <strong>{unit.title || "Unidad sin título"}</strong>
+                          <span>
+                            {approved ? "✓ Aprobada" : "Pendiente de revisión"}
+                            {unit.sourceCorpusIds?.length ? " · " + unit.sourceCorpusIds.length + " unidad(es) de fuente" : ""}
+                          </span>
+                        </div>
+                        <div className="studio-wf-panel-actions">
+                          {!approved && (
+                            <button className="ghost" type="button" onClick={() => edit("pedagogicalUnits", i, { reviewStatus: "approved" })} disabled={!canEdit || busy}>
+                              ✓ Aprobar
+                            </button>
+                          )}
+                          {approved && (
+                            <button className="ghost" type="button" onClick={() => edit("pedagogicalUnits", i, { reviewStatus: "pending" })} disabled={!canEdit || busy}>
+                              Marcar para revisar
+                            </button>
+                          )}
+                          <button className="studio-wf-danger" type="button" onClick={() => remove("pedagogicalUnits", i)} disabled={!canEdit || busy}>
+                            Descartar
+                          </button>
+                        </div>
+                      </div>
+                      <div className="studio-wf-grid">
+                        <Field
+                          label="Nombre de la unidad"
+                          value={unit.title}
+                          onChange={(v) => edit("pedagogicalUnits", i, { title: v })}
+                          placeholder="Ej. El valor añadido y la sincronización"
+                        />
+                        <Field
+                          label="Qué debería comprender el estudiante"
+                          value={unit.learningGoal}
+                          onChange={(v) => edit("pedagogicalUnits", i, { learningGoal: v })}
+                          multiline
+                        />
+                        <Field
+                          label="Por qué AULIA propone esta unidad"
+                          value={unit.rationale}
+                          onChange={(v) => edit("pedagogicalUnits", i, { rationale: v })}
+                          multiline
+                        />
+                      </div>
+                      {unitConcepts.length > 0 && (
+                        <div className="studio-wf-concept-source">
+                          <strong>Conceptos relacionados:</strong> {unitConcepts.join(" · ")}
+                        </div>
+                      )}
+                    </article>
+                  );
+                })}
+              </div>
+            ) : (
+              <Empty
+                title="Todavía no hay una organización pedagógica."
+                text="Cargá material y usá “Revisar material con IA”."
+              />
+            )}
+          </Panel>
 
           {draft.concepts?.length ? <div className="studio-wf-stack">{draft.concepts.map((x, i) => {
             const sourceNames = (x.sourceBibliographyIds || [])
