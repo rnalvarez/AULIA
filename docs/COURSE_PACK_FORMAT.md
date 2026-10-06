@@ -4,6 +4,8 @@ Un course pack es la unidad portable de contenido y configuración de una cáted
 
 ## Estructura
 
+AULIA puede conservar una colección ligera de `documents` para registrar qué materiales fueron incorporados. Las unidades del `corpus` pueden incluir `documentId`, `sectionPath`, `sourcePageStart` y `sourcePageEnd`, de modo que la recuperación conserve el contexto de la fuente sin convertir cada página en una unidad pedagógica.
+
 En el repositorio puede existir como:
 
 src/courses/<course-id>/
@@ -24,6 +26,7 @@ STUDIO utiliza además un formato portable único:
   "version": "1.0",
   "course": {},
   "bibliography": [],
+  "documents": [],
   "concepts": [],
   "examples": [],
   "modes": [],
