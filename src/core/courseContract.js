@@ -30,6 +30,7 @@ export function validateCourse(course) {
 
   checkUniqueIds(course?.bibliography, "Bibliografía", errors);
   checkUniqueIds(course?.documents, "Documentos", errors);
+  checkUniqueIds(course?.pedagogicalUnits, "Unidades pedagógicas", errors);
   checkUniqueIds(course?.concepts, "Conceptos", errors);
   checkUniqueIds(course?.modes, "Modos", errors);
   checkUniqueIds(course?.activities, "Actividades", errors);
@@ -39,6 +40,13 @@ export function validateCourse(course) {
 
   for (const [index, chunk] of (course?.corpus || []).entries()) {
     if (!chunk?.content) errors.push(`Corpus[${index}] no tiene content`);
+  }
+
+  for (const unit of course?.pedagogicalUnits || []) {
+    if (!unit?.title) errors.push(`Una unidad pedagógica no tiene title`);
+    if (unit?.reviewStatus && !["pending", "approved"].includes(unit.reviewStatus)) {
+      errors.push(`La unidad pedagógica "${unit?.id || "sin id"}" tiene reviewStatus inválido`);
+    }
   }
 
   const bibliographyIds = new Set((course?.bibliography || []).map((item) => item?.id).filter(Boolean));
