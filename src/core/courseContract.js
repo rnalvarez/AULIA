@@ -29,6 +29,7 @@ export function validateCourse(course) {
   }
 
   checkUniqueIds(course?.bibliography, "Bibliografía", errors);
+  checkUniqueIds(course?.documents, "Documentos", errors);
   checkUniqueIds(course?.concepts, "Conceptos", errors);
   checkUniqueIds(course?.modes, "Modos", errors);
   checkUniqueIds(course?.activities, "Actividades", errors);
