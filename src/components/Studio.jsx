@@ -1,12 +1,12 @@
 import { useEffect, useMemo, useState } from "react";
 import { cloneCourse, validateCourse } from "../core/courseContract.js";
 import { downloadCoursePack, readCoursePackFile } from "../core/coursePackIO.js";
-import { readMaterialFile, materialToCorpus, mergeImportedBibliography } from "../core/materialIO.js";
+import { readMaterialFile, materialToCorpus, mergeImportedBibliography, mergeImportedDocuments } from "../core/materialIO.js";
 import { requestTeacherProposal } from "../services/llm/teacherProposal.js";
 import { clearStudioApiKey, isGroqApiKey, loadStudioApiKey, saveStudioApiKey } from "../utils/studioStorage.js";
 
 const STORAGE_PREFIX = "aulia:studio:";
-const VERSION = "0.5";
+const VERSION = "0.6";
 const STEPS = [
   ["overview", "01", "Cátedra"],
   ["material", "02", "Material"],
@@ -331,6 +331,7 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
       const baseIds = [...(draft.corpus || [])];
       const collected = [];
       const bibliography = [];
+      const documents = [];
       let warnings = 0;
       let pages = 0;
 
@@ -339,6 +340,7 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
         const material = materialToCorpus(extracted, [...baseIds, ...collected]);
         collected.push(...material.corpus);
         bibliography.push(...(material.bibliography || []));
+        if (material.document) documents.push(material.document);
         warnings += material.warnings?.length || 0;
         pages += material.pages || 0;
       }
@@ -346,8 +348,9 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
       mutate((current) => ({
         ...current,
         corpus: [...(current.corpus || []), ...collected],
+        documents: mergeImportedDocuments(current.documents || [], documents),
         bibliography: mergeImportedBibliography(current.bibliography || [], bibliography),
-      }), `${collected.length} fragmentos incorporados desde ${files.length} documento${files.length === 1 ? "" : "s"}.` +
+      }), `${collected.length} unidades de lectura incorporadas desde ${files.length} documento${files.length === 1 ? "" : "s"}.` +
         (pages ? ` · ${pages} páginas.` : "") +
         (warnings ? ` · ${warnings} aviso(s) de conversión.` : ""));
     } catch (err) {
@@ -469,15 +472,19 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
         models: draft.llm?.models,
       });
       const merged = mergeTeacherProposal(draft, result.proposal);
-      const suffix = result.truncated
-        ? " · se analizó una selección representativa del corpus"
-        : " · se analizó todo el corpus disponible";
+      const suffix = result.partial || result.truncated
+        ? " · se analizó una selección del corpus"
+        : " · se analizó todo el corpus";
+      const requestSuffix = result.requestCount ? " · " + result.requestCount + " consulta(s) a Groq" : "";
+      const warningSuffix = result.warning ? " · " + result.warning : "";
       mutate(() => merged.course,
         "Propuesta IA incorporada: " +
         merged.stats.concepts + " conceptos · " +
         merged.stats.examples + " ejemplos · " +
         merged.stats.activities + " actividades" +
         suffix +
+        requestSuffix +
+        warningSuffix +
         ".");
       setStatus(
         "Propuesta IA incorporada: " +
@@ -485,6 +492,8 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
         merged.stats.examples + " ejemplos · " +
         merged.stats.activities + " actividades" +
         suffix +
+        requestSuffix +
+        warningSuffix +
         "."
       );
       setStep("proposal");
@@ -551,22 +560,22 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
       </>}
 
       {step === "material" && <>
-        <div className="studio-wf-hero"><div className="eyebrow">PASO 02 · MATERIAL</div><h1>Cargá la bibliografía y el material de trabajo.</h1><p>La bibliografía identifica las fuentes; el corpus contiene los fragmentos que AULIA puede recuperar. No necesitás crear conceptos a mano.</p></div>
+        <div className="studio-wf-hero"><div className="eyebrow">PASO 02 · MATERIAL</div><h1>Cargá la bibliografía y el material de trabajo.</h1><p>AULIA primero organiza el documento y después propone su estructura pedagógica. No necesitás crear conceptos ni fragmentos a mano.</p></div>
         <Panel eyebrow="BIBLIOGRAFÍA" title="Fuentes de la cátedra" description="Libros, apuntes o materiales principales." actions={<button className="ghost" type="button" onClick={addBibliography} disabled={!canEdit}>+ Agregar fuente</button>}>
           {draft.bibliography?.length ? <div className="studio-wf-stack">{draft.bibliography.map((x, i) => <Row key={x.id || i} title={x.title} meta={[x.author, x.year].filter(Boolean).join(" · ")} onRemove={() => remove("bibliography", i)}><div className="studio-wf-grid">
             <Field label="Título" value={x.title} onChange={(v) => edit("bibliography", i, { title: v })}/><Field label="Autor" value={x.author} onChange={(v) => edit("bibliography", i, { author: v })}/><Field label="Editorial" value={x.publisher} onChange={(v) => edit("bibliography", i, { publisher: v })}/><Field label="Año" value={x.year} onChange={(v) => edit("bibliography", i, { year: v })}/><Field label="Rol" value={x.role} onChange={(v) => edit("bibliography", i, { role: v })}/>
           </div></Row>)}</div> : <Empty title="Todavía no cargaste fuentes." text="Podés agregarlas manualmente o incorporarlas desde un JSON." action={<button className="ghost" type="button" onClick={addBibliography}>Agregar primera fuente</button>}/>}
         </Panel>
-        <Panel eyebrow="CORPUS" title="Material que AULIA podrá recuperar" description="PDF, DOCX, TXT, Markdown y JSON se convierten en fragmentos. Podés seleccionar varios documentos; la extracción ocurre localmente en este navegador." actions={<label className="primary studio-wf-file-btn">{busy ? "Procesando…" : "Cargar material"}<input type="file" accept=".txt,.md,.markdown,.json,.pdf,.docx,text/plain,text/markdown,application/json,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document" multiple onChange={importMaterial} disabled={busy}/></label>}>
-          {draft.corpus?.length ? <><div className="studio-wf-stats"><div><strong>{draft.corpus.length}</strong><span>fragmentos</span></div><div><strong>{new Set(draft.corpus.map((x) => x.chapter).filter(Boolean)).size}</strong><span>unidades de origen</span></div><div><strong>{pending}</strong><span>propuestas pendientes</span></div></div><div className="studio-wf-corpus-list">{draft.corpus.slice(0, 18).map((x, i) => <article key={x.id || i}><div><strong>{x.title || "Fragmento"}</strong><span>{x.chapter || (x.sourcePage ? "Página " + x.sourcePage : "Sin unidad de origen")}{x.source ? " · " + x.source : ""}</span></div><p>{String(x.content || "").slice(0, 240)}{String(x.content || "").length > 240 ? "…" : ""}</p></article>)}{draft.corpus.length > 18 && <small>Mostrando 18 de {draft.corpus.length} fragmentos.</small>}</div></> : <Empty title="El corpus está vacío." text="Empezá cargando un PDF, DOCX, TXT, Markdown o JSON."/>}
+        <Panel eyebrow="MATERIAL" title="Material que AULIA podrá recuperar" description="PDF, DOCX, TXT, Markdown y JSON se convierten en unidades de lectura. AULIA conserva capítulos, secciones y páginas cuando puede detectarlos; la extracción ocurre localmente en este navegador." actions={<label className="primary studio-wf-file-btn">{busy ? "Procesando…" : "Cargar material"}<input type="file" accept=".txt,.md,.markdown,.json,.pdf,.docx,text/plain,text/markdown,application/json,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document" multiple onChange={importMaterial} disabled={busy}/></label>}>
+          {draft.corpus?.length ? <><div className="studio-wf-stats"><div><strong>{draft.corpus.length}</strong><span>unidades de lectura</span></div><div><strong>{draft.documents?.length || new Set(draft.corpus.map((x) => x.source).filter(Boolean)).size}</strong><span>documentos</span></div><div><strong>{new Set(draft.corpus.map((x) => (x.unitId || x.id)?.replace(/-p\\d+$/, "")).filter(Boolean)).size}</strong><span>unidades conceptuales</span></div></div><div className="studio-wf-corpus-list">{draft.corpus.slice(0, 18).map((x, i) => <article key={x.id || i}><div><strong>{x.title || "Unidad"}</strong><span>{(x.sectionPath?.length ? x.sectionPath.join(" › ") : x.chapter) || "Sin sección detectada"}{x.sourcePageStart ? " · págs. " + x.sourcePageStart + (x.sourcePageEnd && x.sourcePageEnd !== x.sourcePageStart ? "–" + x.sourcePageEnd : "") : ""}{x.source ? " · " + x.source : ""}</span></div><p>{String(x.content || "").slice(0, 240)}{String(x.content || "").length > 240 ? "…" : ""}</p></article>)}{draft.corpus.length > 18 && <small>Mostrando 18 de {draft.corpus.length} unidades de lectura.</small>}</div></> : <Empty title="El corpus está vacío." text="Empezá cargando un PDF, DOCX, TXT, Markdown o JSON. AULIA detectará la estructura antes de proponer la organización pedagógica."/>}
         </Panel>
         <div className="studio-wf-next"><button className="primary" type="button" onClick={() => setStep("proposal")}>Ir a la propuesta pedagógica →</button></div>
       </>}
 
       {step === "proposal" && <>
-        <div className="studio-wf-hero"><div className="eyebrow">PASO 03 · PROPUESTA</div><h1>Ahora AULIA propone cómo organizar ese material.</h1><p>La IA puede detectar conceptos, relaciones, ejemplos y actividades a partir del material. Nada se publica automáticamente: todo queda como propuesta editable para la cátedra.</p></div>
+        <div className="studio-wf-hero"><div className="eyebrow">PASO 03 · PROPUESTA</div><h1>Ahora AULIA propone cómo organizar ese material.</h1><p>AULIA puede analizar las unidades detectadas y proponer conceptos, ejemplos y actividades. El análisis se hace en lotes pequeños para respetar las limitaciones de las cuentas gratuitas de Groq. Nada se publica automáticamente: todo queda como propuesta editable para la cátedra.</p></div>
         <Panel eyebrow="UNIDADES / CONCEPTOS" title="Núcleo pedagógico" description="La propuesta semántica usa tu propia clave de IA docente. AULIA no envía esa clave al backend ni la guarda en el course pack." actions={<>
-          <button className="primary" type="button" onClick={analyzeWithAI} disabled={!canEdit || !draft.corpus?.length || busy}>{busy ? "Analizando…" : "Analizar con IA"}</button>
+          <button className="primary" type="button" onClick={analyzeWithAI} disabled={!canEdit || !draft.corpus?.length || busy}>{busy ? "Analizando…" : "Revisar material con IA"}</button>
           <button className="ghost" type="button" onClick={() => setShowStudioKey((value) => !value)} disabled={!canEdit}>{studioApiKey ? "Cambiar clave IA" : "Configurar IA docente"}</button>
         </>}>
           {(showStudioKey || !studioApiKey) && <div className="studio-wf-ai-setup">
