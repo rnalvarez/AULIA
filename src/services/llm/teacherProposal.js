@@ -10,10 +10,9 @@ const DEFAULT_MODELS = [
   "qwen/qwen3.8-27b",
 ];
 
-const MAX_BATCH_CHARS = 15000;
-const MAX_BATCH_REQUESTS = 16;
-const MAX_OUTPUT_TOKENS = 1200;
-const MAX_EXCERPT_CHARS = 850;
+const MAX_CONTEXT_CHARS = 13000;
+const MAX_OUTPUT_TOKENS = 1500;
+const MAX_REPRESENTATIVE_UNITS = 36;
 
 const PROPOSAL_SCHEMA = {
   type: "object",
@@ -91,63 +90,131 @@ const PROPOSAL_SCHEMA = {
   additionalProperties: false,
 };
 
-function compactText(value, max = MAX_EXCERPT_CHARS) {
+function compact(value, max) {
   const clean = String(value || "").replace(/\\s+/g, " ").trim();
   return clean.length > max ? clean.slice(0, max) + "…" : clean;
 }
 
-function sectionLabel(chunk) {
-  if (Array.isArray(chunk?.sectionPath) && chunk.sectionPath.length) {
-    return chunk.sectionPath.join(" › ");
-  }
-  return String(chunk?.chapter || chunk?.title || "Material general").trim();
-}
-
-function buildMaterialBatches(corpus, maxChars = MAX_BATCH_CHARS) {
-  const batches = [];
-  let current = [];
-  let total = 0;
+function logicalUnits(corpus) {
+  const groups = new Map();
 
   for (const chunk of corpus || []) {
-    const excerpt = compactText(chunk?.content, MAX_EXCERPT_CHARS);
+    const key = String(chunk?.unitId || chunk?.id || "");
+    if (!key) continue;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(chunk);
+  }
+
+  return Array.from(groups.values()).map((parts) => {
+    const ordered = parts.slice().sort((a, b) =>
+      Number(a?.sourcePageStart || a?.sourcePage || 0) -
+      Number(b?.sourcePageStart || b?.sourcePage || 0)
+    );
+
+    const first = ordered[0] || {};
+    const last = ordered[ordered.length - 1] || first;
+    const title = String(first.title || first.chapter || "Unidad").replace(/ · parte \\d+$/i, "");
+    const content = String(first.content || "");
+    const tailContent = ordered.length > 1
+      ? String(last.content || "")
+      : content;
+
+    const representative = content.length > 500
+      ? content.slice(0, 300) + " … " + tailContent.slice(Math.max(0, tailContent.length - 170))
+      : content;
+
+    return {
+      id: String(first.unitId || first.id || ""),
+      source: String(first.source || "Material general"),
+      title,
+      path: Array.isArray(first.sectionPath) && first.sectionPath.length
+        ? first.sectionPath
+        : (first.chapter ? [first.chapter] : [title]),
+      pageStart: first.sourcePageStart || first.sourcePage || null,
+      pageEnd: last.sourcePageEnd || last.sourcePage || first.sourcePageEnd || first.sourcePage || null,
+      content: representative,
+      ids: ordered.map((item) => item.id).filter(Boolean),
+    };
+  });
+}
+
+function selectRepresentatives(units, maxUnits = MAX_REPRESENTATIVE_UNITS) {
+  if (units.length <= maxUnits) {
+    return { units, sampled: false };
+  }
+
+  const bySource = new Map();
+  for (const unit of units) {
+    if (!bySource.has(unit.source)) bySource.set(unit.source, []);
+    bySource.get(unit.source).push(unit);
+  }
+
+  const sources = Array.from(bySource.values());
+  const selected = [];
+  let round = 0;
+
+  while (selected.length < maxUnits) {
+    let added = false;
+    for (const sourceUnits of sources) {
+      if (round >= sourceUnits.length) continue;
+      selected.push(sourceUnits[round]);
+      added = true;
+      if (selected.length >= maxUnits) break;
+    }
+    if (!added) break;
+    round += 1;
+  }
+
+  return { units: selected, sampled: true };
+}
+
+function buildMaterialContext(corpus) {
+  const units = logicalUnits(corpus);
+  const selected = selectRepresentatives(units);
+
+  const outlineSeen = new Set();
+  const outline = [];
+  for (const unit of units) {
+    const path = unit.path.join(" › ");
+    const key = unit.source + "::" + path;
+    if (outlineSeen.has(key)) continue;
+    outlineSeen.add(key);
+    outline.push(
+      "- " + compact(unit.source, 90) + " · " + compact(path, 180) +
+      (unit.pageStart ? " · pp. " + unit.pageStart + (unit.pageEnd && unit.pageEnd !== unit.pageStart ? "-" + unit.pageEnd : "") : "")
+    );
+  }
+
+  const header = [
+    "MAPA DE DOCUMENTOS Y SECCIONES:",
+    outline.join("\n"),
+    "",
+    "EXTRACTOS REPRESENTATIVOS:",
+  ].join("\n");
+
+  const lines = [];
+  let total = header.length;
+
+  for (const unit of selected.units) {
     const line = [
-      "[ID:" + String(chunk?.id || "") + "]",
-      "UNIDAD: " + compactText(sectionLabel(chunk), 180),
-      chunk?.source ? "FUENTE: " + compactText(chunk.source, 100) : "",
-      chunk?.sourcePageStart
-        ? "PÁGINAS: " + chunk.sourcePageStart + (chunk?.sourcePageEnd && chunk.sourcePageEnd !== chunk.sourcePageStart ? "-" + chunk.sourcePageEnd : "")
-        : "",
-      "TEXTO: " + excerpt,
+      "[ID:" + unit.ids.join(",") + "]",
+      "FUENTE: " + compact(unit.source, 100),
+      "SECCIÓN: " + compact(unit.path.join(" › "), 190),
+      unit.pageStart ? "PÁGINAS: " + unit.pageStart + (unit.pageEnd && unit.pageEnd !== unit.pageStart ? "-" + unit.pageEnd : "") : "",
+      "TEXTO: " + compact(unit.content, 500),
     ].filter(Boolean).join(" | ");
 
-    if (current.length && total + line.length + 1 > maxChars) {
-      batches.push(current.join("\n"));
-      current = [];
-      total = 0;
-    }
-
-    current.push(line);
+    if (total + line.length + 1 > MAX_CONTEXT_CHARS) break;
+    lines.push(line);
     total += line.length + 1;
   }
 
-  if (current.length) batches.push(current.join("\n"));
-  return batches;
-}
-
-function buildIndexBatches(corpus, maxChars = MAX_BATCH_CHARS) {
-  // Use the structured corpus rather than raw pages. Every unit contributes a
-  // short beginning and ending excerpt so a long section keeps its context
-  // without consuming the whole Groq free-tier context budget.
-  return buildMaterialBatches((corpus || []).map((chunk) => {
-    const content = String(chunk?.content || "");
-    const excerpt = content.length > MAX_EXCERPT_CHARS
-      ? content.slice(0, Math.floor(MAX_EXCERPT_CHARS * 0.62)) +
-        " … " +
-        content.slice(Math.max(0, content.length - Math.floor(MAX_EXCERPT_CHARS * 0.30)))
-      : content;
-
-    return { ...chunk, content: excerpt };
-  }), maxChars);
+  return {
+    text: header + "\n" + lines.join("\n"),
+    selectedUnits: selected.units.length,
+    totalUnits: units.length,
+    sampled: selected.sampled || lines.length < selected.units.length,
+  };
 }
 
 function responseFormatFor(model) {
@@ -161,10 +228,43 @@ function responseFormatFor(model) {
       },
     };
   }
+
   return { type: "json_object" };
 }
 
-async function request(endpoint, apiKey, model, prompt, responseFormat, maxTokens, signal) {
+function buildPrompt({ course, bibliography, materialText, sampled }) {
+  const refs = (bibliography || [])
+    .slice(0, 20)
+    .map((item) => [
+      "[BIB-ID:" + String(item?.id || "") + "]",
+      String(item?.title || ""),
+      item?.author,
+      item?.year,
+    ].filter(Boolean).join(" · "))
+    .filter(Boolean)
+    .join("\n");
+
+  return [
+    "Construí una primera propuesta pedagógica para una cátedra universitaria a partir de los materiales suministrados.",
+    "La extracción y organización documental se hicieron localmente antes de esta consulta.",
+    sampled
+      ? "La biblioteca completa está disponible en AULIA, pero para esta consulta se usa una muestra representativa de unidades para respetar los límites de una cuenta gratuita. No infieras contenido que no aparezca en los extractos."
+      : "El conjunto de unidades relevantes entra en esta consulta.",
+    "NO resumas cada página. Detectá una organización docente útil: conceptos centrales, relaciones claras entre ideas, ejemplos/casos explícitos y actividades de aprendizaje.",
+    "Un concepto debe ser una idea enseñable y reutilizable, no simplemente un título de sección.",
+    "Trabajá exclusivamente con la evidencia suministrada. No inventes autores, obras, conceptos, ejemplos ni afirmaciones.",
+    "Los sourceIds deben copiar EXACTAMENTE IDs que aparezcan en [ID:...].",
+    "sourceBibliographyIds solo puede usar los [BIB-ID:...] declarados y debe corresponder a una fuente realmente relacionada.",
+    "confusionCriteria debe describir entre 2 y 5 errores o confusiones plausibles y fundamentados por la evidencia.",
+    "Priorizá precisión y utilidad docente. Proponé hasta 14 conceptos, 8 ejemplos y 6 actividades.",
+    "Curso: " + String(course?.title || ""),
+    "Descripción: " + String(course?.description || ""),
+    refs ? "Bibliografía declarada:\n" + refs : "",
+    "MATERIAL ESTRUCTURADO:\n" + materialText,
+  ].filter(Boolean).join("\n\n");
+}
+
+async function request(endpoint, apiKey, model, prompt, responseFormat, signal) {
   const response = await fetch(endpoint, {
     method: "POST",
     headers: {
@@ -177,13 +277,13 @@ async function request(endpoint, apiKey, model, prompt, responseFormat, maxToken
         {
           role: "system",
           content:
-            "Sos diseñador curricular y especialista en educación superior. Devolvé solamente el objeto estructurado solicitado. Trabajá con extrema fidelidad al material recibido.",
+            "Sos diseñador curricular y especialista en educación superior. Devolvé únicamente el objeto estructurado solicitado y no agregues información ausente de la evidencia.",
         },
         { role: "user", content: prompt },
       ],
       temperature: 0.15,
       top_p: 0.9,
-      max_tokens: maxTokens,
+      max_tokens: MAX_OUTPUT_TOKENS,
       reasoning_effort: "low",
       response_format: responseFormat,
       stream: false,
@@ -214,164 +314,15 @@ async function request(endpoint, apiKey, model, prompt, responseFormat, maxToken
   }
 
   return {
-    proposal: parsed || {},
+    proposal: parsed || {
+      pedagogicalSummary: "",
+      concepts: [],
+      examples: [],
+      activities: [],
+    },
     model: data?.model || model,
     usage: data?.usage || null,
   };
-}
-
-function buildBatchPrompt({ course, bibliography, materialText, batchNumber, totalBatches }) {
-  const refs = (bibliography || [])
-    .slice(0, 20)
-    .map((item) => [
-      "[BIB-ID:" + String(item?.id || "") + "]",
-      String(item?.title || ""),
-      item?.author,
-      item?.year,
-    ].filter(Boolean).join(" · "))
-    .filter(Boolean)
-    .join("\n");
-
-  return [
-    "Analizá este lote de una bibliografía universitaria para construir una primera propuesta docente.",
-    "Este es el lote " + batchNumber + " de " + totalBatches + ". Puede existir material relacionado en otros lotes.",
-    "NO resumas cada fragmento. Detectá solamente conceptos enseñables, ejemplos explícitos o claramente identificables y actividades razonables que puedan sostenerse con este lote.",
-    "No inventes autores, obras, conceptos ni afirmaciones. No completes información ausente.",
-    "Los sourceIds deben copiar exactamente IDs [ID:...] que aparecen en este lote.",
-    "sourceBibliographyIds solo puede usar los [BIB-ID:...] declarados.",
-    "Los conceptos deben ser ideas reutilizables y relativamente estables, no títulos de páginas ni frases accidentales.",
-    "confusionCriteria debe describir posibles confusiones observables y debe poder justificarse con el material recibido.",
-    "Cuando una relación no esté suficientemente respaldada, dejala fuera.",
-    "Priorizá precisión sobre cantidad. Máximo 8 conceptos, 4 ejemplos y 3 actividades en este lote.",
-    "Curso: " + String(course?.title || ""),
-    "Descripción: " + String(course?.description || ""),
-    refs ? "Bibliografía declarada:\n" + refs : "",
-    "MATERIAL DEL LOTE:\n" + materialText,
-  ].filter(Boolean).join("\n\n");
-}
-
-function compactProposalCandidates(proposals) {
-  const concepts = [];
-  const examples = [];
-  const activities = [];
-
-  for (const proposal of proposals) {
-    for (const item of proposal?.concepts || []) {
-      concepts.push({
-        title: compactText(item.title, 100),
-        chapter: compactText(item.chapter, 150),
-        summary: compactText(item.summary, 320),
-        explanation: compactText(item.explanation, 180),
-        aliases: (item.aliases || []).slice(0, 4),
-        keywords: (item.keywords || []).slice(0, 6),
-        sourceIds: (item.sourceIds || []).slice(0, 6),
-        sourceBibliographyIds: (item.sourceBibliographyIds || []).slice(0, 6),
-        confusionCriteria: (item.confusionCriteria || []).slice(0, 3),
-      });
-    }
-    for (const item of proposal?.examples || []) {
-      examples.push({
-        title: compactText(item.title, 120),
-        director: compactText(item.director, 80),
-        description: compactText(item.description, 300),
-        conceptTitles: (item.conceptTitles || []).slice(0, 6),
-        sourceIds: (item.sourceIds || []).slice(0, 6),
-      });
-    }
-    for (const item of proposal?.activities || []) {
-      activities.push({
-        title: compactText(item.title, 120),
-        description: compactText(item.description, 280),
-        goal: compactText(item.goal, 200),
-        strategy: item.strategy || "retrieve",
-      });
-    }
-  }
-
-  return {
-    concepts: concepts.slice(0, 28),
-    examples: examples.slice(0, 12),
-    activities: activities.slice(0, 10),
-  };
-}
-
-function buildSynthesisPrompt({ course, candidates, bibliography }) {
-  const refs = (bibliography || [])
-    .slice(0, 20)
-    .map((item) => [
-      "[BIB-ID:" + String(item?.id || "") + "]",
-      String(item?.title || ""),
-      item?.author,
-      item?.year,
-    ].filter(Boolean).join(" · "))
-    .filter(Boolean)
-    .join("\n");
-
-  return [
-    "Construí una propuesta pedagógica consolidada a partir de candidatos extraídos de la bibliografía de una cátedra universitaria.",
-    "Los candidatos provienen de lotes diferentes del mismo corpus. Tu tarea es eliminar duplicados, unir formulaciones equivalentes, priorizar conceptos centrales y conservar solo afirmaciones respaldadas por los candidatos.",
-    "NO agregues conceptos nuevos. NO inventes relaciones. Solo podés conservar, combinar o descartar candidatos.",
-    "Conservá sourceIds y sourceBibliographyIds únicamente cuando pertenezcan a los candidatos correspondientes.",
-    "Priorizá hasta 14 conceptos, 8 ejemplos y 6 actividades.",
-    "La pedagogicalSummary debe explicar en pocas líneas cómo queda organizada la propuesta, sin inventar contenido.",
-    "Curso: " + String(course?.title || ""),
-    refs ? "Bibliografía declarada:\n" + refs : "",
-    "CANDIDATOS:\n" + JSON.stringify(candidates),
-  ].filter(Boolean).join("\n\n");
-}
-
-function emptyProposal() {
-  return {
-    pedagogicalSummary: "",
-    concepts: [],
-    examples: [],
-    activities: [],
-  };
-}
-
-function mergeCandidateProposals(proposals) {
-  const result = emptyProposal();
-  const seenConcepts = new Map();
-  const seenExamples = new Map();
-  const seenActivities = new Map();
-
-  for (const proposal of proposals) {
-    if (!result.pedagogicalSummary && proposal?.pedagogicalSummary) {
-      result.pedagogicalSummary = proposal.pedagogicalSummary;
-    }
-
-    for (const item of proposal?.concepts || []) {
-      const key = String(item?.title || "").toLowerCase().trim();
-      if (!key) continue;
-      const existing = seenConcepts.get(key);
-      if (!existing) {
-        seenConcepts.set(key, item);
-        result.concepts.push(item);
-      } else {
-        existing.sourceIds = Array.from(new Set([...(existing.sourceIds || []), ...(item.sourceIds || [])])).slice(0, 8);
-        existing.sourceBibliographyIds = Array.from(new Set([
-          ...(existing.sourceBibliographyIds || []),
-          ...(item.sourceBibliographyIds || []),
-        ])).slice(0, 8);
-      }
-    }
-
-    for (const item of proposal?.examples || []) {
-      const key = String(item?.title || "").toLowerCase().trim();
-      if (!key || seenExamples.has(key)) continue;
-      seenExamples.set(key, item);
-      result.examples.push(item);
-    }
-
-    for (const item of proposal?.activities || []) {
-      const key = String(item?.title || "").toLowerCase().trim();
-      if (!key || seenActivities.has(key)) continue;
-      seenActivities.set(key, item);
-      result.activities.push(item);
-    }
-  }
-
-  return result;
 }
 
 export async function requestTeacherProposal({
@@ -387,134 +338,63 @@ export async function requestTeacherProposal({
   if (!endpoint) throw new Error("No hay un endpoint de IA configurado.");
   if (!corpus.length) throw new Error("Primero cargá material.");
 
-  const batches = buildIndexBatches(corpus);
-  if (!batches.length) throw new Error("El material no contiene unidades analizables.");
-
-  const selectedBatches = batches.slice(0, MAX_BATCH_REQUESTS);
-  const truncated = selectedBatches.length < batches.length;
+  const context = buildMaterialContext(corpus);
   const orderedModels = Array.from(
     new Set((Array.isArray(models) && models.length ? models : DEFAULT_MODELS).filter(Boolean))
   );
 
-  const proposals = [];
-  let totalUsage = { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 };
-  let requestCount = 0;
   let lastError = null;
 
-  for (let index = 0; index < selectedBatches.length; index += 1) {
-    const prompt = buildBatchPrompt({
-      course,
-      bibliography,
-      materialText: selectedBatches[index],
-      batchNumber: index + 1,
-      totalBatches: selectedBatches.length,
-    });
+  for (const model of orderedModels) {
+    try {
+      const result = await request(
+        endpoint,
+        apiKey,
+        model,
+        buildPrompt({
+          course,
+          bibliography,
+          materialText: context.text,
+          sampled: context.sampled,
+        }),
+        responseFormatFor(model),
+        signal
+      );
 
-    let batchResult = null;
-
-    for (const model of orderedModels) {
-      try {
-        batchResult = await request(
-          endpoint,
-          apiKey,
-          model,
-          prompt,
-          responseFormatFor(model),
-          MAX_OUTPUT_TOKENS,
-          signal
-        );
-        requestCount += 1;
-        break;
-      } catch (error) {
-        lastError = error;
-        if (error?.status !== 404) break;
+      const proposal = result.proposal || {};
+      if (
+        !Array.isArray(proposal.concepts) ||
+        !Array.isArray(proposal.examples) ||
+        !Array.isArray(proposal.activities)
+      ) {
+        throw new Error("La propuesta de IA no tiene la estructura esperada.");
       }
-    }
 
-    if (!batchResult) {
-      if (proposals.length) break;
-      throw lastError || new Error("Ningún modelo configurado está disponible.");
+      return {
+        ...result,
+        proposal,
+        model: result.model || model,
+        usedFragments: context.selectedUnits,
+        totalFragments: context.totalUnits,
+        truncated: context.sampled,
+        partial: false,
+        batches: 1,
+        requestCount: 1,
+        synthesisUsed: false,
+        usage: result.usage || null,
+        warning: "",
+      };
+    } catch (error) {
+      lastError = error;
+      if (error?.status !== 404) break;
     }
-
-    proposals.push(batchResult.proposal || emptyProposal());
-    if (batchResult.usage) {
-      totalUsage.prompt_tokens += Number(batchResult.usage.prompt_tokens || 0);
-      totalUsage.completion_tokens += Number(batchResult.usage.completion_tokens || 0);
-      totalUsage.total_tokens += Number(batchResult.usage.total_tokens || 0);
-    }
-
-    if (lastError?.status === 429) break;
   }
 
-  if (!proposals.length) {
+  if (lastError?.status === 429) {
     throw new Error(
-      lastError?.status === 429
-        ? "La cuenta de Groq alcanzó su límite gratuito. No se pudo generar la propuesta."
-        : (lastError || new Error("No se pudo analizar el material."))
+      "La cuenta gratuita de Groq alcanzó su límite de uso. AULIA no realizó reintentos automáticos para no consumir más cuota."
     );
   }
 
-  let proposal = mergeCandidateProposals(proposals);
-  let synthesisUsed = false;
-
-  // One small consolidation call is far cheaper than sending the original
-  // corpus again, and it makes concepts from different files cohere.
-  if (proposals.length > 1 && proposal.concepts.length) {
-    const candidates = compactProposalCandidates(proposals);
-    const synthesisPrompt = buildSynthesisPrompt({
-      course,
-      candidates,
-      bibliography,
-    });
-
-    for (const model of orderedModels) {
-      try {
-        const synthesized = await request(
-          endpoint,
-          apiKey,
-          model,
-          synthesisPrompt,
-          responseFormatFor(model),
-          MAX_OUTPUT_TOKENS,
-          signal
-        );
-        requestCount += 1;
-        const next = synthesized.proposal || emptyProposal();
-        if (Array.isArray(next.concepts) || Array.isArray(next.examples) || Array.isArray(next.activities)) {
-          proposal = {
-            pedagogicalSummary: next.pedagogicalSummary || proposal.pedagogicalSummary,
-            concepts: Array.isArray(next.concepts) ? next.concepts : proposal.concepts,
-            examples: Array.isArray(next.examples) ? next.examples : proposal.examples,
-            activities: Array.isArray(next.activities) ? next.activities : proposal.activities,
-          };
-          synthesisUsed = true;
-        }
-        if (synthesized.usage) {
-          totalUsage.prompt_tokens += Number(synthesized.usage.prompt_tokens || 0);
-          totalUsage.completion_tokens += Number(synthesized.usage.completion_tokens || 0);
-          totalUsage.total_tokens += Number(synthesized.usage.total_tokens || 0);
-        }
-        break;
-      } catch (error) {
-        lastError = error;
-        if (error?.status !== 404) break;
-      }
-    }
-  }
-
-  return {
-    proposal,
-    model: orderedModels[0],
-    usedFragments: truncated ? Math.min(corpus.length, corpus.length) : corpus.length,
-    totalFragments: corpus.length,
-    truncated,
-    partial: proposals.length < batches.length,
-    batches: selectedBatches.length,
-    requestCount,
-    synthesisUsed,
-    usage: totalUsage,
-    warning: lastError?.status === 429
-      ? "Se alcanzó un límite de Groq durante el análisis. Se conservaron las propuestas ya obtenidas."
-      : "",
-  };
+  throw lastError || new Error("Ningún modelo configurado está disponible.");
 }
