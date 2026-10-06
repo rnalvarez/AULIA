@@ -261,12 +261,12 @@ function compactProposalCandidates(proposals) {
         title: compactText(item.title, 100),
         chapter: compactText(item.chapter, 150),
         summary: compactText(item.summary, 320),
-        explanation: compactText(item.explanation, 320),
-        aliases: (item.aliases || []).slice(0, 6),
-        keywords: (item.keywords || []).slice(0, 8),
+        explanation: compactText(item.explanation, 180),
+        aliases: (item.aliases || []).slice(0, 4),
+        keywords: (item.keywords || []).slice(0, 6),
         sourceIds: (item.sourceIds || []).slice(0, 6),
         sourceBibliographyIds: (item.sourceBibliographyIds || []).slice(0, 6),
-        confusionCriteria: (item.confusionCriteria || []).slice(0, 4),
+        confusionCriteria: (item.confusionCriteria || []).slice(0, 3),
       });
     }
     for (const item of proposal?.examples || []) {
@@ -289,9 +289,9 @@ function compactProposalCandidates(proposals) {
   }
 
   return {
-    concepts: concepts.slice(0, 60),
-    examples: examples.slice(0, 30),
-    activities: activities.slice(0, 24),
+    concepts: concepts.slice(0, 28),
+    examples: examples.slice(0, 12),
+    activities: activities.slice(0, 10),
   };
 }
 
@@ -505,10 +505,7 @@ export async function requestTeacherProposal({
   return {
     proposal,
     model: orderedModels[0],
-    usedFragments: Math.min(
-      corpus.length,
-      selectedBatches.length * Math.max(1, Math.ceil(corpus.length / Math.max(1, batches.length)))
-    ),
+    usedFragments: truncated ? Math.min(corpus.length, corpus.length) : corpus.length,
     totalFragments: corpus.length,
     truncated,
     partial: proposals.length < batches.length,
