@@ -18,6 +18,21 @@ const PROPOSAL_SCHEMA = {
   type: "object",
   properties: {
     pedagogicalSummary: { type: "string" },
+    pedagogicalUnits: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          title: { type: "string" },
+          rationale: { type: "string" },
+          learningGoal: { type: "string" },
+          conceptTitles: { type: "array", items: { type: "string" } },
+          sourceIds: { type: "array", items: { type: "string" } },
+        },
+        required: ["title", "rationale", "learningGoal", "conceptTitles", "sourceIds"],
+        additionalProperties: false,
+      },
+    },
     concepts: {
       type: "array",
       items: {
@@ -86,7 +101,7 @@ const PROPOSAL_SCHEMA = {
       },
     },
   },
-  required: ["pedagogicalSummary", "concepts", "examples", "activities"],
+  required: ["pedagogicalSummary", "pedagogicalUnits", "concepts", "examples", "activities"],
   additionalProperties: false,
 };
 
@@ -253,13 +268,13 @@ function buildPrompt({ course, bibliography, materialText, sampled }) {
     sampled
       ? "La biblioteca completa está disponible en AULIA, pero para esta consulta se usa una muestra representativa de unidades para respetar los límites de una cuenta gratuita. No infieras contenido que no aparezca en los extractos."
       : "El conjunto de unidades relevantes entra en esta consulta.",
-    "NO resumas cada página. Detectá una organización docente útil: conceptos centrales, relaciones claras entre ideas, ejemplos/casos explícitos y actividades de aprendizaje.",
-    "Un concepto debe ser una idea enseñable y reutilizable, no simplemente un título de sección.",
+    "NO resumas cada página. Primero diseñá un mapa pedagógico de 8 a 12 unidades conceptuales coherentes. Las unidades deben agrupar contenidos que pertenezcan naturalmente a una misma pregunta, problema o núcleo conceptual. Después identificá conceptos centrales, ejemplos/casos explícitos y actividades de aprendizaje.",
+    "Una unidad pedagógica debe poder enseñarse como un bloque coherente. No la nombres solamente con el título mecánico de una página: sintetizá su núcleo conceptual. Indicá brevemente por qué conviene agrupar ese material y qué debería poder comprender o hacer el estudiante al terminar la unidad. Una unidad puede reunir varias secciones del mismo documento.",
     "Trabajá exclusivamente con la evidencia suministrada. No inventes autores, obras, conceptos, ejemplos ni afirmaciones.",
     "Los sourceIds deben copiar EXACTAMENTE IDs que aparezcan en [ID:...].",
     "sourceBibliographyIds solo puede usar los [BIB-ID:...] declarados y debe corresponder a una fuente realmente relacionada.",
     "confusionCriteria debe describir entre 2 y 5 errores o confusiones plausibles y fundamentados por la evidencia.",
-    "Priorizá precisión y utilidad docente. Proponé hasta 14 conceptos, 8 ejemplos y 6 actividades.",
+    "Priorizá precisión y utilidad docente. Proponé entre 8 y 12 unidades pedagógicas cuando la evidencia lo permita, hasta 14 conceptos, 8 ejemplos y 6 actividades. Si el material no permite llegar a 8 unidades reales, proponé menos antes que inventar.",
     "Curso: " + String(course?.title || ""),
     "Descripción: " + String(course?.description || ""),
     refs ? "Bibliografía declarada:\n" + refs : "",
@@ -347,6 +362,7 @@ async function request(endpoint, apiKey, model, prompt, responseFormat, signal) 
   return {
     proposal: parsed || {
       pedagogicalSummary: "",
+      pedagogicalUnits: [],
       concepts: [],
       examples: [],
       activities: [],
@@ -410,6 +426,7 @@ export async function requestTeacherProposal({
 
       const proposal = result.proposal || {};
       if (
+        !Array.isArray(proposal.pedagogicalUnits) ||
         !Array.isArray(proposal.concepts) ||
         !Array.isArray(proposal.examples) ||
         !Array.isArray(proposal.activities)
