@@ -30,8 +30,15 @@ function buildSystemPrompt({ course, assistant, mode, retrieved }) {
 
   const context = (retrieved || []).map(item => {
     const title = String(item?.title || item?.id || "Unidad");
+    const section = Array.isArray(item?.sectionPath) && item.sectionPath.length
+      ? "SECCIÓN: " + item.sectionPath.join(" › ")
+      : (item?.chapter ? "SECCIÓN: " + item.chapter : "");
+    const pages = item?.sourcePageStart
+      ? "PÁGINAS: " + item.sourcePageStart + (item?.sourcePageEnd && item.sourcePageEnd !== item.sourcePageStart ? "-" + item.sourcePageEnd : "")
+      : "";
+    const source = item?.source ? "FUENTE: " + item.source : "";
     const text = String(item?.explanation || item?.summary || item?.content || "");
-    return title + ": " + text;
+    return [title, section, pages, source, text].filter(Boolean).join("\n");
   }).join("\n\n");
 
   return [
