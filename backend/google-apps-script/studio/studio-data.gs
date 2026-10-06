@@ -417,7 +417,7 @@ function studioValidatePublishPack(course, pack) {
   if (!String(pack?.title || "").trim()) errors.push("Falta el nombre de la cátedra.");
   if (!String(pack?.author || "").trim()) errors.push("Falta la autoría de la cátedra.");
 
-  const arrayKeys = ["bibliography", "documents", "pedagogicalUnits", "concepts", "modes", "activities", "examples", "corpus", "commissions"];
+  const arrayKeys = ["bibliography", "concepts", "modes", "activities", "examples", "corpus", "commissions"];
   for (const key of arrayKeys) {
     if (!Array.isArray(pack?.[key])) errors.push("Falta course." + key + ".");
   }
