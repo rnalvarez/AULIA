@@ -43,6 +43,30 @@ function firstSentence(text) {
 
 function mergeTeacherProposal(course, proposal) {
   const corpusIds = new Set((course.corpus || []).map((item) => item.id));
+  const pedagogicalUnits = [...(course.pedagogicalUnits || [])];
+  const existingUnitKeys = new Set(pedagogicalUnits.map((item) => slug(item.title)));
+  const newUnits = [];
+
+  for (const item of proposal.pedagogicalUnits || []) {
+    const title = String(item?.title || "").trim();
+    const key = slug(title);
+    if (!title || existingUnitKeys.has(key)) continue;
+
+    const unit = {
+      id: uniqueId("unidad-" + (key || "item"), [...pedagogicalUnits, ...newUnits]),
+      title,
+      rationale: String(item.rationale || "").trim(),
+      learningGoal: String(item.learningGoal || "").trim(),
+      conceptTitles: Array.isArray(item.conceptTitles) ? item.conceptTitles.filter(Boolean).slice(0, 8) : [],
+      sourceCorpusIds: (item.sourceIds || []).filter((id) => corpusIds.has(id)),
+      reviewStatus: "pending",
+      suggested: true,
+      suggestionSource: "llm",
+    };
+    newUnits.push(unit);
+    existingUnitKeys.add(key);
+  }
+
   const concepts = [...(course.concepts || [])];
   const conceptByKey = new Map(concepts.map((item) => [slug(item.title), item]));
   const newConcepts = [];
@@ -144,10 +168,35 @@ function mergeTeacherProposal(course, proposal) {
     activityKeys.add(key);
   }
 
+  const allUnits = [...pedagogicalUnits, ...newUnits].map((unit) => ({
+    ...unit,
+    conceptIds: Array.from(new Set(
+      (unit.conceptTitles || [])
+        .map((title) => conceptByKey.get(slug(title))?.id)
+        .filter(Boolean)
+    )),
+  }));
+
+  const unitIdsByConcept = new Map();
+  for (const unit of allUnits) {
+    for (const conceptId of unit.conceptIds || []) {
+      if (!unitIdsByConcept.has(conceptId)) unitIdsByConcept.set(conceptId, []);
+      unitIdsByConcept.get(conceptId).push(unit.id);
+    }
+  }
+
+  const conceptsWithUnits = allConcepts.map((concept) => {
+    const ids = unitIdsByConcept.get(concept.id);
+    return ids?.length
+      ? { ...concept, pedagogicalUnitIds: Array.from(new Set(ids)) }
+      : concept;
+  }));
+
   return {
     course: {
       ...course,
-      concepts: allConcepts,
+      pedagogicalUnits: allUnits,
+      concepts: conceptsWithUnits,
       examples: [...examples, ...newExamples],
       activities: [...activities, ...newActivities],
     },
@@ -427,6 +476,18 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
     setStep("proposal");
   }
 
+  function approveAllPedagogicalUnits() {
+    const units = draft.pedagogicalUnits || [];
+    if (!units.length) return;
+    mutate((c) => ({
+      ...c,
+      pedagogicalUnits: (c.pedagogicalUnits || []).map((unit) => ({
+        ...unit,
+        reviewStatus: "approved",
+      })),
+    }), "Todas las unidades pedagógicas fueron aprobadas.");
+  }
+
   function saveTeacherKey() {
     const trimmed = studioKeyInput.trim();
     if (!isGroqApiKey(trimmed)) {
@@ -509,11 +570,11 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
   const counts = {
     overview: 1,
     material: draft.corpus?.length || 0,
-    proposal: draft.concepts?.length || 0,
+    proposal: draft.pedagogicalUnits?.length || draft.concepts?.length || 0,
     interaction: draft.modes?.length || 0,
     commissions: draft.commissions?.length || 0,
   };
-  const pending = (draft.concepts || []).filter((x) => x.suggested).length;
+  const pending = (draft.pedagogicalUnits || []).filter((x) => x.suggested && x.reviewStatus === "pending").length;
 
   return <section className="studio-wf-shell">
     <header className="studio-wf-toolbar">
