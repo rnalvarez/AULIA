@@ -435,6 +435,15 @@ function studioValidatePublishPack(course, pack) {
     if (!mode?.pedagogicalGoal) errors.push("El modo " + (mode?.id || "sin ID") + " no tiene objetivo pedagógico.");
   }
 
+  for (const unit of pack?.pedagogicalUnits || []) {
+    if (!String(unit?.title || "").trim()) {
+      errors.push("Hay una unidad pedagógica sin título.");
+    }
+    if (String(unit?.reviewStatus || "") === "pending") {
+      errors.push('Hay unidades pedagógicas pendientes de revisión. Aprobálas o descartalas antes de publicar.');
+    }
+  }
+
   const conceptIds = new Set((pack?.concepts || []).map(item => item?.id).filter(Boolean));
   for (const activity of pack?.activities || []) {
     if (activity?.modeId && !modeIds.has(activity.modeId)) {
