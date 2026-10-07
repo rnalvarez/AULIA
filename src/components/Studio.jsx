@@ -4,6 +4,7 @@ import { downloadCoursePack, readCoursePackFile } from "../core/coursePackIO.js"
 import { readMaterialFile, materialToCorpus, mergeImportedBibliography, mergeImportedDocuments } from "../core/materialIO.js";
 import { requestTeacherProposal } from "../services/llm/teacherProposal.js";
 import { clearStudioApiKey, isGroqApiKey, loadStudioApiKey, saveStudioApiKey } from "../utils/studioStorage.js";
+import LegalNotice from "./LegalNotice.jsx";
 
 const STORAGE_PREFIX = "aulia:studio:";
 const VERSION = "0.7";
@@ -277,6 +278,7 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
   const [studioApiKey, setStudioApiKey] = useState(() => loadStudioApiKey(course.id));
   const [studioKeyInput, setStudioKeyInput] = useState("");
   const [showStudioKey, setShowStudioKey] = useState(false);
+  const [legalAccepted, setLegalAccepted] = useState(false);
 
   useEffect(() => {
     const saved = localStorage.getItem(storageKey);
@@ -358,6 +360,11 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
   }
   async function publish() {
     if (!canEdit || busy) return;
+
+    if (!legalAccepted) {
+      setStatus("Antes de publicar, confirmá que tenés los derechos, permisos o autorizaciones necesarios sobre los materiales incorporados.");
+      return;
+    }
 
     const result = validateCourse(draft);
     if (!result.valid) {
@@ -1023,6 +1030,21 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
             </div>
           )}
 
+          <div className="studio-wf-legal-acceptance">
+            <label>
+              <input
+                type="checkbox"
+                checked={legalAccepted}
+                onChange={(e) => setLegalAccepted(e.target.checked)}
+                disabled={!canEdit || busy}
+              />
+              <span>
+                Declaro que tengo los derechos, permisos, licencias o autorizaciones necesarios para utilizar y poner a disposición los materiales incorporados en esta cátedra. Entiendo que soy responsable de su selección y uso, y que AULIA no verifica dichos derechos.
+              </span>
+            </label>
+            <LegalNotice compact />
+          </div>
+
           <div className="studio-wf-final-actions">
             <button className="primary" type="button" onClick={save} disabled={!canEdit || busy}>Guardar cambios</button>
             <button className="ghost" type="button" onClick={validate} disabled={busy}>Validar</button>
@@ -1037,7 +1059,7 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
                 Probar versión publicada ↗
               </button>
             )}
-            <button className="primary" type="button" onClick={publish} disabled={!canEdit || courseMeta?.role !== "owner" || busy}>
+            <button className="primary" type="button" onClick={publish} disabled={!canEdit || courseMeta?.role !== "owner" || busy || !legalAccepted}>
               {courseMeta?.status === "published" ? "Publicar nueva versión" : "Publicar cátedra"}
             </button>
           </div>
@@ -1049,7 +1071,10 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
       </>}
 
       <section className="studio-wf-advanced"><button type="button" onClick={() => setAdvanced((x) => !x)}><span>AVANZADO</span><small>{advanced ? "Ocultar configuración técnica" : "Mostrar configuración técnica"}</small><b>{advanced ? "−" : "+"}</b></button>{advanced && <div className="studio-wf-advanced-body"><div className="studio-wf-grid"><Field label="ID interno" value={draft.id} onChange={(v) => mutate({id:v})} hint="No hace falta modificarlo durante el trabajo normal."/><Field label="Proveedor LLM" value={draft.llm?.provider} onChange={(v) => mutate({llm:{...(draft.llm || {}), provider:v}})}/><Field label="Endpoint LLM" value={draft.llm?.endpoint} onChange={(v) => mutate({llm:{...(draft.llm || {}), endpoint:v}})}/><Field label="Tracking endpoint" value={draft.tracking?.endpoint} onChange={(v) => mutate({tracking:{...(draft.tracking || {}), endpoint:v}})}/><Field label="Instrucciones internas" value={draft.assistant?.instructions} onChange={(v) => mutate({assistant:{...draft.assistant, instructions:v}})} multiline/></div><div className="studio-wf-security-note">AULIA Studio no guarda claves de API. La clave de Groq del estudiante sigue siendo local del navegador y no forma parte del course pack.</div></div>}</section>
-      <footer className="studio-wf-footer"><span>{status || "Borrador listo para editar."}</span><span>AULIA · Studio local</span></footer>
+      <footer className="studio-wf-footer">
+        <span>{status || "Borrador listo para editar."}</span>
+        <span>AULIA · Studio local · <LegalNotice compact /></span>
+      </footer>
       {validation && <section className={"studio-wf-validation " + (validation.valid ? "valid" : "invalid")}><strong>{validation.valid ? "✓ Course pack válido" : "Hay elementos que revisar"}</strong>{!validation.valid && <ul>{validation.errors.map((x) => <li key={x}>{x}</li>)}</ul>}</section>}
     </main>
     </fieldset>
