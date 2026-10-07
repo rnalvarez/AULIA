@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Avatar from "./Avatar.jsx";
-import LegalNotice from "./LegalNotice.jsx";
 import { retrieveFromCourse } from "../core/retrieval.js";
 import { createLLMClient } from "../services/llm/llmClient.js";
 import { createSheetsClient } from "../services/tracking/sheetsClient.js";
