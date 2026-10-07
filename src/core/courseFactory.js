@@ -17,6 +17,7 @@ export function createBlankCourse() {
     bibliography: [],
     documents: [],
     pedagogicalUnits: [],
+    curriculumMap: null,
     concepts: [],
     examples: [],
     corpus: [],
