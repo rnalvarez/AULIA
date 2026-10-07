@@ -19,24 +19,25 @@ import LegalNotice from "./components/LegalNotice.jsx";
 
 function BackendUnavailable() {
   return (
-    <div className="studio-access-screen">
-      <div className="studio-access-wrap">
-        <div className="studio-access-heading">
-          <div className="eyebrow">AULIA</div>
-          <h1>STUDIO</h1>
-          <p>El espacio docente está esperando la conexión con su backend.</p>
-        </div>
-        <div className="studio-access-card">
-          <div className="studio-access-body">
-            <div className="studio-access-welcome">
-              <strong>Backend no configurado</strong>
-              <span>Definí la URL del Web App de Google Apps Script en <code>src/core/studioConfig.js</code> antes de publicar Studio.</span>
+    <>
+      <div className="studio-access-screen">
+        <div className="studio-access-wrap">
+          <div className="studio-access-heading">
+            <div className="eyebrow">AULIA</div>
+            <h1>STUDIO</h1>
+            <p>El espacio docente está esperando la conexión con su backend.</p>
+          </div>
+          <div className="studio-access-card">
+            <div className="studio-access-body">
+              <div className="studio-access-welcome">
+                <strong>Backend no configurado</strong>
+                <span>Definí la URL del Web App de Google Apps Script en <code>src/core/studioConfig.js</code> antes de publicar Studio.</span>
+              </div>
             </div>
           </div>
         </div>
       </div>
-    </div>
-    <div className="aulia-global-legal"><LegalNotice compact /></div>
+      <div className="aulia-global-legal"><LegalNotice compact /></div>
     </>
   );
 }
@@ -322,7 +323,6 @@ export default function StudioApp() {
         <div className="studio-sidebar-footer">
           <button type="button" onClick={handleLogout}>Cerrar sesión</button>
           <span>El acceso a cada cátedra se verifica en el backend.</span>
-          <LegalNotice compact />
         </div>
       </aside>
 
