@@ -613,13 +613,16 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
       setStatus("Primero generá unidades pedagógicas.");
       return;
     }
+    const pageFor = (unit) => {
+      const pages = (unit.sourceCorpusIds || [])
+        .map((sourceId) => draft.corpus?.find((chunk) => chunk.id === sourceId)?.sourcePageStart)
+        .map(Number)
+        .filter((page) => Number.isFinite(page) && page > 0);
+      return pages.length ? Math.min(...pages) : Number.MAX_SAFE_INTEGER;
+    };
     const ordered = units
       .slice()
-      .sort((a, b) => {
-        const aPage = Number(a.sourcePageStart || 0);
-        const bPage = Number(b.sourcePageStart || 0);
-        return aPage - bPage || String(a.title || "").localeCompare(String(b.title || ""), "es");
-      })
+      .sort((a, b) => pageFor(a) - pageFor(b) || String(a.title || "").localeCompare(String(b.title || ""), "es"))
       .map((unit) => unit.id)
       .filter(Boolean);
 
@@ -726,7 +729,7 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
   const pending = (draft.pedagogicalUnits || []).filter((x) => x.suggested && x.reviewStatus === "pending").length;
   const curriculumSequence = Array.isArray(draft.curriculumMap?.sequence)
     ? draft.curriculumMap.sequence
-    : (draft.pedagogicalUnits || []).map((unit) => unit.id).filter(Boolean);
+    : [];
   const curriculumUnits = curriculumSequence
     .map((id) => draft.pedagogicalUnits?.find((unit) => unit.id === id))
     .filter(Boolean);
@@ -819,10 +822,10 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
             eyebrow="MAPA CURRICULAR"
             title="Secuencia de enseñanza sugerida"
             description="AULIA ordena las unidades según una progresión conceptual y señala posibles prerrequisitos. Podés cambiar el orden y corregir las dependencias sin modificar el material original."
-            actions={curriculumSequence.length > 0 ? <>
+            actions={draft.curriculumMap?.sequence?.length ? <>
               <button className="primary" type="button" onClick={approveCurriculumMap} disabled={!canEdit || busy || !curriculumPending}>✓ Aprobar mapa</button>
               <button className="ghost" type="button" onClick={buildLocalCurriculumMap} disabled={!canEdit || busy || !draft.pedagogicalUnits?.length}>Reordenar desde el material</button>
-            </> : null}
+            </> : (draft.pedagogicalUnits?.length ? <button className="primary" type="button" onClick={buildLocalCurriculumMap} disabled={!canEdit || busy}>Generar mapa inicial</button> : null)}
           >
             {curriculumUnits.length ? (
               <div className="studio-wf-stack">
