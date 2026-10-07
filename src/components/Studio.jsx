@@ -190,7 +190,7 @@ function mergeTeacherProposal(course, proposal) {
     return ids?.length
       ? { ...concept, pedagogicalUnitIds: Array.from(new Set(ids)) }
       : concept;
-  }));
+  });
 
   return {
     course: {
