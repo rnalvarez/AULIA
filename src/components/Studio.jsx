@@ -6,7 +6,7 @@ import { requestTeacherProposal } from "../services/llm/teacherProposal.js";
 import { clearStudioApiKey, isGroqApiKey, loadStudioApiKey, saveStudioApiKey } from "../utils/studioStorage.js";
 
 const STORAGE_PREFIX = "aulia:studio:";
-const VERSION = "0.6";
+const VERSION = "0.7";
 const STEPS = [
   ["overview", "01", "Cátedra"],
   ["material", "02", "Material"],
@@ -748,7 +748,7 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
     </header>
 
     <div className="studio-wf-local-note">
-      <span><b>Flujo de autoría:</b> Cátedra → Material → Propuesta pedagógica → Interacción → Comisiones.</span>
+      <span><b>Flujo de autoría:</b> Cátedra → Material → Organización pedagógica + mapa curricular → Interacción → Comisiones.</span>
       <small>
         {canEdit
           ? courseMeta?.status === "published"
