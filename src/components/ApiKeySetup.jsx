@@ -70,7 +70,6 @@ export default function ApiKeySetup({ course, onReady }) {
         <p className="access-footer">
           La clave se guarda únicamente en este navegador para esta instancia de AULIA.
         </p>
-        <div className="access-legal"><LegalNotice compact /></div>
       </div>
     </div>
   );
