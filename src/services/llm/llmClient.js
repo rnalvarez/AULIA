@@ -9,6 +9,33 @@ function saveModel(courseId, model) {
 
 function buildSystemPrompt({ course, assistant, mode, retrieved }) {
   const bibliography = new Map((course?.bibliography || []).map(item => [String(item?.id || ""), item]));
+  const pedagogicalUnits = new Map((course?.pedagogicalUnits || []).map(unit => [String(unit?.id || ""), unit]));
+  const curriculumSequence = Array.isArray(course?.curriculumMap?.sequence)
+    ? course.curriculumMap.sequence.filter((id) => pedagogicalUnits.has(String(id)))
+    : [];
+  const curriculumOrder = new Map(curriculumSequence.map((id, index) => [String(id), index + 1]));
+  const unitsForCorpus = new Map();
+  for (const unit of pedagogicalUnits.values()) {
+    for (const sourceId of unit?.sourceCorpusIds || []) {
+      if (!unitsForCorpus.has(String(sourceId))) unitsForCorpus.set(String(sourceId), []);
+      unitsForCorpus.get(String(sourceId)).push(unit);
+    }
+  }
+  const unitLabel = (unit) => {
+    if (!unit) return "";
+    const order = curriculumOrder.get(String(unit.id));
+    const prefix = order ? "UNIDAD CURRICULAR " + order : "UNIDAD PEDAGÓGICA";
+    const prerequisites = (unit?.prerequisiteUnitIds || [])
+      .map((id) => pedagogicalUnits.get(String(id)))
+      .filter(Boolean)
+      .map((item) => item.title)
+      .filter(Boolean);
+    return [
+      prefix + ": " + String(unit.title || ""),
+      unit.phase ? "ETAPA: " + unit.phase : "",
+      prerequisites.length ? "PRERREQUISITOS: " + prerequisites.join(" | ") : "",
+    ].filter(Boolean).join(" · ");
+  };
   const conceptItems = (retrieved || [])
     .filter(item => (course?.concepts || []).some(concept => concept?.id === item?.id))
     .map(item => {
@@ -17,9 +44,14 @@ function buildSystemPrompt({ course, assistant, mode, retrieved }) {
         .map(id => bibliography.get(String(id)))
         .filter(Boolean)
         .map(ref => [ref?.title, ref?.author, ref?.year].filter(Boolean).join(" · "));
+      const relatedUnits = (item?.pedagogicalUnitIds || [])
+        .map((id) => pedagogicalUnits.get(String(id)))
+        .filter(Boolean)
+        .map(unitLabel);
       return [
         "ID: " + String(item?.id || ""),
         "CONCEPTO: " + String(item?.title || ""),
+        relatedUnits.length ? relatedUnits.join("\n") : "",
         "DEFINICIÓN/RESUMEN: " + String(item?.explanation || item?.summary || ""),
         sources.length ? "BIBLIOGRAFÍA: " + sources.join(" | ") : "",
         Array.isArray(item?.confusionCriteria) && item.confusionCriteria.length
@@ -37,15 +69,40 @@ function buildSystemPrompt({ course, assistant, mode, retrieved }) {
       ? "PÁGINAS: " + item.sourcePageStart + (item?.sourcePageEnd && item.sourcePageEnd !== item.sourcePageStart ? "-" + item.sourcePageEnd : "")
       : "";
     const source = item?.source ? "FUENTE: " + item.source : "";
+    const linkedUnits = unitsForCorpus.get(String(item?.id || "")) || [];
+    const curricularUnits = linkedUnits.length
+      ? linkedUnits.map(unitLabel)
+      : (item?.pedagogicalUnitIds || [])
+          .map((id) => pedagogicalUnits.get(String(id)))
+          .filter(Boolean)
+          .map(unitLabel);
     const text = String(item?.explanation || item?.summary || item?.content || "");
-    return [title, section, pages, source, text].filter(Boolean).join("\n");
+    return [
+      title,
+      curricularUnits.length ? curricularUnits.join("\n") : "",
+      section,
+      pages,
+      source,
+      text,
+    ].filter(Boolean).join("\n");
   }).join("\n\n");
+
+  const curriculumContext = curriculumSequence.length
+    ? "MAPA CURRICULAR DE LA CÁTEDRA:\n" +
+      curriculumSequence.map((id, index) => {
+        const unit = pedagogicalUnits.get(String(id));
+        return (index + 1) + ". " + String(unit?.title || "");
+      }).join("\n")
+    : "";
 
   return [
     String(assistant?.instructions || "Sos un asistente pedagógico. Respondé en español y trabajá con el corpus autorizado."),
     "Curso: " + String(course?.title || course?.id || ""),
     "Modo: " + String(mode?.title || ""),
     "Objetivo: " + String(mode?.pedagogicalGoal || ""),
+    curriculumContext,
+    "El mapa curricular es una guía pedagógica de la cátedra, no una fuente factual adicional. Usalo para orientar la progresión y los prerrequisitos, pero basá las respuestas sobre contenidos únicamente en el corpus y las fuentes autorizadas.",
+
     "Instrucciones: " + String(mode?.instructions || ""),
     conceptItems
       ? "CONCEPTOS AUTORIZADOS PARA EL ANÁLISIS DE ESTA INTERACCIÓN:\n" + conceptItems
