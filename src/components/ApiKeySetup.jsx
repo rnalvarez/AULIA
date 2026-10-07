@@ -1,6 +1,5 @@
 import { useState } from "react";
 import Avatar from "./Avatar.jsx";
-import LegalNotice from "./LegalNotice.jsx";
 import { saveApiKey } from "../utils/storage.js";
 
 export default function ApiKeySetup({ course, onReady }) {
