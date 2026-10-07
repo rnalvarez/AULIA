@@ -367,6 +367,17 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
       return;
     }
 
+    const confirmed = window.confirm(
+      "ADVERTENCIA ANTES DE PUBLICAR\n\n" +
+      "Al publicar esta cátedra declarás que contás con los derechos, permisos, licencias o autorizaciones necesarios para utilizar y poner a disposición los materiales incorporados.\n\n" +
+      "AULIA no verifica esos derechos ni determina la legalidad de su uso. La responsabilidad por los materiales y por el uso de la plataforma corresponde al responsable de la cátedra.\n\n" +
+      "¿Confirmás que querés publicar?"
+    );
+    if (!confirmed) {
+      setStatus("Publicación cancelada.");
+      return;
+    }
+
     const result = validateCourse(draft);
     if (!result.valid) {
       setValidation(result);
