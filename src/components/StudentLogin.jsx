@@ -105,7 +105,6 @@ export default function StudentLogin({ course, onReady }) {
           </div>
         </div>
         <p className="access-footer">Acceso gestionado por la cátedra · Las consultas se registran para seguimiento docente</p>
-        <div className="access-legal"><LegalNotice compact /></div>
       </div>
     </div>
   );
