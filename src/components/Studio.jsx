@@ -57,6 +57,10 @@ function mergeTeacherProposal(course, proposal) {
       title,
       rationale: String(item.rationale || "").trim(),
       learningGoal: String(item.learningGoal || "").trim(),
+      phase: String(item.phase || "").trim(),
+      suggestedSequence: Number.isFinite(Number(item.sequence)) ? Number(item.sequence) : 999,
+      prerequisiteTitles: Array.isArray(item.prerequisiteTitles) ? item.prerequisiteTitles.filter(Boolean).slice(0, 5) : [],
+      prerequisiteUnitIds: [],
       conceptTitles: Array.isArray(item.conceptTitles) ? item.conceptTitles.filter(Boolean).slice(0, 8) : [],
       sourceCorpusIds: (item.sourceIds || []).filter((id) => corpusIds.has(id)),
       reviewStatus: "pending",
@@ -168,14 +172,28 @@ function mergeTeacherProposal(course, proposal) {
     activityKeys.add(key);
   }
 
-  const allUnits = [...pedagogicalUnits, ...newUnits].map((unit) => ({
-    ...unit,
-    conceptIds: Array.from(new Set(
-      (unit.conceptTitles || [])
-        .map((title) => conceptByKey.get(slug(title))?.id)
-        .filter(Boolean)
-    )),
-  }));
+  const unitCandidates = [...pedagogicalUnits, ...newUnits];
+  const unitIds = new Set(unitCandidates.map((unit) => unit.id).filter(Boolean));
+  const unitByTitle = new Map(unitCandidates.map((unit) => [slug(unit.title), unit]));
+
+  const allUnits = unitCandidates.map((unit) => {
+    const inferredPrerequisites = (unit.prerequisiteTitles || [])
+      .map((title) => unitByTitle.get(slug(title))?.id)
+      .filter((id) => id && id !== unit.id && unitIds.has(id));
+
+    return {
+      ...unit,
+      prerequisiteUnitIds: Array.from(new Set([
+        ...(unit.prerequisiteUnitIds || []),
+        ...inferredPrerequisites,
+      ])).filter((id) => id && id !== unit.id && unitIds.has(id)),
+      conceptIds: Array.from(new Set(
+        (unit.conceptTitles || [])
+          .map((title) => conceptByKey.get(slug(title))?.id)
+          .filter(Boolean)
+      )),
+    };
+  }).map(({ suggestedSequence, prerequisiteTitles, ...unit }) => unit);
 
   const unitIdsByConcept = new Map();
   for (const unit of allUnits) {
@@ -192,10 +210,36 @@ function mergeTeacherProposal(course, proposal) {
       : concept;
   });
 
+  const existingSequence = Array.isArray(course.curriculumMap?.sequence)
+    ? course.curriculumMap.sequence.filter((id) => unitIds.has(id))
+    : pedagogicalUnits.map((unit) => unit.id).filter(Boolean);
+  const proposedSequence = newUnits
+    .slice()
+    .sort((a, b) => a.suggestedSequence - b.suggestedSequence)
+    .map((unit) => unit.id);
+  const sequence = Array.from(new Set([
+    ...existingSequence,
+    ...proposedSequence,
+    ...allUnits.map((unit) => unit.id),
+  ])).filter(Boolean);
+
+  const curriculumMap = allUnits.length
+    ? {
+        ...(course.curriculumMap || {}),
+        title: course.curriculumMap?.title || "Mapa curricular sugerido",
+        rationale: String(proposal.pedagogicalSummary || course.curriculumMap?.rationale || "").trim(),
+        reviewStatus: "pending",
+        suggested: true,
+        suggestionSource: "llm",
+        sequence,
+      }
+    : (course.curriculumMap || null);
+
   return {
     course: {
       ...course,
       pedagogicalUnits: allUnits,
+      curriculumMap,
       concepts: conceptsWithUnits,
       examples: [...examples, ...newExamples],
       activities: [...activities, ...newActivities],
@@ -421,7 +465,32 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
     });
   }
   function remove(collection, index) {
-    mutate((c) => ({ ...c, [collection]: (c[collection] || []).filter((_, i) => i !== index) }));
+    mutate((c) => {
+      const items = [...(c[collection] || [])];
+      const removed = items[index];
+      const next = items.filter((_, i) => i !== index);
+
+      if (collection !== "pedagogicalUnits" || !removed?.id) {
+        return { ...c, [collection]: next };
+      }
+
+      const nextMap = c.curriculumMap
+        ? {
+            ...c.curriculumMap,
+            sequence: (c.curriculumMap.sequence || []).filter((id) => id !== removed.id),
+            reviewStatus: "pending",
+          }
+        : c.curriculumMap;
+
+      return {
+        ...c,
+        pedagogicalUnits: next.map((unit) => ({
+          ...unit,
+          prerequisiteUnitIds: (unit.prerequisiteUnitIds || []).filter((id) => id !== removed.id),
+        })),
+        curriculumMap: nextMap,
+      };
+    });
   }
   function addMode(strategy) {
     const preset = MODES[strategy] || MODES.retrieve;
@@ -488,6 +557,85 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
     }), "Todas las unidades pedagógicas fueron aprobadas.");
   }
 
+  function approveCurriculumMap() {
+    if (!draft.curriculumMap?.sequence?.length) return;
+    mutate((c) => ({
+      ...c,
+      curriculumMap: {
+        ...(c.curriculumMap || {}),
+        reviewStatus: "approved",
+      },
+    }), "El mapa curricular fue aprobado.");
+  }
+
+  function moveCurriculumUnit(index, direction) {
+    mutate((c) => {
+      const currentSequence = Array.isArray(c.curriculumMap?.sequence)
+        ? [...c.curriculumMap.sequence]
+        : (c.pedagogicalUnits || []).map((unit) => unit.id).filter(Boolean);
+      const target = index + direction;
+      if (index < 0 || target < 0 || index >= currentSequence.length || target >= currentSequence.length) return c;
+      [currentSequence[index], currentSequence[target]] = [currentSequence[target], currentSequence[index]];
+      return {
+        ...c,
+        curriculumMap: {
+          ...(c.curriculumMap || {}),
+          sequence: currentSequence,
+          reviewStatus: "pending",
+        },
+      };
+    }, "Orden curricular modificado. Revisá el mapa antes de publicar.");
+  }
+
+  function setCurriculumPrerequisites(unitId, value) {
+    mutate((c) => {
+      const byTitle = new Map((c.pedagogicalUnits || []).map((unit) => [slug(unit.title), unit.id]));
+      const ids = Array.from(new Set(
+        list(value)
+          .map((title) => byTitle.get(slug(title)))
+          .filter((id) => id && id !== unitId)
+      ));
+      return {
+        ...c,
+        pedagogicalUnits: (c.pedagogicalUnits || []).map((unit) =>
+          unit.id === unitId ? { ...unit, prerequisiteUnitIds: ids } : unit
+        ),
+        curriculumMap: c.curriculumMap
+          ? { ...c.curriculumMap, reviewStatus: "pending" }
+          : c.curriculumMap,
+      };
+    }, "Dependencias curriculares actualizadas.");
+  }
+
+  function buildLocalCurriculumMap() {
+    const units = [...(draft.pedagogicalUnits || [])];
+    if (!units.length) {
+      setStatus("Primero generá unidades pedagógicas.");
+      return;
+    }
+    const ordered = units
+      .slice()
+      .sort((a, b) => {
+        const aPage = Number(a.sourcePageStart || 0);
+        const bPage = Number(b.sourcePageStart || 0);
+        return aPage - bPage || String(a.title || "").localeCompare(String(b.title || ""), "es");
+      })
+      .map((unit) => unit.id)
+      .filter(Boolean);
+
+    mutate((c) => ({
+      ...c,
+      curriculumMap: {
+        title: "Mapa curricular inicial",
+        rationale: "Orden inicial construido localmente a partir de la secuencia de lectura de las unidades. No representa todavía una inferencia pedagógica de IA.",
+        reviewStatus: "pending",
+        suggested: true,
+        suggestionSource: "local",
+        sequence: ordered,
+      },
+    }), "Mapa curricular inicial generado a partir del orden del material.");
+  }
+
   function saveTeacherKey() {
     const trimmed = studioKeyInput.trim();
     if (!isGroqApiKey(trimmed)) {
@@ -543,7 +691,8 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
         "Propuesta IA incorporada: " +
         merged.stats.concepts + " conceptos · " +
         merged.stats.examples + " ejemplos · " +
-        merged.stats.activities + " actividades" +
+        merged.stats.activities + " actividades · " +
+        (merged.course.curriculumMap?.sequence?.length || 0) + " unidades en el mapa curricular" +
         suffix +
         requestSuffix +
         cacheSuffix +
@@ -575,6 +724,13 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
     commissions: draft.commissions?.length || 0,
   };
   const pending = (draft.pedagogicalUnits || []).filter((x) => x.suggested && x.reviewStatus === "pending").length;
+  const curriculumSequence = Array.isArray(draft.curriculumMap?.sequence)
+    ? draft.curriculumMap.sequence
+    : (draft.pedagogicalUnits || []).map((unit) => unit.id).filter(Boolean);
+  const curriculumUnits = curriculumSequence
+    .map((id) => draft.pedagogicalUnits?.find((unit) => unit.id === id))
+    .filter(Boolean);
+  const curriculumPending = draft.curriculumMap?.reviewStatus === "pending";
 
   return <section className="studio-wf-shell">
     <header className="studio-wf-toolbar">
@@ -658,6 +814,54 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
               <button className="ghost" type="button" onClick={() => mutate((c) => ({...c, concepts:[...(c.concepts || []), {id:uniqueId("concepto",c.concepts), title:"Nuevo concepto", aliases:[], keywords:[], summary:"", explanation:""}]}))}>Agregar concepto manualmente</button>
             </div>
           </details>
+
+          <Panel
+            eyebrow="MAPA CURRICULAR"
+            title="Secuencia de enseñanza sugerida"
+            description="AULIA ordena las unidades según una progresión conceptual y señala posibles prerrequisitos. Podés cambiar el orden y corregir las dependencias sin modificar el material original."
+            actions={curriculumSequence.length > 0 ? <>
+              <button className="primary" type="button" onClick={approveCurriculumMap} disabled={!canEdit || busy || !curriculumPending}>✓ Aprobar mapa</button>
+              <button className="ghost" type="button" onClick={buildLocalCurriculumMap} disabled={!canEdit || busy || !draft.pedagogicalUnits?.length}>Reordenar desde el material</button>
+            </> : null}
+          >
+            {curriculumUnits.length ? (
+              <div className="studio-wf-stack">
+                {curriculumUnits.map((unit, index) => {
+                  const prerequisiteTitles = (unit.prerequisiteUnitIds || [])
+                    .map((id) => draft.pedagogicalUnits?.find((candidate) => candidate.id === id)?.title)
+                    .filter(Boolean);
+                  return (
+                    <article className="studio-wf-concept" key={unit.id || index}>
+                      <div className="studio-wf-concept-head">
+                        <div>
+                          <strong>{index + 1}. {unit.title || "Unidad sin título"}</strong>
+                          <span>{unit.phase || "Etapa curricular"}{unit.reviewStatus === "approved" ? " · Unidad aprobada" : " · Unidad pendiente"}</span>
+                        </div>
+                        <div className="studio-wf-panel-actions">
+                          <button className="ghost" type="button" onClick={() => moveCurriculumUnit(index, -1)} disabled={!canEdit || busy || index === 0}>↑</button>
+                          <button className="ghost" type="button" onClick={() => moveCurriculumUnit(index, 1)} disabled={!canEdit || busy || index === curriculumUnits.length - 1}>↓</button>
+                        </div>
+                      </div>
+                      {unit.learningGoal && <p>{unit.learningGoal}</p>}
+                      <Field
+                        label="Requiere antes"
+                        value={prerequisiteTitles.join(", ")}
+                        onChange={(value) => setCurriculumPrerequisites(unit.id, value)}
+                        placeholder="Ej. Conceptos iniciales, percepción y escucha"
+                        hint="Escribí títulos de otras unidades separadas por coma. AULIA las vincula por unidad, no por texto libre."
+                      />
+                    </article>
+                  );
+                })}
+              </div>
+            ) : (
+              <Empty
+                title="Todavía no hay un mapa curricular."
+                text="Revisá el material con IA para que AULIA genere una secuencia. También podés construir un orden inicial con las unidades existentes."
+                action={<button className="ghost" type="button" onClick={buildLocalCurriculumMap} disabled={!canEdit || busy || !draft.pedagogicalUnits?.length}>Generar orden inicial</button>}
+              />
+            )}
+          </Panel>
 
           <Panel
             eyebrow="ORGANIZACIÓN PEDAGÓGICA"
@@ -779,7 +983,8 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
             <div><span>Cátedra</span><strong>{draft.title || "Sin definir"}</strong></div>
             <div><span>Fuentes</span><strong>{draft.bibliography?.length || 0}</strong></div>
             <div><span>Fragmentos</span><strong>{draft.corpus?.length || 0}</strong></div>
-            <div><span>Unidades</span><strong>{draft.concepts?.length || 0}</strong></div>
+            <div><span>Unidades pedagógicas</span><strong>{draft.pedagogicalUnits?.length || 0}</strong></div>
+            <div><span>Mapa curricular</span><strong>{draft.curriculumMap?.sequence?.length || 0}</strong></div>
             <div><span>Modos</span><strong>{draft.modes?.length || 0}</strong></div>
             <div><span>Actividades</span><strong>{draft.activities?.length || 0}</strong></div>
             <div><span>Comisiones</span><strong>{draft.commissions?.length || 0}</strong></div>
