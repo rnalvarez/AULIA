@@ -27,6 +27,13 @@ STUDIO utiliza además un formato portable único:
   "course": {},
   "bibliography": [],
   "documents": [],
+  "pedagogicalUnits": [],
+  "curriculumMap": {
+    "title": "",
+    "rationale": "",
+    "reviewStatus": "pending",
+    "sequence": []
+  },
   "concepts": [],
   "examples": [],
   "modes": [],
@@ -37,6 +44,8 @@ STUDIO utiliza además un formato portable único:
 ## Reglas
 
 Cada entidad debe tener un id único dentro de su colección.
+
+Las unidades pedagógicas son opcionales para mantener compatibilidad con packs anteriores. Cuando existe un `curriculumMap`, su `sequence` contiene los IDs de las unidades en el orden de enseñanza sugerido. Cada unidad puede declarar `prerequisiteUnitIds` para representar dependencias conceptuales.
 
 Los modos deben declarar id, title, description, pedagogicalGoal, strategy y placeholder.
 
