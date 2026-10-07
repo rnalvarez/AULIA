@@ -322,6 +322,7 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
     setStudioApiKey(loadStudioApiKey(course.id));
     setStudioKeyInput("");
     setShowStudioKey(false);
+    setLegalAccepted(false);
   }, [course.id]);
 
   function mutate(updater, message = "Cambios pendientes de guardar.") {
