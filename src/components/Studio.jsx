@@ -367,6 +367,13 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
       return;
     }
 
+    const result = validateCourse(draft);
+    if (!result.valid) {
+      setValidation(result);
+      setStatus("Corregí los problemas antes de publicar.");
+      return;
+    }
+
     const confirmed = window.confirm(
       "ADVERTENCIA ANTES DE PUBLICAR\n\n" +
       "Al publicar esta cátedra declarás que contás con los derechos, permisos, licencias o autorizaciones necesarios para utilizar y poner a disposición los materiales incorporados.\n\n" +
@@ -375,13 +382,6 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
     );
     if (!confirmed) {
       setStatus("Publicación cancelada.");
-      return;
-    }
-
-    const result = validateCourse(draft);
-    if (!result.valid) {
-      setValidation(result);
-      setStatus("Corregí los problemas antes de publicar.");
       return;
     }
 
