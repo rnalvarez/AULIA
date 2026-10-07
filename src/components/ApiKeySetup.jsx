@@ -1,5 +1,6 @@
 import { useState } from "react";
 import Avatar from "./Avatar.jsx";
+import LegalNotice from "./LegalNotice.jsx";
 import { saveApiKey } from "../utils/storage.js";
 
 export default function ApiKeySetup({ course, onReady }) {
@@ -69,6 +70,7 @@ export default function ApiKeySetup({ course, onReady }) {
         <p className="access-footer">
           La clave se guarda únicamente en este navegador para esta instancia de AULIA.
         </p>
+        <div className="access-legal"><LegalNotice compact /></div>
       </div>
     </div>
   );
