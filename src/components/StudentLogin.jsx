@@ -1,5 +1,6 @@
 import { useState } from "react";
 import Avatar from "./Avatar.jsx";
+import LegalNotice from "./LegalNotice.jsx";
 import { checkStudent, createStudentPin, verifyStudentPin, saveVerifiedStudent } from "../services/auth/studentAccess.js";
 
 export default function StudentLogin({ course, onReady }) {
@@ -104,6 +105,7 @@ export default function StudentLogin({ course, onReady }) {
           </div>
         </div>
         <p className="access-footer">Acceso gestionado por la cátedra · Las consultas se registran para seguimiento docente</p>
+        <div className="access-legal"><LegalNotice compact /></div>
       </div>
     </div>
   );
