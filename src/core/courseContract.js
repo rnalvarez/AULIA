@@ -49,6 +49,61 @@ export function validateCourse(course) {
     }
   }
 
+  if (course?.curriculumMap && typeof course.curriculumMap === "object") {
+    const map = course.curriculumMap;
+    if (map.reviewStatus && !["pending", "approved"].includes(map.reviewStatus)) {
+      errors.push("El mapa curricular tiene reviewStatus inválido");
+    }
+
+    const unitIds = new Set((course?.pedagogicalUnits || []).map((unit) => unit?.id).filter(Boolean));
+    const sequence = Array.isArray(map.sequence) ? map.sequence : [];
+    const seenSequence = new Set();
+
+    for (const unitId of sequence) {
+      if (!unitIds.has(unitId)) {
+        errors.push(`El mapa curricular referencia una unidad inexistente: ${unitId}`);
+      }
+      if (seenSequence.has(unitId)) {
+        errors.push(`El mapa curricular contiene una unidad repetida: ${unitId}`);
+      }
+      seenSequence.add(unitId);
+    }
+
+    for (const unit of course?.pedagogicalUnits || []) {
+      for (const prerequisiteId of unit?.prerequisiteUnitIds || []) {
+        if (!unitIds.has(prerequisiteId)) {
+          errors.push(`La unidad "${unit?.id || "sin id"}" referencia un prerrequisito inexistente: ${prerequisiteId}`);
+        }
+        if (prerequisiteId === unit?.id) {
+          errors.push(`La unidad "${unit?.id || "sin id"}" no puede ser prerrequisito de sí misma`);
+        }
+      }
+    }
+
+    const dependencies = new Map(
+      (course?.pedagogicalUnits || []).map((unit) => [unit.id, new Set(unit.prerequisiteUnitIds || [])])
+    );
+    const visiting = new Set();
+    const visited = new Set();
+    function visit(id) {
+      if (visiting.has(id)) return true;
+      if (visited.has(id)) return false;
+      visiting.add(id);
+      for (const prerequisiteId of dependencies.get(id) || []) {
+        if (dependencies.has(prerequisiteId) && visit(prerequisiteId)) return true;
+      }
+      visiting.delete(id);
+      visited.add(id);
+      return false;
+    }
+    for (const id of dependencies.keys()) {
+      if (visit(id)) {
+        errors.push("El mapa curricular contiene dependencias circulares.");
+        break;
+      }
+    }
+  }
+
   const bibliographyIds = new Set((course?.bibliography || []).map((item) => item?.id).filter(Boolean));
   const corpusIds = new Set((course?.corpus || []).map((item) => item?.id).filter(Boolean));
 
