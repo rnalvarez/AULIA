@@ -444,6 +444,37 @@ function studioValidatePublishPack(course, pack) {
     }
   }
 
+  if (pack?.curriculumMap) {
+    const map = pack.curriculumMap;
+    const unitIds = new Set((pack?.pedagogicalUnits || []).map(item => item?.id).filter(Boolean));
+    if (String(map.reviewStatus || "") === "pending") {
+      errors.push("El mapa curricular está pendiente de revisión. Aprobalo antes de publicar.");
+    }
+    if (!Array.isArray(map.sequence) || !map.sequence.length) {
+      errors.push("El mapa curricular no tiene una secuencia de unidades.");
+    } else {
+      const seen = new Set();
+      for (const unitId of map.sequence) {
+        if (!unitIds.has(unitId)) errors.push("El mapa curricular referencia una unidad inexistente: " + unitId);
+        if (seen.has(unitId)) errors.push("El mapa curricular contiene una unidad repetida: " + unitId);
+        seen.add(unitId);
+      }
+      if (seen.size !== unitIds.size) {
+        errors.push("El mapa curricular debe incluir todas las unidades pedagógicas.");
+      }
+    }
+    for (const unit of pack?.pedagogicalUnits || []) {
+      for (const prerequisiteId of unit?.prerequisiteUnitIds || []) {
+        if (!unitIds.has(prerequisiteId)) {
+          errors.push("La unidad " + (unit?.id || "sin ID") + " referencia un prerrequisito inexistente: " + prerequisiteId);
+        }
+        if (prerequisiteId === unit?.id) {
+          errors.push("Una unidad no puede ser prerrequisito de sí misma: " + (unit?.id || "sin ID"));
+        }
+      }
+    }
+  }
+
   const conceptIds = new Set((pack?.concepts || []).map(item => item?.id).filter(Boolean));
   for (const activity of pack?.activities || []) {
     if (activity?.modeId && !modeIds.has(activity.modeId)) {
