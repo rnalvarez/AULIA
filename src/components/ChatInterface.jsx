@@ -320,7 +320,7 @@ export default function ChatInterface({ course, student, apiKey, onLogoutApiKey,
             : <div className="voice-ready"><button onClick={toggleMic} className={isListening ? "listening" : ""}>{isListening ? "⏹" : "🎙"}</button><span>{isListening ? "Escuchando… click para enviar" : "Click para hablar"}</span></div>}
           </div>}
 
-          <p className="ch-footer-note">{course.title} · Consultas registradas para seguimiento docente · <LegalNotice compact /></p>
+          <p className="ch-footer-note">{course.title} · Consultas registradas para seguimiento docente</p>
         </div>
       </footer>
     </div>
