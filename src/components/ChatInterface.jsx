@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Avatar from "./Avatar.jsx";
+import LegalNotice from "./LegalNotice.jsx";
 import { retrieveFromCourse } from "../core/retrieval.js";
 import { createLLMClient } from "../services/llm/llmClient.js";
 import { createSheetsClient } from "../services/tracking/sheetsClient.js";
@@ -319,7 +320,7 @@ export default function ChatInterface({ course, student, apiKey, onLogoutApiKey,
             : <div className="voice-ready"><button onClick={toggleMic} className={isListening ? "listening" : ""}>{isListening ? "⏹" : "🎙"}</button><span>{isListening ? "Escuchando… click para enviar" : "Click para hablar"}</span></div>}
           </div>}
 
-          <p className="ch-footer-note">{course.title} · Consultas registradas para seguimiento docente</p>
+          <p className="ch-footer-note">{course.title} · Consultas registradas para seguimiento docente · <LegalNotice compact /></p>
         </div>
       </footer>
     </div>
