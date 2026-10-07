@@ -1,12 +1,13 @@
 import { useEffect, useMemo, useState } from "react";
 import { cloneCourse, validateCourse } from "../core/courseContract.js";
 import { downloadCoursePack, readCoursePackFile } from "../core/coursePackIO.js";
-import { readMaterialFile, materialToCorpus, mergeImportedBibliography } from "../core/materialIO.js";
+import { readMaterialFile, materialToCorpus, mergeImportedBibliography, mergeImportedDocuments } from "../core/materialIO.js";
 import { requestTeacherProposal } from "../services/llm/teacherProposal.js";
 import { clearStudioApiKey, isGroqApiKey, loadStudioApiKey, saveStudioApiKey } from "../utils/studioStorage.js";
+import LegalNotice from "./LegalNotice.jsx";
 
 const STORAGE_PREFIX = "aulia:studio:";
-const VERSION = "0.5";
+const VERSION = "0.7";
 const STEPS = [
   ["overview", "01", "Cátedra"],
   ["material", "02", "Material"],
@@ -43,6 +44,34 @@ function firstSentence(text) {
 
 function mergeTeacherProposal(course, proposal) {
   const corpusIds = new Set((course.corpus || []).map((item) => item.id));
+  const pedagogicalUnits = [...(course.pedagogicalUnits || [])];
+  const existingUnitKeys = new Set(pedagogicalUnits.map((item) => slug(item.title)));
+  const newUnits = [];
+
+  for (const item of proposal.pedagogicalUnits || []) {
+    const title = String(item?.title || "").trim();
+    const key = slug(title);
+    if (!title || existingUnitKeys.has(key)) continue;
+
+    const unit = {
+      id: uniqueId("unidad-" + (key || "item"), [...pedagogicalUnits, ...newUnits]),
+      title,
+      rationale: String(item.rationale || "").trim(),
+      learningGoal: String(item.learningGoal || "").trim(),
+      phase: String(item.phase || "").trim(),
+      suggestedSequence: Number.isFinite(Number(item.sequence)) ? Number(item.sequence) : 999,
+      prerequisiteTitles: Array.isArray(item.prerequisiteTitles) ? item.prerequisiteTitles.filter(Boolean).slice(0, 5) : [],
+      prerequisiteUnitIds: [],
+      conceptTitles: Array.isArray(item.conceptTitles) ? item.conceptTitles.filter(Boolean).slice(0, 8) : [],
+      sourceCorpusIds: (item.sourceIds || []).filter((id) => corpusIds.has(id)),
+      reviewStatus: "pending",
+      suggested: true,
+      suggestionSource: "llm",
+    };
+    newUnits.push(unit);
+    existingUnitKeys.add(key);
+  }
+
   const concepts = [...(course.concepts || [])];
   const conceptByKey = new Map(concepts.map((item) => [slug(item.title), item]));
   const newConcepts = [];
@@ -144,10 +173,75 @@ function mergeTeacherProposal(course, proposal) {
     activityKeys.add(key);
   }
 
+  const unitCandidates = [...pedagogicalUnits, ...newUnits];
+  const unitIds = new Set(unitCandidates.map((unit) => unit.id).filter(Boolean));
+  const unitByTitle = new Map(unitCandidates.map((unit) => [slug(unit.title), unit]));
+
+  const allUnits = unitCandidates.map((unit) => {
+    const inferredPrerequisites = (unit.prerequisiteTitles || [])
+      .map((title) => unitByTitle.get(slug(title))?.id)
+      .filter((id) => id && id !== unit.id && unitIds.has(id));
+
+    return {
+      ...unit,
+      prerequisiteUnitIds: Array.from(new Set([
+        ...(unit.prerequisiteUnitIds || []),
+        ...inferredPrerequisites,
+      ])).filter((id) => id && id !== unit.id && unitIds.has(id)),
+      conceptIds: Array.from(new Set(
+        (unit.conceptTitles || [])
+          .map((title) => conceptByKey.get(slug(title))?.id)
+          .filter(Boolean)
+      )),
+    };
+  }).map(({ suggestedSequence, prerequisiteTitles, ...unit }) => unit);
+
+  const unitIdsByConcept = new Map();
+  for (const unit of allUnits) {
+    for (const conceptId of unit.conceptIds || []) {
+      if (!unitIdsByConcept.has(conceptId)) unitIdsByConcept.set(conceptId, []);
+      unitIdsByConcept.get(conceptId).push(unit.id);
+    }
+  }
+
+  const conceptsWithUnits = allConcepts.map((concept) => {
+    const ids = unitIdsByConcept.get(concept.id);
+    return ids?.length
+      ? { ...concept, pedagogicalUnitIds: Array.from(new Set(ids)) }
+      : concept;
+  });
+
+  const existingSequence = Array.isArray(course.curriculumMap?.sequence)
+    ? course.curriculumMap.sequence.filter((id) => unitIds.has(id))
+    : pedagogicalUnits.map((unit) => unit.id).filter(Boolean);
+  const proposedSequence = newUnits
+    .slice()
+    .sort((a, b) => a.suggestedSequence - b.suggestedSequence)
+    .map((unit) => unit.id);
+  const sequence = Array.from(new Set([
+    ...existingSequence,
+    ...proposedSequence,
+    ...allUnits.map((unit) => unit.id),
+  ])).filter(Boolean);
+
+  const curriculumMap = allUnits.length
+    ? {
+        ...(course.curriculumMap || {}),
+        title: course.curriculumMap?.title || "Mapa curricular sugerido",
+        rationale: String(proposal.pedagogicalSummary || course.curriculumMap?.rationale || "").trim(),
+        reviewStatus: "pending",
+        suggested: true,
+        suggestionSource: "llm",
+        sequence,
+      }
+    : (course.curriculumMap || null);
+
   return {
     course: {
       ...course,
-      concepts: allConcepts,
+      pedagogicalUnits: allUnits,
+      curriculumMap,
+      concepts: conceptsWithUnits,
       examples: [...examples, ...newExamples],
       activities: [...activities, ...newActivities],
     },
@@ -184,6 +278,7 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
   const [studioApiKey, setStudioApiKey] = useState(() => loadStudioApiKey(course.id));
   const [studioKeyInput, setStudioKeyInput] = useState("");
   const [showStudioKey, setShowStudioKey] = useState(false);
+  const [legalAccepted, setLegalAccepted] = useState(false);
 
   useEffect(() => {
     const saved = localStorage.getItem(storageKey);
@@ -227,6 +322,7 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
     setStudioApiKey(loadStudioApiKey(course.id));
     setStudioKeyInput("");
     setShowStudioKey(false);
+    setLegalAccepted(false);
   }, [course.id]);
 
   function mutate(updater, message = "Cambios pendientes de guardar.") {
@@ -266,10 +362,26 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
   async function publish() {
     if (!canEdit || busy) return;
 
+    if (!legalAccepted) {
+      setStatus("Antes de publicar, confirmá que tenés los derechos, permisos o autorizaciones necesarios sobre los materiales incorporados.");
+      return;
+    }
+
     const result = validateCourse(draft);
     if (!result.valid) {
       setValidation(result);
       setStatus("Corregí los problemas antes de publicar.");
+      return;
+    }
+
+    const confirmed = window.confirm(
+      "ADVERTENCIA ANTES DE PUBLICAR\n\n" +
+      "Al publicar esta cátedra declarás que contás con los derechos, permisos, licencias o autorizaciones necesarios para utilizar y poner a disposición los materiales incorporados.\n\n" +
+      "AULIA no verifica esos derechos ni determina la legalidad de su uso. La responsabilidad por los materiales y por el uso de la plataforma corresponde al responsable de la cátedra.\n\n" +
+      "¿Confirmás que querés publicar?"
+    );
+    if (!confirmed) {
+      setStatus("Publicación cancelada.");
       return;
     }
 
@@ -331,6 +443,7 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
       const baseIds = [...(draft.corpus || [])];
       const collected = [];
       const bibliography = [];
+      const documents = [];
       let warnings = 0;
       let pages = 0;
 
@@ -339,6 +452,7 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
         const material = materialToCorpus(extracted, [...baseIds, ...collected]);
         collected.push(...material.corpus);
         bibliography.push(...(material.bibliography || []));
+        if (material.document) documents.push(material.document);
         warnings += material.warnings?.length || 0;
         pages += material.pages || 0;
       }
@@ -346,8 +460,9 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
       mutate((current) => ({
         ...current,
         corpus: [...(current.corpus || []), ...collected],
+        documents: mergeImportedDocuments(current.documents || [], documents),
         bibliography: mergeImportedBibliography(current.bibliography || [], bibliography),
-      }), `${collected.length} fragmentos incorporados desde ${files.length} documento${files.length === 1 ? "" : "s"}.` +
+      }), `${collected.length} unidades de lectura incorporadas desde ${files.length} documento${files.length === 1 ? "" : "s"}.` +
         (pages ? ` · ${pages} páginas.` : "") +
         (warnings ? ` · ${warnings} aviso(s) de conversión.` : ""));
     } catch (err) {
@@ -369,7 +484,32 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
     });
   }
   function remove(collection, index) {
-    mutate((c) => ({ ...c, [collection]: (c[collection] || []).filter((_, i) => i !== index) }));
+    mutate((c) => {
+      const items = [...(c[collection] || [])];
+      const removed = items[index];
+      const next = items.filter((_, i) => i !== index);
+
+      if (collection !== "pedagogicalUnits" || !removed?.id) {
+        return { ...c, [collection]: next };
+      }
+
+      const nextMap = c.curriculumMap
+        ? {
+            ...c.curriculumMap,
+            sequence: (c.curriculumMap.sequence || []).filter((id) => id !== removed.id),
+            reviewStatus: "pending",
+          }
+        : c.curriculumMap;
+
+      return {
+        ...c,
+        pedagogicalUnits: next.map((unit) => ({
+          ...unit,
+          prerequisiteUnitIds: (unit.prerequisiteUnitIds || []).filter((id) => id !== removed.id),
+        })),
+        curriculumMap: nextMap,
+      };
+    });
   }
   function addMode(strategy) {
     const preset = MODES[strategy] || MODES.retrieve;
@@ -424,6 +564,100 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
     setStep("proposal");
   }
 
+  function approveAllPedagogicalUnits() {
+    const units = draft.pedagogicalUnits || [];
+    if (!units.length) return;
+    mutate((c) => ({
+      ...c,
+      pedagogicalUnits: (c.pedagogicalUnits || []).map((unit) => ({
+        ...unit,
+        reviewStatus: "approved",
+      })),
+    }), "Todas las unidades pedagógicas fueron aprobadas.");
+  }
+
+  function approveCurriculumMap() {
+    if (!draft.curriculumMap?.sequence?.length) return;
+    mutate((c) => ({
+      ...c,
+      curriculumMap: {
+        ...(c.curriculumMap || {}),
+        reviewStatus: "approved",
+      },
+    }), "El mapa curricular fue aprobado.");
+  }
+
+  function moveCurriculumUnit(index, direction) {
+    mutate((c) => {
+      const currentSequence = Array.isArray(c.curriculumMap?.sequence)
+        ? [...c.curriculumMap.sequence]
+        : (c.pedagogicalUnits || []).map((unit) => unit.id).filter(Boolean);
+      const target = index + direction;
+      if (index < 0 || target < 0 || index >= currentSequence.length || target >= currentSequence.length) return c;
+      [currentSequence[index], currentSequence[target]] = [currentSequence[target], currentSequence[index]];
+      return {
+        ...c,
+        curriculumMap: {
+          ...(c.curriculumMap || {}),
+          sequence: currentSequence,
+          reviewStatus: "pending",
+        },
+      };
+    }, "Orden curricular modificado. Revisá el mapa antes de publicar.");
+  }
+
+  function setCurriculumPrerequisites(unitId, value) {
+    mutate((c) => {
+      const byTitle = new Map((c.pedagogicalUnits || []).map((unit) => [slug(unit.title), unit.id]));
+      const ids = Array.from(new Set(
+        list(value)
+          .map((title) => byTitle.get(slug(title)))
+          .filter((id) => id && id !== unitId)
+      ));
+      return {
+        ...c,
+        pedagogicalUnits: (c.pedagogicalUnits || []).map((unit) =>
+          unit.id === unitId ? { ...unit, prerequisiteUnitIds: ids } : unit
+        ),
+        curriculumMap: c.curriculumMap
+          ? { ...c.curriculumMap, reviewStatus: "pending" }
+          : c.curriculumMap,
+      };
+    }, "Dependencias curriculares actualizadas.");
+  }
+
+  function buildLocalCurriculumMap() {
+    const units = [...(draft.pedagogicalUnits || [])];
+    if (!units.length) {
+      setStatus("Primero generá unidades pedagógicas.");
+      return;
+    }
+    const pageFor = (unit) => {
+      const pages = (unit.sourceCorpusIds || [])
+        .map((sourceId) => draft.corpus?.find((chunk) => chunk.id === sourceId)?.sourcePageStart)
+        .map(Number)
+        .filter((page) => Number.isFinite(page) && page > 0);
+      return pages.length ? Math.min(...pages) : Number.MAX_SAFE_INTEGER;
+    };
+    const ordered = units
+      .slice()
+      .sort((a, b) => pageFor(a) - pageFor(b) || String(a.title || "").localeCompare(String(b.title || ""), "es"))
+      .map((unit) => unit.id)
+      .filter(Boolean);
+
+    mutate((c) => ({
+      ...c,
+      curriculumMap: {
+        title: "Mapa curricular inicial",
+        rationale: "Orden inicial construido localmente a partir de la secuencia de lectura de las unidades. No representa todavía una inferencia pedagógica de IA.",
+        reviewStatus: "pending",
+        suggested: true,
+        suggestionSource: "local",
+        sequence: ordered,
+      },
+    }), "Mapa curricular inicial generado a partir del orden del material.");
+  }
+
   function saveTeacherKey() {
     const trimmed = studioKeyInput.trim();
     if (!isGroqApiKey(trimmed)) {
@@ -470,14 +704,21 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
       });
       const merged = mergeTeacherProposal(draft, result.proposal);
       const suffix = result.truncated
-        ? " · se analizó una selección representativa del corpus"
-        : " · se analizó todo el corpus disponible";
+        ? " · se revisaron " + result.usedFragments + " de " + result.totalFragments + " unidades representativas"
+        : " · se revisaron " + result.totalFragments + " unidades";
+      const requestSuffix = result.requestCount ? " · " + result.requestCount + " consulta a Groq" : "";
+      const cacheSuffix = result.cached ? " · sin consumir una consulta nueva" : "";
+      const warningSuffix = result.warning ? " · " + result.warning : "";
       mutate(() => merged.course,
         "Propuesta IA incorporada: " +
         merged.stats.concepts + " conceptos · " +
         merged.stats.examples + " ejemplos · " +
-        merged.stats.activities + " actividades" +
+        merged.stats.activities + " actividades · " +
+        (merged.course.curriculumMap?.sequence?.length || 0) + " unidades en el mapa curricular" +
         suffix +
+        requestSuffix +
+        cacheSuffix +
+        warningSuffix +
         ".");
       setStatus(
         "Propuesta IA incorporada: " +
@@ -485,6 +726,8 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
         merged.stats.examples + " ejemplos · " +
         merged.stats.activities + " actividades" +
         suffix +
+        requestSuffix +
+        warningSuffix +
         "."
       );
       setStep("proposal");
@@ -498,11 +741,18 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
   const counts = {
     overview: 1,
     material: draft.corpus?.length || 0,
-    proposal: draft.concepts?.length || 0,
+    proposal: draft.pedagogicalUnits?.length || draft.concepts?.length || 0,
     interaction: draft.modes?.length || 0,
     commissions: draft.commissions?.length || 0,
   };
-  const pending = (draft.concepts || []).filter((x) => x.suggested).length;
+  const pending = (draft.pedagogicalUnits || []).filter((x) => x.suggested && x.reviewStatus === "pending").length;
+  const curriculumSequence = Array.isArray(draft.curriculumMap?.sequence)
+    ? draft.curriculumMap.sequence
+    : [];
+  const curriculumUnits = curriculumSequence
+    .map((id) => draft.pedagogicalUnits?.find((unit) => unit.id === id))
+    .filter(Boolean);
+  const curriculumPending = draft.curriculumMap?.reviewStatus === "pending";
 
   return <section className="studio-wf-shell">
     <header className="studio-wf-toolbar">
@@ -517,7 +767,7 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
     </header>
 
     <div className="studio-wf-local-note">
-      <span><b>Flujo de autoría:</b> Cátedra → Material → Propuesta pedagógica → Interacción → Comisiones.</span>
+      <span><b>Flujo de autoría:</b> Cátedra → Material → Organización pedagógica + mapa curricular → Interacción → Comisiones.</span>
       <small>
         {canEdit
           ? courseMeta?.status === "published"
@@ -551,22 +801,22 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
       </>}
 
       {step === "material" && <>
-        <div className="studio-wf-hero"><div className="eyebrow">PASO 02 · MATERIAL</div><h1>Cargá la bibliografía y el material de trabajo.</h1><p>La bibliografía identifica las fuentes; el corpus contiene los fragmentos que AULIA puede recuperar. No necesitás crear conceptos a mano.</p></div>
+        <div className="studio-wf-hero"><div className="eyebrow">PASO 02 · MATERIAL</div><h1>Cargá la bibliografía y el material de trabajo.</h1><p>AULIA primero organiza el documento y después propone su estructura pedagógica. No necesitás crear conceptos ni fragmentos a mano.</p></div>
         <Panel eyebrow="BIBLIOGRAFÍA" title="Fuentes de la cátedra" description="Libros, apuntes o materiales principales." actions={<button className="ghost" type="button" onClick={addBibliography} disabled={!canEdit}>+ Agregar fuente</button>}>
           {draft.bibliography?.length ? <div className="studio-wf-stack">{draft.bibliography.map((x, i) => <Row key={x.id || i} title={x.title} meta={[x.author, x.year].filter(Boolean).join(" · ")} onRemove={() => remove("bibliography", i)}><div className="studio-wf-grid">
             <Field label="Título" value={x.title} onChange={(v) => edit("bibliography", i, { title: v })}/><Field label="Autor" value={x.author} onChange={(v) => edit("bibliography", i, { author: v })}/><Field label="Editorial" value={x.publisher} onChange={(v) => edit("bibliography", i, { publisher: v })}/><Field label="Año" value={x.year} onChange={(v) => edit("bibliography", i, { year: v })}/><Field label="Rol" value={x.role} onChange={(v) => edit("bibliography", i, { role: v })}/>
           </div></Row>)}</div> : <Empty title="Todavía no cargaste fuentes." text="Podés agregarlas manualmente o incorporarlas desde un JSON." action={<button className="ghost" type="button" onClick={addBibliography}>Agregar primera fuente</button>}/>}
         </Panel>
-        <Panel eyebrow="CORPUS" title="Material que AULIA podrá recuperar" description="PDF, DOCX, TXT, Markdown y JSON se convierten en fragmentos. Podés seleccionar varios documentos; la extracción ocurre localmente en este navegador." actions={<label className="primary studio-wf-file-btn">{busy ? "Procesando…" : "Cargar material"}<input type="file" accept=".txt,.md,.markdown,.json,.pdf,.docx,text/plain,text/markdown,application/json,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document" multiple onChange={importMaterial} disabled={busy}/></label>}>
-          {draft.corpus?.length ? <><div className="studio-wf-stats"><div><strong>{draft.corpus.length}</strong><span>fragmentos</span></div><div><strong>{new Set(draft.corpus.map((x) => x.chapter).filter(Boolean)).size}</strong><span>unidades de origen</span></div><div><strong>{pending}</strong><span>propuestas pendientes</span></div></div><div className="studio-wf-corpus-list">{draft.corpus.slice(0, 18).map((x, i) => <article key={x.id || i}><div><strong>{x.title || "Fragmento"}</strong><span>{x.chapter || (x.sourcePage ? "Página " + x.sourcePage : "Sin unidad de origen")}{x.source ? " · " + x.source : ""}</span></div><p>{String(x.content || "").slice(0, 240)}{String(x.content || "").length > 240 ? "…" : ""}</p></article>)}{draft.corpus.length > 18 && <small>Mostrando 18 de {draft.corpus.length} fragmentos.</small>}</div></> : <Empty title="El corpus está vacío." text="Empezá cargando un PDF, DOCX, TXT, Markdown o JSON."/>}
+        <Panel eyebrow="MATERIAL" title="Material que AULIA podrá recuperar" description="PDF, DOCX, TXT, Markdown y JSON se convierten en unidades de lectura. AULIA conserva capítulos, secciones y páginas cuando puede detectarlos; la extracción ocurre localmente en este navegador." actions={<label className="primary studio-wf-file-btn">{busy ? "Procesando…" : "Cargar material"}<input type="file" accept=".txt,.md,.markdown,.json,.pdf,.docx,text/plain,text/markdown,application/json,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document" multiple onChange={importMaterial} disabled={busy}/></label>}>
+          {draft.corpus?.length ? <><div className="studio-wf-stats"><div><strong>{draft.corpus.length}</strong><span>unidades de lectura</span></div><div><strong>{draft.documents?.length || new Set(draft.corpus.map((x) => x.source).filter(Boolean)).size}</strong><span>documentos</span></div><div><strong>{new Set(draft.corpus.map((x) => (x.unitId || x.id)?.replace(/-p\\d+$/, "")).filter(Boolean)).size}</strong><span>secciones detectadas</span></div></div><div className="studio-wf-corpus-list">{draft.corpus.slice(0, 18).map((x, i) => <article key={x.id || i}><div><strong>{x.title || "Unidad"}</strong><span>{(x.sectionPath?.length ? x.sectionPath.join(" › ") : x.chapter) || "Sin sección detectada"}{x.sourcePageStart ? " · págs. " + x.sourcePageStart + (x.sourcePageEnd && x.sourcePageEnd !== x.sourcePageStart ? "–" + x.sourcePageEnd : "") : ""}{x.source ? " · " + x.source : ""}</span></div><p>{String(x.content || "").slice(0, 240)}{String(x.content || "").length > 240 ? "…" : ""}</p></article>)}{draft.corpus.length > 18 && <small>Mostrando 18 de {draft.corpus.length} unidades de lectura.</small>}</div></> : <Empty title="El corpus está vacío." text="Empezá cargando un PDF, DOCX, TXT, Markdown o JSON. AULIA detectará la estructura antes de proponer la organización pedagógica."/>}
         </Panel>
         <div className="studio-wf-next"><button className="primary" type="button" onClick={() => setStep("proposal")}>Ir a la propuesta pedagógica →</button></div>
       </>}
 
       {step === "proposal" && <>
-        <div className="studio-wf-hero"><div className="eyebrow">PASO 03 · PROPUESTA</div><h1>Ahora AULIA propone cómo organizar ese material.</h1><p>La IA puede detectar conceptos, relaciones, ejemplos y actividades a partir del material. Nada se publica automáticamente: todo queda como propuesta editable para la cátedra.</p></div>
-        <Panel eyebrow="UNIDADES / CONCEPTOS" title="Núcleo pedagógico" description="La propuesta semántica usa tu propia clave de IA docente. AULIA no envía esa clave al backend ni la guarda en el course pack." actions={<>
-          <button className="primary" type="button" onClick={analyzeWithAI} disabled={!canEdit || !draft.corpus?.length || busy}>{busy ? "Analizando…" : "Analizar con IA"}</button>
+        <div className="studio-wf-hero"><div className="eyebrow">PASO 03 · PROPUESTA</div><h1>Ahora AULIA propone cómo organizar ese material.</h1><p>AULIA analiza las unidades detectadas y primero propone una organización pedagógica. Después genera conceptos derivados para sostener la recuperación del asistente. La revisión usa una sola consulta compacta para respetar las limitaciones de las cuentas gratuitas de Groq. Nada se publica automáticamente: todo queda como propuesta editable para la cátedra.</p></div>
+        <Panel eyebrow="CONCEPTOS DERIVADOS" title="Detalle pedagógico y recuperación" description="La propuesta semántica usa tu propia clave de IA docente. AULIA no envía esa clave al backend ni la guarda en el course pack." actions={<>
+          <button className="primary" type="button" onClick={analyzeWithAI} disabled={!canEdit || !draft.corpus?.length || busy}>{busy ? "Analizando…" : "Revisar material con IA"}</button>
           <button className="ghost" type="button" onClick={() => setShowStudioKey((value) => !value)} disabled={!canEdit}>{studioApiKey ? "Cambiar clave IA" : "Configurar IA docente"}</button>
         </>}>
           {(showStudioKey || !studioApiKey) && <div className="studio-wf-ai-setup">
@@ -586,6 +836,130 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
               <button className="ghost" type="button" onClick={() => mutate((c) => ({...c, concepts:[...(c.concepts || []), {id:uniqueId("concepto",c.concepts), title:"Nuevo concepto", aliases:[], keywords:[], summary:"", explanation:""}]}))}>Agregar concepto manualmente</button>
             </div>
           </details>
+
+          <Panel
+            eyebrow="MAPA CURRICULAR"
+            title="Secuencia de enseñanza sugerida"
+            description="AULIA ordena las unidades según una progresión conceptual y señala posibles prerrequisitos. Podés cambiar el orden y corregir las dependencias sin modificar el material original."
+            actions={draft.curriculumMap?.sequence?.length ? <>
+              <button className="primary" type="button" onClick={approveCurriculumMap} disabled={!canEdit || busy || !curriculumPending}>✓ Aprobar mapa</button>
+              <button className="ghost" type="button" onClick={buildLocalCurriculumMap} disabled={!canEdit || busy || !draft.pedagogicalUnits?.length}>Reordenar desde el material</button>
+            </> : (draft.pedagogicalUnits?.length ? <button className="primary" type="button" onClick={buildLocalCurriculumMap} disabled={!canEdit || busy}>Generar mapa inicial</button> : null)}
+          >
+            {curriculumUnits.length ? (
+              <div className="studio-wf-stack">
+                {curriculumUnits.map((unit, index) => {
+                  const prerequisiteTitles = (unit.prerequisiteUnitIds || [])
+                    .map((id) => draft.pedagogicalUnits?.find((candidate) => candidate.id === id)?.title)
+                    .filter(Boolean);
+                  return (
+                    <article className="studio-wf-concept" key={unit.id || index}>
+                      <div className="studio-wf-concept-head">
+                        <div>
+                          <strong>{index + 1}. {unit.title || "Unidad sin título"}</strong>
+                          <span>{unit.phase || "Etapa curricular"}{unit.reviewStatus === "approved" ? " · Unidad aprobada" : " · Unidad pendiente"}</span>
+                        </div>
+                        <div className="studio-wf-panel-actions">
+                          <button className="ghost" type="button" onClick={() => moveCurriculumUnit(index, -1)} disabled={!canEdit || busy || index === 0}>↑</button>
+                          <button className="ghost" type="button" onClick={() => moveCurriculumUnit(index, 1)} disabled={!canEdit || busy || index === curriculumUnits.length - 1}>↓</button>
+                        </div>
+                      </div>
+                      {unit.learningGoal && <p>{unit.learningGoal}</p>}
+                      <Field
+                        label="Requiere antes"
+                        value={prerequisiteTitles.join(", ")}
+                        onChange={(value) => setCurriculumPrerequisites(unit.id, value)}
+                        placeholder="Ej. Conceptos iniciales, percepción y escucha"
+                        hint="Escribí títulos de otras unidades separadas por coma. AULIA las vincula por unidad, no por texto libre."
+                      />
+                    </article>
+                  );
+                })}
+              </div>
+            ) : (
+              <Empty
+                title="Todavía no hay un mapa curricular."
+                text="Revisá el material con IA para que AULIA genere una secuencia. También podés construir un orden inicial con las unidades existentes."
+                action={<button className="ghost" type="button" onClick={buildLocalCurriculumMap} disabled={!canEdit || busy || !draft.pedagogicalUnits?.length}>Generar orden inicial</button>}
+              />
+            )}
+          </Panel>
+
+          <Panel
+            eyebrow="ORGANIZACIÓN PEDAGÓGICA"
+            title="Mapa sugerido por AULIA"
+            description="Estas unidades son la propuesta principal. Revisá el sentido de cada bloque y aprobalo, editá el nombre/objetivo o descartalo. Descartar una unidad no elimina el material original."
+            actions={pending > 0 ? <button className="primary" type="button" onClick={approveAllPedagogicalUnits} disabled={!canEdit || busy}>✓ Aprobar todas ({pending})</button> : null}
+          >
+            {draft.pedagogicalUnits?.length ? (
+              <div className="studio-wf-stack">
+                {draft.pedagogicalUnits.map((unit, i) => {
+                  const unitConcepts = (unit.conceptIds || [])
+                    .map((id) => draft.concepts?.find((concept) => concept.id === id)?.title)
+                    .filter(Boolean);
+                  const approved = unit.reviewStatus === "approved";
+                  return (
+                    <article className="studio-wf-concept" key={unit.id || i}>
+                      <div className="studio-wf-concept-head">
+                        <div>
+                          <strong>{unit.title || "Unidad sin título"}</strong>
+                          <span>
+                            {approved ? "✓ Aprobada" : "Pendiente de revisión"}
+                            {unit.sourceCorpusIds?.length ? " · " + unit.sourceCorpusIds.length + " unidad(es) de fuente" : ""}
+                          </span>
+                        </div>
+                        <div className="studio-wf-panel-actions">
+                          {!approved && (
+                            <button className="ghost" type="button" onClick={() => edit("pedagogicalUnits", i, { reviewStatus: "approved" })} disabled={!canEdit || busy}>
+                              ✓ Aprobar
+                            </button>
+                          )}
+                          {approved && (
+                            <button className="ghost" type="button" onClick={() => edit("pedagogicalUnits", i, { reviewStatus: "pending" })} disabled={!canEdit || busy}>
+                              Marcar para revisar
+                            </button>
+                          )}
+                          <button className="studio-wf-danger" type="button" onClick={() => remove("pedagogicalUnits", i)} disabled={!canEdit || busy}>
+                            Descartar
+                          </button>
+                        </div>
+                      </div>
+                      <div className="studio-wf-grid">
+                        <Field
+                          label="Nombre de la unidad"
+                          value={unit.title}
+                          onChange={(v) => edit("pedagogicalUnits", i, { title: v })}
+                          placeholder="Ej. El valor añadido y la sincronización"
+                        />
+                        <Field
+                          label="Qué debería comprender el estudiante"
+                          value={unit.learningGoal}
+                          onChange={(v) => edit("pedagogicalUnits", i, { learningGoal: v })}
+                          multiline
+                        />
+                        <Field
+                          label="Por qué AULIA propone esta unidad"
+                          value={unit.rationale}
+                          onChange={(v) => edit("pedagogicalUnits", i, { rationale: v })}
+                          multiline
+                        />
+                      </div>
+                      {unitConcepts.length > 0 && (
+                        <div className="studio-wf-concept-source">
+                          <strong>Conceptos relacionados:</strong> {unitConcepts.join(" · ")}
+                        </div>
+                      )}
+                    </article>
+                  );
+                })}
+              </div>
+            ) : (
+              <Empty
+                title="Todavía no hay una organización pedagógica."
+                text="Cargá material y usá “Revisar material con IA”."
+              />
+            )}
+          </Panel>
 
           {draft.concepts?.length ? <div className="studio-wf-stack">{draft.concepts.map((x, i) => {
             const sourceNames = (x.sourceBibliographyIds || [])
@@ -631,7 +1005,8 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
             <div><span>Cátedra</span><strong>{draft.title || "Sin definir"}</strong></div>
             <div><span>Fuentes</span><strong>{draft.bibliography?.length || 0}</strong></div>
             <div><span>Fragmentos</span><strong>{draft.corpus?.length || 0}</strong></div>
-            <div><span>Unidades</span><strong>{draft.concepts?.length || 0}</strong></div>
+            <div><span>Unidades pedagógicas</span><strong>{draft.pedagogicalUnits?.length || 0}</strong></div>
+            <div><span>Mapa curricular</span><strong>{draft.curriculumMap?.sequence?.length || 0}</strong></div>
             <div><span>Modos</span><strong>{draft.modes?.length || 0}</strong></div>
             <div><span>Actividades</span><strong>{draft.activities?.length || 0}</strong></div>
             <div><span>Comisiones</span><strong>{draft.commissions?.length || 0}</strong></div>
@@ -667,6 +1042,21 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
             </div>
           )}
 
+          <div className="studio-wf-legal-acceptance">
+            <label>
+              <input
+                type="checkbox"
+                checked={legalAccepted}
+                onChange={(e) => setLegalAccepted(e.target.checked)}
+                disabled={!canEdit || busy}
+              />
+              <span>
+                Declaro que tengo los derechos, permisos, licencias o autorizaciones necesarios para utilizar y poner a disposición los materiales incorporados en esta cátedra. Entiendo que soy responsable de su selección y uso, y que AULIA no verifica dichos derechos.
+              </span>
+            </label>
+            <LegalNotice compact />
+          </div>
+
           <div className="studio-wf-final-actions">
             <button className="primary" type="button" onClick={save} disabled={!canEdit || busy}>Guardar cambios</button>
             <button className="ghost" type="button" onClick={validate} disabled={busy}>Validar</button>
@@ -681,7 +1071,7 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
                 Probar versión publicada ↗
               </button>
             )}
-            <button className="primary" type="button" onClick={publish} disabled={!canEdit || courseMeta?.role !== "owner" || busy}>
+            <button className="primary" type="button" onClick={publish} disabled={!canEdit || courseMeta?.role !== "owner" || busy || !legalAccepted}>
               {courseMeta?.status === "published" ? "Publicar nueva versión" : "Publicar cátedra"}
             </button>
           </div>
@@ -693,7 +1083,10 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
       </>}
 
       <section className="studio-wf-advanced"><button type="button" onClick={() => setAdvanced((x) => !x)}><span>AVANZADO</span><small>{advanced ? "Ocultar configuración técnica" : "Mostrar configuración técnica"}</small><b>{advanced ? "−" : "+"}</b></button>{advanced && <div className="studio-wf-advanced-body"><div className="studio-wf-grid"><Field label="ID interno" value={draft.id} onChange={(v) => mutate({id:v})} hint="No hace falta modificarlo durante el trabajo normal."/><Field label="Proveedor LLM" value={draft.llm?.provider} onChange={(v) => mutate({llm:{...(draft.llm || {}), provider:v}})}/><Field label="Endpoint LLM" value={draft.llm?.endpoint} onChange={(v) => mutate({llm:{...(draft.llm || {}), endpoint:v}})}/><Field label="Tracking endpoint" value={draft.tracking?.endpoint} onChange={(v) => mutate({tracking:{...(draft.tracking || {}), endpoint:v}})}/><Field label="Instrucciones internas" value={draft.assistant?.instructions} onChange={(v) => mutate({assistant:{...draft.assistant, instructions:v}})} multiline/></div><div className="studio-wf-security-note">AULIA Studio no guarda claves de API. La clave de Groq del estudiante sigue siendo local del navegador y no forma parte del course pack.</div></div>}</section>
-      <footer className="studio-wf-footer"><span>{status || "Borrador listo para editar."}</span><span>AULIA · Studio local</span></footer>
+      <footer className="studio-wf-footer">
+        <span>{status || "Borrador listo para editar."}</span>
+        <span>AULIA · Studio local · <LegalNotice compact /></span>
+      </footer>
       {validation && <section className={"studio-wf-validation " + (validation.valid ? "valid" : "invalid")}><strong>{validation.valid ? "✓ Course pack válido" : "Hay elementos que revisar"}</strong>{!validation.valid && <ul>{validation.errors.map((x) => <li key={x}>{x}</li>)}</ul>}</section>}
     </main>
     </fieldset>

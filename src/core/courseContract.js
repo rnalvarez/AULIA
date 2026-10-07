@@ -29,6 +29,8 @@ export function validateCourse(course) {
   }
 
   checkUniqueIds(course?.bibliography, "Bibliografía", errors);
+  checkUniqueIds(course?.documents, "Documentos", errors);
+  checkUniqueIds(course?.pedagogicalUnits, "Unidades pedagógicas", errors);
   checkUniqueIds(course?.concepts, "Conceptos", errors);
   checkUniqueIds(course?.modes, "Modos", errors);
   checkUniqueIds(course?.activities, "Actividades", errors);
@@ -38,6 +40,68 @@ export function validateCourse(course) {
 
   for (const [index, chunk] of (course?.corpus || []).entries()) {
     if (!chunk?.content) errors.push(`Corpus[${index}] no tiene content`);
+  }
+
+  for (const unit of course?.pedagogicalUnits || []) {
+    if (!unit?.title) errors.push(`Una unidad pedagógica no tiene title`);
+    if (unit?.reviewStatus && !["pending", "approved"].includes(unit.reviewStatus)) {
+      errors.push(`La unidad pedagógica "${unit?.id || "sin id"}" tiene reviewStatus inválido`);
+    }
+  }
+
+  if (course?.curriculumMap && typeof course.curriculumMap === "object") {
+    const map = course.curriculumMap;
+    if (map.reviewStatus && !["pending", "approved"].includes(map.reviewStatus)) {
+      errors.push("El mapa curricular tiene reviewStatus inválido");
+    }
+
+    const unitIds = new Set((course?.pedagogicalUnits || []).map((unit) => unit?.id).filter(Boolean));
+    const sequence = Array.isArray(map.sequence) ? map.sequence : [];
+    const seenSequence = new Set();
+
+    for (const unitId of sequence) {
+      if (!unitIds.has(unitId)) {
+        errors.push(`El mapa curricular referencia una unidad inexistente: ${unitId}`);
+      }
+      if (seenSequence.has(unitId)) {
+        errors.push(`El mapa curricular contiene una unidad repetida: ${unitId}`);
+      }
+      seenSequence.add(unitId);
+    }
+
+    for (const unit of course?.pedagogicalUnits || []) {
+      for (const prerequisiteId of unit?.prerequisiteUnitIds || []) {
+        if (!unitIds.has(prerequisiteId)) {
+          errors.push(`La unidad "${unit?.id || "sin id"}" referencia un prerrequisito inexistente: ${prerequisiteId}`);
+        }
+        if (prerequisiteId === unit?.id) {
+          errors.push(`La unidad "${unit?.id || "sin id"}" no puede ser prerrequisito de sí misma`);
+        }
+      }
+    }
+
+    const dependencies = new Map(
+      (course?.pedagogicalUnits || []).map((unit) => [unit.id, new Set(unit.prerequisiteUnitIds || [])])
+    );
+    const visiting = new Set();
+    const visited = new Set();
+    function visit(id) {
+      if (visiting.has(id)) return true;
+      if (visited.has(id)) return false;
+      visiting.add(id);
+      for (const prerequisiteId of dependencies.get(id) || []) {
+        if (dependencies.has(prerequisiteId) && visit(prerequisiteId)) return true;
+      }
+      visiting.delete(id);
+      visited.add(id);
+      return false;
+    }
+    for (const id of dependencies.keys()) {
+      if (visit(id)) {
+        errors.push("El mapa curricular contiene dependencias circulares.");
+        break;
+      }
+    }
   }
 
   const bibliographyIds = new Set((course?.bibliography || []).map((item) => item?.id).filter(Boolean));

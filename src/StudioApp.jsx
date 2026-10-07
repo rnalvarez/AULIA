@@ -15,26 +15,30 @@ import {
 } from "./services/auth/studioAccess.js";
 import StudioLogin from "./components/StudioLogin.jsx";
 import Studio from "./components/Studio.jsx";
+import LegalNotice from "./components/LegalNotice.jsx";
 
 function BackendUnavailable() {
   return (
-    <div className="studio-access-screen">
-      <div className="studio-access-wrap">
-        <div className="studio-access-heading">
-          <div className="eyebrow">AULIA</div>
-          <h1>STUDIO</h1>
-          <p>El espacio docente está esperando la conexión con su backend.</p>
-        </div>
-        <div className="studio-access-card">
-          <div className="studio-access-body">
-            <div className="studio-access-welcome">
-              <strong>Backend no configurado</strong>
-              <span>Definí la URL del Web App de Google Apps Script en <code>src/core/studioConfig.js</code> antes de publicar Studio.</span>
+    <>
+      <div className="studio-access-screen">
+        <div className="studio-access-wrap">
+          <div className="studio-access-heading">
+            <div className="eyebrow">AULIA</div>
+            <h1>STUDIO</h1>
+            <p>El espacio docente está esperando la conexión con su backend.</p>
+          </div>
+          <div className="studio-access-card">
+            <div className="studio-access-body">
+              <div className="studio-access-welcome">
+                <strong>Backend no configurado</strong>
+                <span>Definí la URL del Web App de Google Apps Script en <code>src/core/studioConfig.js</code> antes de publicar Studio.</span>
+              </div>
             </div>
           </div>
         </div>
       </div>
-    </div>
+      <div className="aulia-global-legal"><LegalNotice compact /></div>
+    </>
   );
 }
 
@@ -247,11 +251,22 @@ export default function StudioApp() {
 
   if (!STUDIO_API_ENDPOINT) return <BackendUnavailable />;
   if (loading) return <LoadingScreen />;
-  if (!session) return <StudioLogin onReady={handleLogin} error={error} />;
+  if (!session) return (
+    <>
+      <StudioLogin onReady={handleLogin} error={error} />
+      <div className="aulia-global-legal"><LegalNotice compact /></div>
+    </>
+  );
 
-  if (loadingCourse && !course) return <LoadingScreen text="Cargando la cátedra…" />;
+  if (loadingCourse && !course) return (
+    <>
+      <LoadingScreen text="Cargando la cátedra…" />
+      <div className="aulia-global-legal"><LegalNotice compact /></div>
+    </>
+  );
 
   return (
+    <>
     <div className="studio-root">
       <aside className="studio-coursebar">
         <div className="studio-sidebar-brand">
@@ -334,6 +349,7 @@ export default function StudioApp() {
         )}
       </div>
     </div>
+    </>
   );
 }
 

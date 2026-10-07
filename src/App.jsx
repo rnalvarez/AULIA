@@ -7,6 +7,7 @@ import { loadApiKey, clearApiKey } from "./utils/storage.js";
 import StudentLogin from "./components/StudentLogin.jsx";
 import ApiKeySetup from "./components/ApiKeySetup.jsx";
 import ChatInterface from "./components/ChatInterface.jsx";
+import LegalNotice from "./components/LegalNotice.jsx";
 
 function LoadingScreen() {
   return (
@@ -74,14 +75,25 @@ function StudentRuntime({ course, initialStudent, initialApiKey }) {
   const [apiKey, setApiKey] = useState(initialApiKey);
 
   if (!student) {
-    return <StudentLogin course={course} onReady={setStudent} />;
+    return (
+      <>
+        <StudentLogin course={course} onReady={setStudent} />
+        <div className="aulia-global-legal"><LegalNotice compact /></div>
+      </>
+    );
   }
 
   if (!apiKey) {
-    return <ApiKeySetup course={course} onReady={setApiKey} />;
+    return (
+      <>
+        <ApiKeySetup course={course} onReady={setApiKey} />
+        <div className="aulia-global-legal"><LegalNotice compact /></div>
+      </>
+    );
   }
 
   return (
+    <>
     <ChatInterface
       course={course}
       student={student}
@@ -97,5 +109,7 @@ function StudentRuntime({ course, initialStudent, initialApiKey }) {
         setApiKey("");
       }}
     />
+    <div className="aulia-global-legal"><LegalNotice compact /></div>
+    </>
   );
 }

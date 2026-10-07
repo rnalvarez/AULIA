@@ -10,10 +10,32 @@ const DEFAULT_MODELS = [
   "qwen/qwen3.8-27b",
 ];
 
+const MAX_CONTEXT_CHARS = 13000;
+const MAX_OUTPUT_TOKENS = 1500;
+const MAX_REPRESENTATIVE_UNITS = 36;
+
 const PROPOSAL_SCHEMA = {
   type: "object",
   properties: {
     pedagogicalSummary: { type: "string" },
+    pedagogicalUnits: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          title: { type: "string" },
+          rationale: { type: "string" },
+          learningGoal: { type: "string" },
+          phase: { type: "string" },
+          sequence: { type: "integer" },
+          prerequisiteTitles: { type: "array", items: { type: "string" } },
+          conceptTitles: { type: "array", items: { type: "string" } },
+          sourceIds: { type: "array", items: { type: "string" } },
+        },
+        required: ["title", "rationale", "learningGoal", "phase", "sequence", "prerequisiteTitles", "conceptTitles", "sourceIds"],
+        additionalProperties: false,
+      },
+    },
     concepts: {
       type: "array",
       items: {
@@ -54,13 +76,7 @@ const PROPOSAL_SCHEMA = {
           conceptTitles: { type: "array", items: { type: "string" } },
           sourceIds: { type: "array", items: { type: "string" } },
         },
-        required: [
-          "title",
-          "director",
-          "description",
-          "conceptTitles",
-          "sourceIds",
-        ],
+        required: ["title", "director", "description", "conceptTitles", "sourceIds"],
         additionalProperties: false,
       },
     },
@@ -88,88 +104,214 @@ const PROPOSAL_SCHEMA = {
       },
     },
   },
-  required: ["pedagogicalSummary", "concepts", "examples", "activities"],
+  required: ["pedagogicalSummary", "pedagogicalUnits", "concepts", "examples", "activities"],
   additionalProperties: false,
 };
 
-function compactText(value, max = 1500) {
-  const clean = String(value || "").replace(/\s+/g, " ").trim();
+function compact(value, max) {
+  const clean = String(value || "").replace(/\\s+/g, " ").trim();
   return clean.length > max ? clean.slice(0, max) + "…" : clean;
 }
 
-function buildMaterialContext(corpus, maxChars = 26000) {
+function logicalUnits(corpus) {
   const groups = new Map();
+
   for (const chunk of corpus || []) {
-    const key = String(chunk?.chapter || chunk?.title || "Material general").trim() || "Material general";
+    const key = String(chunk?.unitId || chunk?.id || "");
+    if (!key) continue;
     if (!groups.has(key)) groups.set(key, []);
     groups.get(key).push(chunk);
   }
 
-  const ordered = [];
-  for (const [chapter, chunks] of groups) {
-    for (const chunk of chunks.slice(0, 8)) {
-      ordered.push({ chapter, chunk });
-    }
+  return Array.from(groups.values()).map((parts) => {
+    const ordered = parts.slice().sort((a, b) =>
+      Number(a?.sourcePageStart || a?.sourcePage || 0) -
+      Number(b?.sourcePageStart || b?.sourcePage || 0)
+    );
+
+    const first = ordered[0] || {};
+    const last = ordered[ordered.length - 1] || first;
+    const title = String(first.title || first.chapter || "Unidad").replace(/ · parte \\d+$/i, "");
+    const content = String(first.content || "");
+    const tailContent = ordered.length > 1
+      ? String(last.content || "")
+      : content;
+
+    const representative = content.length > 500
+      ? content.slice(0, 300) + " … " + tailContent.slice(Math.max(0, tailContent.length - 170))
+      : content;
+
+    return {
+      id: String(first.unitId || first.id || ""),
+      source: String(first.source || "Material general"),
+      title,
+      path: Array.isArray(first.sectionPath) && first.sectionPath.length
+        ? first.sectionPath
+        : (first.chapter ? [first.chapter] : [title]),
+      pageStart: first.sourcePageStart || first.sourcePage || null,
+      pageEnd: last.sourcePageEnd || last.sourcePage || first.sourcePageEnd || first.sourcePage || null,
+      content: representative,
+      ids: ordered.map((item) => item.id).filter(Boolean),
+    };
+  });
+}
+
+function selectRepresentatives(units, maxUnits = MAX_REPRESENTATIVE_UNITS) {
+  if (units.length <= maxUnits) {
+    return { units, sampled: false };
   }
 
-  const lines = [];
-  let total = 0;
-  let usedFragments = 0;
+  const bySource = new Map();
+  for (const unit of units) {
+    if (!bySource.has(unit.source)) bySource.set(unit.source, []);
+    bySource.get(unit.source).push(unit);
+  }
 
-  for (const { chapter, chunk } of ordered) {
+  const sources = Array.from(bySource.values());
+  const selected = [];
+  let round = 0;
+
+  while (selected.length < maxUnits) {
+    let added = false;
+    for (const sourceUnits of sources) {
+      if (round >= sourceUnits.length) continue;
+      selected.push(sourceUnits[round]);
+      added = true;
+      if (selected.length >= maxUnits) break;
+    }
+    if (!added) break;
+    round += 1;
+  }
+
+  return { units: selected, sampled: true };
+}
+
+function buildMaterialContext(corpus) {
+  const units = logicalUnits(corpus);
+  const selected = selectRepresentatives(units);
+
+  const outlineSeen = new Set();
+  const outline = [];
+  let outlineChars = 0;
+  for (const unit of units) {
+    const path = unit.path.join(" › ");
+    const key = unit.source + "::" + path;
+    if (outlineSeen.has(key)) continue;
+    const line =
+      "- " + compact(unit.source, 80) + " · " + compact(path, 150) +
+      (unit.pageStart ? " · pp. " + unit.pageStart + (unit.pageEnd && unit.pageEnd !== unit.pageStart ? "-" + unit.pageEnd : "") : "");
+    if (outlineChars + line.length + 1 > 5000) break;
+    outlineSeen.add(key);
+    outline.push(line);
+    outlineChars += line.length + 1;
+  }
+
+  const header = [
+    "MAPA DE DOCUMENTOS Y SECCIONES:",
+    outline.join("\n"),
+    "",
+    "EXTRACTOS REPRESENTATIVOS:",
+  ].join("\n");
+
+  const lines = [];
+  let total = header.length;
+
+  for (const unit of selected.units) {
     const line = [
-      "[ID:" + String(chunk.id || "") + "]",
-      "UNIDAD: " + compactText(chapter, 160),
-      "TÍTULO: " + compactText(chunk.title, 180),
-      chunk.source ? "FUENTE: " + compactText(chunk.source, 120) : "",
-      chunk.sourcePage ? "PÁGINA: " + chunk.sourcePage : "",
-      "TEXTO: " + compactText(chunk.content, 1500),
+      unit.ids.map((id) => "[ID:" + id + "]").join(" "),
+      "FUENTE: " + compact(unit.source, 100),
+      "SECCIÓN: " + compact(unit.path.join(" › "), 190),
+      unit.pageStart ? "PÁGINAS: " + unit.pageStart + (unit.pageEnd && unit.pageEnd !== unit.pageStart ? "-" + unit.pageEnd : "") : "",
+      "TEXTO: " + compact(unit.content, 500),
     ].filter(Boolean).join(" | ");
 
-    if (total + line.length + 1 > maxChars) break;
+    if (total + line.length + 1 > MAX_CONTEXT_CHARS) break;
     lines.push(line);
     total += line.length + 1;
-    usedFragments += 1;
   }
 
   return {
-    text: lines.join("\n"),
-    usedFragments,
-    totalFragments: (corpus || []).length,
-    truncated: usedFragments < (corpus || []).length,
+    text: header + "\n" + lines.join("\n"),
+    selectedUnits: selected.units.length,
+    totalUnits: units.length,
+    sampled: selected.sampled || lines.length < selected.units.length,
   };
 }
 
-function buildPrompt({ course, bibliography, materialText, truncated }) {
+function responseFormatFor(model) {
+  if (STRICT_MODELS.has(model)) {
+    return {
+      type: "json_schema",
+      json_schema: {
+        name: "aulia_pedagogical_proposal",
+        strict: true,
+        schema: PROPOSAL_SCHEMA,
+      },
+    };
+  }
+
+  return { type: "json_object" };
+}
+
+function buildPrompt({ course, bibliography, materialText, sampled }) {
   const refs = (bibliography || [])
     .slice(0, 20)
     .map((item) => [
       "[BIB-ID:" + String(item?.id || "") + "]",
       String(item?.title || ""),
       item?.author,
-      item?.year
+      item?.year,
     ].filter(Boolean).join(" · "))
     .filter(Boolean)
     .join("\n");
 
   return [
-    "Diseñá una primera propuesta pedagógica para una cátedra universitaria.",
-    "Trabajá exclusivamente con el material incluido en este pedido. No inventes autores, obras, conceptos ni afirmaciones que no puedan sostenerse con el corpus.",
-    "Tu tarea NO es resumir cada fragmento. Detectá una organización docente útil: conceptos centrales, unidades o capítulos a los que pertenecen, ejemplos/casos que el propio material permita relacionar y actividades de aprendizaje.",
-    "Los sourceIds deben copiar EXACTAMENTE los IDs [ID:...] del material. No inventes IDs.",
-    "La bibliografía declarada aparece identificada con [BIB-ID:...]. sourceBibliographyIds debe copiar EXACTAMENTE esos IDs y solo incluir fuentes que realmente sostengan el concepto.",
-    "Cada concepto debe incluir confusionCriteria: entre 2 y 5 descripciones breves de errores, confusiones o comprensiones insuficientes que podrían indicar dificultad con ese concepto. Deben estar fundamentadas exclusivamente en la bibliografía y el corpus disponibles; no inventes criterios generales.",
-    "Un concepto debe ser una idea enseñable y reutilizable, no una frase cualquiera del texto.",
-    "La explicación debe ayudar al docente a revisar la propuesta, no reemplazar su criterio.",
-    "Las actividades deben poder implementarse con alguno de los modos disponibles y usar la estrategia indicada.",
-    "Priorizá calidad y relevancia. Proponé hasta 12 conceptos, 6 ejemplos y 6 actividades.",
+    "Construí una primera propuesta pedagógica para una cátedra universitaria a partir de los materiales suministrados.",
+    "La extracción y organización documental se hicieron localmente antes de esta consulta.",
+    sampled
+      ? "La biblioteca completa está disponible en AULIA, pero para esta consulta se usa una muestra representativa de unidades para respetar los límites de una cuenta gratuita. No infieras contenido que no aparezca en los extractos."
+      : "El conjunto de unidades relevantes entra en esta consulta.",
+    "NO resumas cada página. Primero diseñá un mapa pedagógico de 8 a 12 unidades conceptuales coherentes. Las unidades deben agrupar contenidos que pertenezcan naturalmente a una misma pregunta, problema o núcleo conceptual. Después identificá conceptos centrales, ejemplos/casos explícitos y actividades de aprendizaje.",
+    "Una unidad pedagógica debe poder enseñarse como un bloque coherente. No la nombres solamente con el título mecánico de una página: sintetizá su núcleo conceptual. Indicá brevemente por qué conviene agrupar ese material y qué debería poder comprender o hacer el estudiante al terminar la unidad. Una unidad puede reunir varias secciones del mismo documento.",
+    "Además construí un mapa curricular: asigná a cada unidad un sequence único empezando en 1 según un orden docente razonable. Usá phase para una etapa breve (por ejemplo fundamentos, desarrollo, integración o aplicación). prerequisiteTitles solo puede contener títulos EXACTOS de otras unidades de esta misma propuesta y debe representar dependencias reales; no inventes dependencias y no generes ciclos.",
+    "Trabajá exclusivamente con la evidencia suministrada. No inventes autores, obras, conceptos, ejemplos ni afirmaciones.",
+    "Los sourceIds deben copiar EXACTAMENTE IDs que aparezcan en [ID:...].",
+    "sourceBibliographyIds solo puede usar los [BIB-ID:...] declarados y debe corresponder a una fuente realmente relacionada.",
+    "confusionCriteria debe describir entre 2 y 5 errores o confusiones plausibles y fundamentados por la evidencia.",
+    "Priorizá precisión y utilidad docente. Proponé entre 8 y 12 unidades pedagógicas cuando la evidencia lo permita, hasta 14 conceptos, 8 ejemplos y 6 actividades. Mantené las descripciones concisas para que el mapa y el resto de la propuesta entren en una sola respuesta. Si el material no permite llegar a 8 unidades reales, proponé menos antes que inventar.",
     "Curso: " + String(course?.title || ""),
     "Descripción: " + String(course?.description || ""),
     refs ? "Bibliografía declarada:\n" + refs : "",
-    truncated ? "ATENCIÓN: el corpus fue recortado para esta primera propuesta; trabajá con los fragmentos disponibles y no supongas contenido ausente." : "",
-    "MATERIAL:",
-    materialText,
+    "MATERIAL ESTRUCTURADO:\n" + materialText,
   ].filter(Boolean).join("\n\n");
+}
+
+function simpleHash(value) {
+  let hash = 2166136261;
+  for (let i = 0; i < String(value || "").length; i += 1) {
+    hash ^= String(value)[i].charCodeAt(0);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(16).padStart(8, "0");
+}
+
+function analysisCacheKey(course, corpus, bibliography) {
+  const materialSignature = (corpus || []).map((item) => [
+    item?.id,
+    item?.documentId,
+    item?.sourcePageStart,
+    item?.sourcePageEnd,
+    item?.title,
+    item?.content,
+  ]);
+  const bibliographySignature = (bibliography || []).map((item) => [
+    item?.id,
+    item?.title,
+    item?.author,
+    item?.year,
+  ]);
+  return "aulia:teacher-analysis:" + String(course?.id || "course") + ":" +
+    simpleHash(JSON.stringify({ materialSignature, bibliographySignature }));
 }
 
 async function request(endpoint, apiKey, model, prompt, responseFormat, signal) {
@@ -185,13 +327,13 @@ async function request(endpoint, apiKey, model, prompt, responseFormat, signal) 
         {
           role: "system",
           content:
-            "Sos diseñador curricular y especialista en educación superior. Devolvé solamente el objeto estructurado solicitado.",
+            "Sos diseñador curricular y especialista en educación superior. Devolvé únicamente el objeto estructurado solicitado y no agregues información ausente de la evidencia.",
         },
         { role: "user", content: prompt },
       ],
-      temperature: 0.2,
+      temperature: 0.15,
       top_p: 0.9,
-      max_tokens: 2600,
+      max_tokens: MAX_OUTPUT_TOKENS,
       reasoning_effort: "low",
       response_format: responseFormat,
       stream: false,
@@ -200,38 +342,38 @@ async function request(endpoint, apiKey, model, prompt, responseFormat, signal) 
   });
 
   const data = await response.json().catch(() => ({}));
+
   if (!response.ok) {
     const message = data?.error?.message || data?.message || "";
     const error = new Error(
       "Error " + response.status + (message ? ": " + message : ".")
     );
     error.status = response.status;
+    error.retryAfter = response.headers.get("retry-after") || "";
     throw error;
   }
 
   const content = data?.choices?.[0]?.message?.content || "";
   if (!content) throw new Error("El proveedor de IA devolvió una respuesta vacía.");
+
   let parsed;
   try {
     parsed = JSON.parse(content);
   } catch {
     throw new Error("La IA devolvió una propuesta que no pudo convertirse en JSON.");
   }
-  return { proposal: parsed, model: data?.model || model };
-}
 
-function responseFormatFor(model) {
-  if (STRICT_MODELS.has(model)) {
-    return {
-      type: "json_schema",
-      json_schema: {
-        name: "aulia_pedagogical_proposal",
-        strict: true,
-        schema: PROPOSAL_SCHEMA,
-      },
-    };
-  }
-  return { type: "json_object" };
+  return {
+    proposal: parsed || {
+      pedagogicalSummary: "",
+      pedagogicalUnits: [],
+      concepts: [],
+      examples: [],
+      activities: [],
+    },
+    model: data?.model || model,
+    usage: data?.usage || null,
+  };
 }
 
 export async function requestTeacherProposal({
@@ -247,48 +389,83 @@ export async function requestTeacherProposal({
   if (!endpoint) throw new Error("No hay un endpoint de IA configurado.");
   if (!corpus.length) throw new Error("Primero cargá material.");
 
-  const context = buildMaterialContext(corpus);
-  const prompt = buildPrompt({
-    course,
-    bibliography,
-    materialText: context.text,
-    truncated: context.truncated,
-  });
+  const cacheKey = analysisCacheKey(course, corpus, bibliography);
+  try {
+    const cached = sessionStorage.getItem(cacheKey);
+    if (cached) {
+      const parsed = JSON.parse(cached);
+      if (parsed?.proposal) {
+        return {
+          ...parsed,
+          cached: true,
+          requestCount: 0,
+          warning: "Se reutilizó la revisión de esta bibliografía guardada en esta sesión.",
+        };
+      }
+    }
+  } catch {}
 
+  const context = buildMaterialContext(corpus);
   const orderedModels = Array.from(
     new Set((Array.isArray(models) && models.length ? models : DEFAULT_MODELS).filter(Boolean))
   );
 
   let lastError = null;
+
   for (const model of orderedModels) {
     try {
       const result = await request(
         endpoint,
         apiKey,
         model,
-        prompt,
+        buildPrompt({
+          course,
+          bibliography,
+          materialText: context.text,
+          sampled: context.sampled,
+        }),
         responseFormatFor(model),
         signal
       );
+
       const proposal = result.proposal || {};
       if (
+        !Array.isArray(proposal.pedagogicalUnits) ||
         !Array.isArray(proposal.concepts) ||
         !Array.isArray(proposal.examples) ||
         !Array.isArray(proposal.activities)
       ) {
         throw new Error("La propuesta de IA no tiene la estructura esperada.");
       }
-      return {
+
+      const cacheResult = {
         ...result,
         proposal,
-        usedFragments: context.usedFragments,
-        totalFragments: context.totalFragments,
-        truncated: context.truncated,
+        model: result.model || model,
+        usedFragments: context.selectedUnits,
+        totalFragments: context.totalUnits,
+        truncated: context.sampled,
+        partial: false,
+        batches: 1,
+        requestCount: 1,
+        synthesisUsed: false,
+        usage: result.usage || null,
+        warning: "",
       };
+      try {
+        sessionStorage.setItem(cacheKey, JSON.stringify(cacheResult));
+      } catch {}
+      return cacheResult;
     } catch (error) {
       lastError = error;
-      if (error?.status !== 404) throw error;
+      if (error?.status !== 404) break;
     }
+  }
+
+  if (lastError?.status === 429) {
+    throw new Error(
+      "La cuenta gratuita de Groq alcanzó su límite de uso. AULIA no realizó reintentos automáticos para no consumir más cuota."
+    );
   }
 
   throw lastError || new Error("Ningún modelo configurado está disponible.");

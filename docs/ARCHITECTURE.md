@@ -51,6 +51,7 @@ sesiones
 4. Sustituir la recuperación lexical por recuperación semántica controlada.
 5. Integrar un backend/proxy para LLM.
 6. Crear una interfaz docente para generar y validar course packs sin código.
+7. Incorporar una capa de ingesta inteligente: extracción estructural local, normalización de documentos y análisis semántico por lotes pequeños para respetar límites de proveedores gratuitos.
 
 
 ## Prueba de independencia del course pack
