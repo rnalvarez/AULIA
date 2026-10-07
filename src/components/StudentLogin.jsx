@@ -1,6 +1,5 @@
 import { useState } from "react";
 import Avatar from "./Avatar.jsx";
-import LegalNotice from "./LegalNotice.jsx";
 import { checkStudent, createStudentPin, verifyStudentPin, saveVerifiedStudent } from "../services/auth/studentAccess.js";
 
 export default function StudentLogin({ course, onReady }) {
