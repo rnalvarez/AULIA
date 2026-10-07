@@ -15,6 +15,7 @@ import {
 } from "./services/auth/studioAccess.js";
 import StudioLogin from "./components/StudioLogin.jsx";
 import Studio from "./components/Studio.jsx";
+import LegalNotice from "./components/LegalNotice.jsx";
 
 function BackendUnavailable() {
   return (
@@ -35,6 +36,8 @@ function BackendUnavailable() {
         </div>
       </div>
     </div>
+    <div className="aulia-global-legal"><LegalNotice compact /></div>
+    </>
   );
 }
 
@@ -247,11 +250,22 @@ export default function StudioApp() {
 
   if (!STUDIO_API_ENDPOINT) return <BackendUnavailable />;
   if (loading) return <LoadingScreen />;
-  if (!session) return <StudioLogin onReady={handleLogin} error={error} />;
+  if (!session) return (
+    <>
+      <StudioLogin onReady={handleLogin} error={error} />
+      <div className="aulia-global-legal"><LegalNotice compact /></div>
+    </>
+  );
 
-  if (loadingCourse && !course) return <LoadingScreen text="Cargando la cátedra…" />;
+  if (loadingCourse && !course) return (
+    <>
+      <LoadingScreen text="Cargando la cátedra…" />
+      <div className="aulia-global-legal"><LegalNotice compact /></div>
+    </>
+  );
 
   return (
+    <>
     <div className="studio-root">
       <aside className="studio-coursebar">
         <div className="studio-sidebar-brand">
@@ -308,6 +322,7 @@ export default function StudioApp() {
         <div className="studio-sidebar-footer">
           <button type="button" onClick={handleLogout}>Cerrar sesión</button>
           <span>El acceso a cada cátedra se verifica en el backend.</span>
+          <LegalNotice compact />
         </div>
       </aside>
 
