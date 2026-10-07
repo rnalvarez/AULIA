@@ -349,6 +349,7 @@ export default function StudioApp() {
         )}
       </div>
     </div>
+    </>
   );
 }
 
