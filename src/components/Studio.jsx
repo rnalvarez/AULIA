@@ -537,16 +537,30 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
   }
   function updateMaterialSection(sectionId, patch) {
     mutate((current) => {
+      let targetDocumentId = "";
+      let targetPath = "";
       const documents = (current.documents || []).map((document) => ({
         ...document,
-        sections: (document.sections || []).map((section) =>
-          section.id === sectionId ? { ...section, ...patch } : section
-        ),
+        sections: (document.sections || []).map((section) => {
+          if (section.id !== sectionId) return section;
+          targetDocumentId = String(document.id || "");
+          targetPath = Array.isArray(section.path) ? section.path.join(" › ") : "";
+          return { ...section, ...patch };
+        }),
       }));
 
-      const corpus = (current.corpus || []).map((chunk) =>
-        chunk.sectionId === sectionId ? { ...chunk, ...patch } : chunk
-      );
+      const corpus = (current.corpus || []).map((chunk) => {
+        const sameSection =
+          chunk.sectionId === sectionId ||
+          (
+            targetDocumentId &&
+            String(chunk.documentId || "") === targetDocumentId &&
+            targetPath &&
+            Array.isArray(chunk.sectionPath) &&
+            chunk.sectionPath.join(" › ") === targetPath
+          );
+        return sameSection ? { ...chunk, ...patch, sectionId: chunk.sectionId || sectionId } : chunk;
+      });
 
       return { ...current, documents, corpus };
     });
