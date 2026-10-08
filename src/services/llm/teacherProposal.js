@@ -284,7 +284,7 @@ function analysisCacheKey(course, corpus, bibliography) {
     item?.author,
     item?.year,
   ]);
-  return "aulia:teacher-analysis:" + String(course?.id || "course") + ":" +
+  return "aulia:teacher-analysis:v2:" + String(course?.id || "course") + ":" +
     simpleHash(JSON.stringify({ materialSignature, bibliographySignature }));
 }
 
