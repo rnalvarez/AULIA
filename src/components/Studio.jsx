@@ -278,6 +278,23 @@ function Row({ title, meta, onRemove, children }) {
   return <article className="studio-wf-row"><div className="studio-wf-row-main"><div className="studio-wf-row-title"><strong>{title || "Sin título"}</strong>{meta && <span>{meta}</span>}</div>{children}</div><button className="studio-wf-danger" type="button" onClick={onRemove}>Eliminar</button></article>;
 }
 
+function materialSegmentationLabel(value) {
+  switch (value) {
+    case "pdf-toc": return "Índice + contraste con el cuerpo";
+    case "pdf-outline": return "Marcadores internos del PDF";
+    case "pdf-hybrid-heuristic": return "Tipografía + geometría + consistencia";
+    case "pdf-conservative": return "Segmentación conservadora";
+    default: return "Estructura detectada localmente";
+  }
+}
+
+function structureConfidenceLabel(value) {
+  const confidence = Number(value || 0);
+  if (confidence >= 0.78) return "Alta";
+  if (confidence >= 0.60) return "Media";
+  return "Baja";
+}
+
 function buildMaterialStructure(course) {
   const corpus = Array.isArray(course?.corpus) ? course.corpus : [];
   const documents = Array.isArray(course?.documents) ? course.documents : [];
@@ -296,14 +313,16 @@ function buildMaterialStructure(course) {
     for (const section of document.sections || []) {
       const path = Array.isArray(section.path) ? section.path : [];
       const titleKey = slug(section.title || "");
-      const matches = documentChunks.filter((chunk) => {
-        const chunkPath = Array.isArray(chunk.sectionPath) ? chunk.sectionPath : [];
-        return (
-          chunkPath.join(" › ") === path.join(" › ") ||
-          slug(chunk.title || "").replace(/-parte-\d+$/i, "") === titleKey ||
-          slug(chunk.chapter || "") === slug(path.join(" › "))
-        );
-      });
+      const sectionId = section.id || document.id + "-" + sections.length;
+      const matches = documentChunks.filter((chunk) =>
+        chunk.sectionId === sectionId ||
+        (
+          Array.isArray(chunk.sectionPath) &&
+          chunk.sectionPath.join(" › ") === path.join(" › ") &&
+          String(chunk.documentId || "") === String(document.id || "")
+        ) ||
+        slug(chunk.title || "").replace(/-parte-\d+$/i, "") === titleKey
+      );
 
       const ordered = matches.slice().sort((x, y) =>
         Number(x?.sourcePageStart || x?.sourcePage || 0) -
@@ -313,7 +332,7 @@ function buildMaterialStructure(course) {
       const preview = ordered.map((item) => String(item?.content || "")).join(" ").trim();
 
       sections.push({
-        id: section.id || document.id + "-" + sections.length,
+        id: sectionId,
         documentId: document.id,
         documentTitle: document.title || document.sourceName || "Material",
         title: section.title || path[path.length - 1] || "Sección",
@@ -324,6 +343,13 @@ function buildMaterialStructure(course) {
         printedPageStart: section.printedPageStart || first.printedPageStart || null,
         printedPageEnd: section.printedPageEnd || first.printedPageEnd || null,
         segmentationSource: section.segmentationSource || "text-structure",
+        segmentationLabel: materialSegmentationLabel(section.segmentationSource),
+        confidence: Number(section.confidence ?? first.confidence ?? 0.5),
+        confidenceLabel: structureConfidenceLabel(section.confidence ?? first.confidence ?? 0.5),
+        evidence: Array.isArray(section.evidence)
+          ? section.evidence
+          : (Array.isArray(first.structureEvidence) ? first.structureEvidence : []),
+        childrenCount: Number(section.childrenCount || 0),
         scope: section.scope || "included",
         priority: section.priority || "normal",
         teacherTopic: section.teacherTopic || "",
@@ -331,6 +357,7 @@ function buildMaterialStructure(course) {
         teacherLimit: section.teacherLimit || "",
         fragmentCount: ordered.length,
         preview: preview.slice(0, 180),
+        analysis: document.analysis || null,
       });
     }
   }
@@ -352,6 +379,8 @@ function buildMaterialStructure(course) {
     );
     const first = ordered[0] || {};
     const last = ordered[ordered.length - 1] || first;
+    const confidence = Number(first.confidence ?? 0.5);
+
     return {
       id: first.unitId || first.id || "material-section-" + index,
       documentId: first.documentId || "",
@@ -361,13 +390,23 @@ function buildMaterialStructure(course) {
       level: Number(first.sectionLevel || 1),
       sourcePageStart: first.sourcePageStart || first.sourcePage || null,
       sourcePageEnd: last.sourcePageEnd || last.sourcePage || null,
-      segmentationSource: "corpus-fallback",
+      segmentationSource: first.segmentationSource || "corpus-fallback",
+      segmentationLabel: materialSegmentationLabel(first.segmentationSource),
+      confidence,
+      confidenceLabel: structureConfidenceLabel(confidence),
+      evidence: Array.isArray(first.structureEvidence) ? first.structureEvidence : [],
+      childrenCount: Number(first.childrenCount || 0),
+      scope: first.scope || "included",
+      priority: first.priority || "normal",
+      teacherTopic: first.teacherTopic || "",
+      teacherConcepts: Array.isArray(first.teacherConcepts) ? first.teacherConcepts : [],
+      teacherLimit: first.teacherLimit || "",
       fragmentCount: ordered.length,
       preview: String(first.content || "").slice(0, 180),
+      analysis: null,
     };
   });
 }
-
 export default function Studio({ course, courseMeta = null, canEdit = true, onCourseChanged, onSaveCourse, onPublishCourse, onReloadCourse }) {
   const storageKey = useMemo(() => STORAGE_PREFIX + course.id, [course.id]);
   const [draft, setDraft] = useState(() => cloneCourse(course));
@@ -540,27 +579,32 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
   function updateMaterialSection(sectionId, patch) {
     mutate((current) => {
       let targetDocumentId = "";
-      let targetPath = "";
+      let targetPath = [];
 
       const documents = (current.documents || []).map((document) => ({
         ...document,
         sections: (document.sections || []).map((section) => {
           if (section.id !== sectionId) return section;
           targetDocumentId = String(document.id || "");
-          targetPath = Array.isArray(section.path) ? section.path.join(" › ") : "";
+          targetPath = Array.isArray(section.path) ? section.path : [];
           return { ...section, ...patch };
         }),
       }));
 
+      const isSameOrDescendantPath = (path) => {
+        if (!targetPath.length) return false;
+        if (path.length < targetPath.length) return false;
+        return targetPath.every((part, index) => path[index] === part);
+      };
+
       const corpus = (current.corpus || []).map((chunk) => {
+        const chunkPath = Array.isArray(chunk.sectionPath) ? chunk.sectionPath : [];
         const sameSection =
           chunk.sectionId === sectionId ||
           (
             targetDocumentId &&
             String(chunk.documentId || "") === targetDocumentId &&
-            targetPath &&
-            Array.isArray(chunk.sectionPath) &&
-            chunk.sectionPath.join(" › ") === targetPath
+            isSameOrDescendantPath(chunkPath)
           );
         return sameSection ? { ...chunk, ...patch, sectionId: chunk.sectionId || sectionId } : chunk;
       });
@@ -893,6 +937,16 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
   }
 
   const materialSections = useMemo(() => buildMaterialStructure(draft), [draft.documents, draft.corpus]);
+  const materialAnalyses = useMemo(
+    () => (draft.documents || [])
+      .filter((document) => document?.format === "pdf" && document?.analysis)
+      .map((document) => ({
+        ...document.analysis,
+        id: document.id,
+        title: document.title || document.sourceName || "PDF",
+      })),
+    [draft.documents]
+  );
   const counts = {
     overview: 1,
     material: materialSections.length,
@@ -965,10 +1019,40 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
         <Panel
           eyebrow="MATERIAL"
           title="Bibliografía y corpus de la cátedra"
-          description="Al cargar un libro, AULIA conserva toda la estructura detectada y la deja incluida por defecto. Después podés marcar la prioridad de cada sección y, opcionalmente, dejarla como referencial o excluirla. Nada se excluye automáticamente."
+          description="AULIA releva cada PDF antes de segmentarlo. Usa las evidencias disponibles —índice, marcadores, estructura etiquetada, tipografía, geometría y consistencia— y evita inventar secciones cuando la evidencia es insuficiente. Todo queda incluido por defecto."
           actions={<label className="primary studio-wf-file-btn">{busy ? "Procesando…" : "Cargar material"}<input type="file" accept=".txt,.md,.markdown,.json,.pdf,.docx,text/plain,text/markdown,application/json,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document" multiple onChange={importMaterial} disabled={busy}/></label>}
         >
           {materialSections.length ? <>
+            {materialAnalyses.map((analysis) => (
+              <div className={"studio-wf-pdf-diagnostic confidence-" + structureConfidenceLabel(analysis.confidence).toLowerCase()} key={analysis.id}>
+                <div className="studio-wf-pdf-diagnostic-head">
+                  <div>
+                    <span className="eyebrow">RELEVAMIENTO DEL PDF</span>
+                    <strong>{analysis.title}</strong>
+                    <small>{analysis.documentType} · método: {materialSegmentationLabel(analysis.method)}</small>
+                  </div>
+                  <div className="studio-wf-pdf-confidence">
+                    <strong>{Math.round(Number(analysis.confidence || 0) * 100)}%</strong>
+                    <span>confianza global</span>
+                  </div>
+                </div>
+                <div className="studio-wf-pdf-diagnostic-grid">
+                  <div><span>Páginas</span><strong>{analysis.pageCount}</strong></div>
+                  <div><span>Índice</span><strong>{analysis.tocDetected ? "Detectado" : "No detectado"}</strong></div>
+                  <div><span>Marcadores</span><strong>{analysis.outlineDetected ? "Detectados" : "No detectados"}</strong></div>
+                  <div><span>Columnas</span><strong>{analysis.columns?.two ? "Mixto" : "Una"}</strong></div>
+                  <div><span>Secciones</span><strong>{analysis.sectionCount}</strong></div>
+                  <div><span>Revisión</span><strong>{analysis.lowConfidenceSections ? analysis.lowConfidenceSections + " requiere(n) atención" : "Sin alertas"}</strong></div>
+                </div>
+                {analysis.warnings?.length > 0 && (
+                  <details className="studio-wf-details">
+                    <summary>Advertencias del relevamiento ({analysis.warnings.length})</summary>
+                    <ul className="studio-wf-pdf-warning-list">{analysis.warnings.map((warning) => <li key={warning}>{warning}</li>)}</ul>
+                  </details>
+                )}
+              </div>
+            ))}
+
             <div className="studio-wf-stats">
               <div><strong>{materialSections.length}</strong><span>secciones estructurales</span></div>
               <div><strong>{draft.documents?.length || new Set(draft.corpus.map((x) => x.source).filter(Boolean)).size}</strong><span>documentos</span></div>
@@ -987,7 +1071,7 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
 
             <div className="studio-wf-corpus-list">
               {materialSections.map((section, i) => (
-                <article key={section.id || i} className={"studio-wf-material-section scope-" + (section.scope || "included")}>
+                <article key={section.id || i} className={"studio-wf-material-section level-" + Math.min(Number(section.level || 1), 6) + " scope-" + (section.scope || "included")}>
                   <div className="studio-wf-material-section-head">
                     <div>
                       <strong>{section.title || "Sección"}</strong>
@@ -1015,7 +1099,11 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
                   <p>{section.preview || "Sin vista previa disponible."}{section.preview?.length >= 180 ? "…" : ""}</p>
 
                   <div className="studio-wf-material-meta">
-                    <small>{section.fragmentCount || 1} fragmento(s) de recuperación · {section.segmentationSource === "pdf-outline" ? "estructura interna del PDF" : "estructura detectada localmente"}</small>
+                    <small>
+  {section.fragmentCount || 0} fragmento(s) de recuperación · {section.segmentationLabel}
+  {section.confidence ? " · confianza " + Math.round(section.confidence * 100) + "%" : ""}
+  {section.childrenCount ? " · " + section.childrenCount + " subsección(es)" : ""}
+</small>
                     <div className="studio-wf-material-priority">
                       <span>Prioridad</span>
                       {MATERIAL_PRIORITY_OPTIONS.map(([value, label]) => (
