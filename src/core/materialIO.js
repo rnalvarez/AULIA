@@ -173,12 +173,19 @@ function buildDocumentMeta({
     sourceName: file?.name || "",
     format,
     pages: pages || null,
-    sections: (sections || []).map((section) => ({
+    sections: (sections || []).map((section, index) => ({
+      id: slugify([
+        documentId,
+        ...(section.sectionPath || []),
+        section.title || "material",
+        index + 1,
+      ].join("-")),
       title: section.title || "Material",
       path: Array.isArray(section.sectionPath) ? section.sectionPath : [],
       level: Number(section.level || 1),
       sourcePageStart: section.sourcePageStart || null,
       sourcePageEnd: section.sourcePageEnd || null,
+      segmentationSource: section.segmentationSource || "text-structure",
     })),
     sectionCount: (sections || []).length,
   };
@@ -261,6 +268,124 @@ function findRepeatedPageFurniture(pageLines) {
     if (count >= Math.max(2, Math.ceil(pages * 0.55))) repeated.add(key);
   }
   return repeated;
+}
+
+async function resolvePdfOutlinePage(pdf, destination) {
+  try {
+    const dest = typeof destination === "string"
+      ? await pdf.getDestination(destination)
+      : destination;
+    const pageRef = Array.isArray(dest) ? dest[0] : null;
+    if (!pageRef) return null;
+    const pageIndex = await pdf.getPageIndex(pageRef);
+    return Number.isFinite(pageIndex) ? pageIndex + 1 : null;
+  } catch {
+    return null;
+  }
+}
+
+async function flattenPdfOutline(pdf, items, level = 1, parentPath = [], output = []) {
+  for (const item of items || []) {
+    const title = cleanPdfLine(item?.title || "");
+    if (!title) continue;
+
+    const page = await resolvePdfOutlinePage(pdf, item?.dest);
+    const path = [...parentPath, title];
+    output.push({
+      title,
+      level,
+      path,
+      page,
+    });
+
+    if (Array.isArray(item?.items) && item.items.length) {
+      await flattenPdfOutline(pdf, item.items, level + 1, path, output);
+    }
+  }
+  return output;
+}
+
+function isGenericOutlineTitle(title) {
+  return /^(?:[íi]ndice|contenido|contents|table of contents|sumario|pr[oó]logo|prefacio|bibliograf[ií]a|referencias|índice analítico)$/i.test(
+    cleanPdfLine(title)
+  );
+}
+
+async function buildPdfOutlineSections(pdf, pageData) {
+  const outline = await pdf.getOutline?.();
+  if (!Array.isArray(outline) || !outline.length) return null;
+
+  const entries = (await flattenPdfOutline(pdf, outline))
+    .filter((item) => item.page && item.page >= 1 && item.page <= pageData.length)
+    .filter((item) => !isGenericOutlineTitle(item.title));
+
+  if (!entries.length) return null;
+
+  // Prefer the shallowest outline level that produces several distinct
+  // document boundaries. This generally corresponds to chapters/major sections,
+  // not every tiny subsection.
+  const levels = Array.from(new Set(entries.map((item) => item.level))).sort((a, b) => a - b);
+  let selected = null;
+
+  for (const level of levels) {
+    const candidates = entries
+      .filter((item) => item.level === level)
+      .sort((a, b) => a.page - b.page);
+    const uniquePages = Array.from(new Set(candidates.map((item) => item.page)));
+    if (uniquePages.length >= 3) {
+      selected = candidates;
+      break;
+    }
+  }
+
+  if (!selected) return null;
+
+  const boundaries = [];
+  for (const item of selected) {
+    if (!boundaries.length || item.page > boundaries[boundaries.length - 1].page) {
+      boundaries.push(item);
+    }
+  }
+
+  if (boundaries.length < 2) return null;
+
+  const repeatedFurniture = findRepeatedPageFurniture(pageData.map((page) => page.lines));
+  const sections = [];
+
+  for (let i = 0; i < boundaries.length; i += 1) {
+    const current = boundaries[i];
+    const next = boundaries[i + 1];
+    const startPage = current.page;
+    const endPage = next ? Math.min(pageData.length, next.page - 1) : pageData.length;
+    if (endPage < startPage) continue;
+
+    let lines = pageData
+      .slice(startPage - 1, endPage)
+      .flatMap((page) => page.lines)
+      .map(cleanPdfLine)
+      .filter(Boolean)
+      .filter((line) => !isNoiseLine(line, repeatedFurniture));
+
+    const headingIndex = lines.findIndex(
+      (line) => normalizedKey(line) === normalizedKey(current.title)
+    );
+    if (headingIndex >= 0) lines = lines.slice(headingIndex + 1);
+
+    const content = normalizeWhitespace(repairHyphenation(lines.join(" ")));
+    if (!content) continue;
+
+    sections.push({
+      title: current.title,
+      level: current.level,
+      sectionPath: Array.isArray(current.path) ? current.path : [current.title],
+      content,
+      sourcePageStart: startPage,
+      sourcePageEnd: endPage,
+      segmentationSource: "pdf-outline",
+    });
+  }
+
+  return sections.length >= 2 ? sections : null;
 }
 
 function buildPdfSections(pageData) {
@@ -431,7 +556,8 @@ async function readPdf(file) {
     throw new Error("El PDF no contiene texto extraíble. Si es un escaneo de páginas, todavía hace falta OCR antes de incorporarlo a AULIA.");
   }
 
-  const sections = buildPdfSections(pages);
+  const outlineSections = await buildPdfOutlineSections(pdf, pages);
+  const sections = outlineSections || buildPdfSections(pages);
   const documentId = makeDocumentId(file.name);
   const corpus = buildSectionFragments({
     sections,
