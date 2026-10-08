@@ -10,9 +10,12 @@ const DEFAULT_MODELS = [
   "qwen/qwen3.8-27b",
 ];
 
-const MAX_CONTEXT_CHARS = 13000;
-const MAX_OUTPUT_TOKENS = 1500;
-const MAX_REPRESENTATIVE_UNITS = 36;
+// Keep the teacher review comfortably inside Groq's current free-plan token
+// budget. The complete book never goes to the model: AULIA sends a compact
+// structural dossier plus short excerpts from representative sections.
+const MAX_CONTEXT_CHARS = 8000;
+const MAX_OUTPUT_TOKENS = 1800;
+const MAX_REPRESENTATIVE_UNITS = 24;
 
 const PROPOSAL_SCHEMA = {
   type: "object",
@@ -65,46 +68,8 @@ const PROPOSAL_SCHEMA = {
         additionalProperties: false,
       },
     },
-    examples: {
-      type: "array",
-      items: {
-        type: "object",
-        properties: {
-          title: { type: "string" },
-          director: { type: "string" },
-          description: { type: "string" },
-          conceptTitles: { type: "array", items: { type: "string" } },
-          sourceIds: { type: "array", items: { type: "string" } },
-        },
-        required: ["title", "director", "description", "conceptTitles", "sourceIds"],
-        additionalProperties: false,
-      },
-    },
-    activities: {
-      type: "array",
-      items: {
-        type: "object",
-        properties: {
-          title: { type: "string" },
-          description: { type: "string" },
-          goal: { type: "string" },
-          strategy: {
-            type: "string",
-            enum: [
-              "retrieve",
-              "scene-analysis",
-              "socratic",
-              "guided-analysis",
-              "diagnostic",
-            ],
-          },
-        },
-        required: ["title", "description", "goal", "strategy"],
-        additionalProperties: false,
-      },
-    },
   },
-  required: ["pedagogicalSummary", "pedagogicalUnits", "concepts", "examples", "activities"],
+  required: ["pedagogicalSummary", "pedagogicalUnits", "concepts"],
   additionalProperties: false,
 };
 
@@ -137,8 +102,15 @@ function logicalUnits(corpus) {
       ? String(last.content || "")
       : content;
 
-    const representative = content.length > 500
-      ? content.slice(0, 300) + " … " + tailContent.slice(Math.max(0, tailContent.length - 170))
+    const middleSource = ordered.length > 2
+      ? String(ordered[Math.floor(ordered.length / 2)]?.content || "")
+      : content;
+    const representative = content.length > 520
+      ? content.slice(0, 220) +
+        " … " +
+        middleSource.slice(Math.max(0, Math.floor((middleSource.length - 150) / 2)), Math.floor((middleSource.length + 150) / 2)) +
+        " … " +
+        tailContent.slice(Math.max(0, tailContent.length - 180))
       : content;
 
     return {
@@ -271,14 +243,16 @@ function buildPrompt({ course, bibliography, materialText, sampled }) {
     sampled
       ? "La biblioteca completa está disponible en AULIA, pero para esta consulta se usa una muestra representativa de unidades para respetar los límites de una cuenta gratuita. No infieras contenido que no aparezca en los extractos."
       : "El conjunto de unidades relevantes entra en esta consulta.",
-    "NO resumas cada página. Primero diseñá un mapa pedagógico de 8 a 12 unidades conceptuales coherentes. Las unidades deben agrupar contenidos que pertenezcan naturalmente a una misma pregunta, problema o núcleo conceptual. Después identificá conceptos centrales, ejemplos/casos explícitos y actividades de aprendizaje.",
-    "Una unidad pedagógica debe poder enseñarse como un bloque coherente. No la nombres solamente con el título mecánico de una página: sintetizá su núcleo conceptual. Indicá brevemente por qué conviene agrupar ese material y qué debería poder comprender o hacer el estudiante al terminar la unidad. Una unidad puede reunir varias secciones del mismo documento.",
-    "Además construí un mapa curricular: asigná a cada unidad un sequence único empezando en 1 según un orden docente razonable. Usá phase para una etapa breve (por ejemplo fundamentos, desarrollo, integración o aplicación). prerequisiteTitles solo puede contener títulos EXACTOS de otras unidades de esta misma propuesta y debe representar dependencias reales; no inventes dependencias y no generes ciclos.",
-    "Trabajá exclusivamente con la evidencia suministrada. No inventes autores, obras, conceptos, ejemplos ni afirmaciones.",
+    "NO resumas cada página y NO conviertas cada fragmento técnico en una unidad pedagógica. Las secciones entregadas ya representan la estructura documental detectada por AULIA.",
+    "Primero diseñá un mapa pedagógico de 8 a 12 unidades conceptuales coherentes, cuando la evidencia lo permita. Cada unidad debe agrupar varias secciones o un núcleo de contenido que pueda enseñarse como un bloque. No uses como nombre simplemente 'página X', 'parte 1' o el título mecánico de un fragmento.",
+    "Para cada unidad explicá brevemente por qué conviene agrupar ese material y qué debería comprender o poder hacer el estudiante. Una unidad puede reunir varias secciones de un mismo documento.",
+    "Después identificá solo los conceptos centrales que sean necesarios para recuperar y trabajar el material. No generes ejemplos ni actividades en esta pasada: los dejaremos para una etapa posterior y así evitamos gastar la cuota de Groq en una salida excesivamente grande.",
+    "Además construí un mapa curricular: sequence único empezando en 1, phase breve y prerequisiteTitles solo con títulos EXACTOS de otras unidades de esta misma propuesta. No inventes dependencias ni generes ciclos.",
+    "Trabajá exclusivamente con la evidencia suministrada. No inventes autores, obras, conceptos ni afirmaciones.",
     "Los sourceIds deben copiar EXACTAMENTE IDs que aparezcan en [ID:...].",
     "sourceBibliographyIds solo puede usar los [BIB-ID:...] declarados y debe corresponder a una fuente realmente relacionada.",
-    "confusionCriteria debe describir entre 2 y 5 errores o confusiones plausibles y fundamentados por la evidencia.",
-    "Priorizá precisión y utilidad docente. Proponé entre 8 y 12 unidades pedagógicas cuando la evidencia lo permita, hasta 14 conceptos, 8 ejemplos y 6 actividades. Mantené las descripciones concisas para que el mapa y el resto de la propuesta entren en una sola respuesta. Si el material no permite llegar a 8 unidades reales, proponé menos antes que inventar.",
+    "confusionCriteria debe describir errores o confusiones plausibles y fundamentados por la evidencia.",
+    "Priorizá precisión sobre cantidad. Proponé 8 a 12 unidades y 6 a 10 conceptos cuando el material lo permita. Si la evidencia no alcanza, proponé menos antes que inventar.",
     "Curso: " + String(course?.title || ""),
     "Descripción: " + String(course?.description || ""),
     refs ? "Bibliografía declarada:\n" + refs : "",
@@ -353,8 +327,13 @@ async function request(endpoint, apiKey, model, prompt, responseFormat, signal) 
     throw error;
   }
 
-  const content = data?.choices?.[0]?.message?.content || "";
+  const choice = data?.choices?.[0] || {};
+  const content = choice?.message?.content || "";
   if (!content) throw new Error("El proveedor de IA devolvió una respuesta vacía.");
+
+  if (choice?.finish_reason === "length") {
+    throw new Error("Groq alcanzó el límite de salida de esta revisión antes de completar la propuesta. AULIA ya limita la entrada y la cantidad de campos para evitar este problema.");
+  }
 
   let parsed;
   try {
@@ -431,9 +410,7 @@ export async function requestTeacherProposal({
       const proposal = result.proposal || {};
       if (
         !Array.isArray(proposal.pedagogicalUnits) ||
-        !Array.isArray(proposal.concepts) ||
-        !Array.isArray(proposal.examples) ||
-        !Array.isArray(proposal.activities)
+        !Array.isArray(proposal.concepts)
       ) {
         throw new Error("La propuesta de IA no tiene la estructura esperada.");
       }
