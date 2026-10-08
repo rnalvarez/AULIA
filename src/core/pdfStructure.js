@@ -268,7 +268,8 @@ function paragraphLike(line) {
   if (!text || text.length > 150) return true;
   if (SENTENCE_END_RE.test(text)) return true;
   if (text.split(/\s+/).length > 20) return true;
-  if (/^(?:[-•▪◦]|\(?\d+[.)]|[A-Z][.)])\s+/.test(text)) return true;
+  const numbered = numberingInfo(text);
+  if (/^(?:[-•▪◦]|\(?\d+[.)]|[A-Z][.)])\s+/.test(text) && !numbered) return true;
   return false;
 }
 
@@ -320,10 +321,28 @@ function detectHeadingCandidates(pages, repeatedFurniture, minPage = 1) {
       if (!SENTENCE_END_RE.test(text)) { score += 1; evidence.push("forma de título"); }
       if (text.length <= 85) score += 1;
 
+      const uppercaseRatio = (() => {
+        const letters = text.match(/[A-Za-zÁÉÍÓÚÜÑáéíóúüñ]/g) || [];
+        if (letters.length < 5) return 0;
+        const upper = text.match(/[A-ZÁÉÍÓÚÜÑ]/g) || [];
+        return upper.length / letters.length;
+      })();
+
+      if (uppercaseRatio >= 0.82 && text.length <= 85 && topRatio <= 0.32) {
+        score += 1;
+        evidence.push("composición destacada");
+      }
+
       if (topRatio >= 0.78 && page.pageNumber > minPage && !numbered && !sectionWord) score -= 4;
       if (text.includes("©") || /\b(?:issn|isbn|doi|www\.|http)/i.test(text)) score -= 5;
 
-      if (score < 7) continue;
+      const structuralSignal =
+        Boolean(numbered) ||
+        sectionWord ||
+        (sizeRatio >= 1.22 && (line.bold || beforeGap >= Math.max(line.fontSize * 1.4, 10))) ||
+        (topRatio <= 0.22 && (line.bold || sizeRatio >= 1.18));
+
+      if (score < 7 || !structuralSignal) continue;
 
       const candidate = {
         pageNumber: page.pageNumber,
@@ -764,10 +783,10 @@ async function buildTocBoundaries(pdf, pages, headingCandidates) {
       matchScore: match?.score || 0,
       confidence: match
         ? Math.max(0.72, Math.min(0.995, match.score))
-        : 0.38,
+        : 0.58,
       evidence: match
         ? ["índice del documento", ...match.candidate.evidence]
-        : ["índice del documento", "ubicación no confirmada"],
+        : ["índice del documento", "paginación estimada; encabezado no confirmado"],
     };
   });
 
@@ -786,7 +805,7 @@ async function buildTocBoundaries(pdf, pages, headingCandidates) {
 
   const ordered = [];
   for (const entry of remapped) {
-    if (entry.page < bodyMinPage) continue;
+    if (entry.page < bodyMinPage || entry.confidence < 0.55) continue;
     const lineIndex = entry.lineIndex >= 0 ? entry.lineIndex : 0;
     if (!ordered.length || entry.page > ordered[ordered.length - 1].page || (entry.page === ordered[ordered.length - 1].page && lineIndex >= ordered[ordered.length - 1].lineIndex)) {
       ordered.push({ ...entry, lineIndex });
