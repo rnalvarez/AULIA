@@ -546,7 +546,7 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
         corpus: [...(current.corpus || []), ...collected],
         documents: mergeImportedDocuments(current.documents || [], documents),
         bibliography: mergeImportedBibliography(current.bibliography || [], bibliography),
-      }), `${collected.length} unidades de lectura incorporadas desde ${files.length} documento${files.length === 1 ? "" : "s"}.` +
+      }), `${collected.length} fragmentos técnicos incorporados desde ${files.length} documento${files.length === 1 ? "" : "s"}.` +
         (pages ? ` · ${pages} páginas.` : "") +
         (warnings ? ` · ${warnings} aviso(s) de conversión.` : ""));
     } catch (err) {
