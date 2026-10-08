@@ -314,15 +314,22 @@ function buildMaterialStructure(course) {
       const path = Array.isArray(section.path) ? section.path : [];
       const titleKey = slug(section.title || "");
       const sectionId = section.id || document.id + "-" + sections.length;
-      const matches = documentChunks.filter((chunk) =>
-        chunk.sectionId === sectionId ||
-        (
+      const matches = documentChunks.filter((chunk) => {
+        if (chunk.sectionId === sectionId) return true;
+
+        // Legacy corpus without sectionId: keep the fallback strictly inside
+        // the same document and same structural path. Never match by title
+        // across documents.
+        const sameDocument =
+          String(chunk.documentId || "") === String(document.id || "");
+        const samePath =
           Array.isArray(chunk.sectionPath) &&
-          chunk.sectionPath.join(" › ") === path.join(" › ") &&
-          String(chunk.documentId || "") === String(document.id || "")
-        ) ||
-        slug(chunk.title || "").replace(/-parte-\d+$/i, "") === titleKey
-      );
+          chunk.sectionPath.join(" › ") === path.join(" › ");
+        const sameTitle =
+          slug(chunk.title || "").replace(/-parte-\d+$/i, "") === titleKey;
+
+        return sameDocument && samePath && sameTitle;
+      });
 
       const ordered = matches.slice().sort((x, y) =>
         Number(x?.sourcePageStart || x?.sourcePage || 0) -
@@ -578,36 +585,18 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
   }
   function updateMaterialSection(sectionId, patch) {
     mutate((current) => {
-      let targetDocumentId = "";
-      let targetPath = [];
-
       const documents = (current.documents || []).map((document) => ({
         ...document,
-        sections: (document.sections || []).map((section) => {
-          if (section.id !== sectionId) return section;
-          targetDocumentId = String(document.id || "");
-          targetPath = Array.isArray(section.path) ? section.path : [];
-          return { ...section, ...patch };
-        }),
+        sections: (document.sections || []).map((section) =>
+          section.id === sectionId ? { ...section, ...patch } : section
+        ),
       }));
 
-      const isSameOrDescendantPath = (path) => {
-        if (!targetPath.length) return false;
-        if (path.length < targetPath.length) return false;
-        return targetPath.every((part, index) => path[index] === part);
-      };
-
-      const corpus = (current.corpus || []).map((chunk) => {
-        const chunkPath = Array.isArray(chunk.sectionPath) ? chunk.sectionPath : [];
-        const sameSection =
-          chunk.sectionId === sectionId ||
-          (
-            targetDocumentId &&
-            String(chunk.documentId || "") === targetDocumentId &&
-            isSameOrDescendantPath(chunkPath)
-          );
-        return sameSection ? { ...chunk, ...patch, sectionId: chunk.sectionId || sectionId } : chunk;
-      });
+      // Scope, priority and teacher focus belong to one structural section.
+      // They must never cascade to sibling or descendant sections.
+      const corpus = (current.corpus || []).map((chunk) =>
+        chunk.sectionId === sectionId ? { ...chunk, ...patch, sectionId } : chunk
+      );
 
       return { ...current, documents, corpus };
     });
@@ -937,16 +926,49 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
   }
 
   const materialSections = useMemo(() => buildMaterialStructure(draft), [draft.documents, draft.corpus]);
-  const materialAnalyses = useMemo(
-    () => (draft.documents || [])
-      .filter((document) => document?.format === "pdf" && document?.analysis)
-      .map((document) => ({
-        ...document.analysis,
-        id: document.id,
-        title: document.title || document.sourceName || "PDF",
-      })),
-    [draft.documents]
-  );
+  const materialDocumentGroups = useMemo(() => {
+    const documents = Array.isArray(draft.documents) ? draft.documents : [];
+    const groups = [];
+
+    for (const document of documents) {
+      const id = String(document?.id || "");
+      const sections = materialSections.filter((section) => String(section.documentId || "") === id);
+      const fragments = (draft.corpus || []).filter((chunk) => String(chunk.documentId || "") === id);
+
+      if (!sections.length && !fragments.length) continue;
+
+      groups.push({
+        id: id || "document-" + groups.length,
+        title: document.title || document.sourceName || "Material",
+        sourceName: document.sourceName || "",
+        format: document.format || "",
+        pages: document.pages || document.analysis?.pageCount || null,
+        analysis: document.analysis || null,
+        sections,
+        fragmentCount: fragments.length,
+      });
+    }
+
+    const knownDocumentIds = new Set(documents.map((document) => String(document?.id || "")));
+    const orphanSections = materialSections.filter(
+      (section) => !knownDocumentIds.has(String(section.documentId || ""))
+    );
+
+    if (orphanSections.length) {
+      groups.push({
+        id: "legacy-material",
+        title: "Material sin documento identificado",
+        sourceName: "",
+        format: "",
+        pages: null,
+        analysis: null,
+        sections: orphanSections,
+        fragmentCount: orphanSections.reduce((sum, section) => sum + Number(section.fragmentCount || 0), 0),
+      });
+    }
+
+    return groups;
+  }, [draft.documents, draft.corpus, materialSections]);
   const counts = {
     overview: 1,
     material: materialSections.length,
@@ -1023,39 +1045,9 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
           actions={<label className="primary studio-wf-file-btn">{busy ? "Procesando…" : "Cargar material"}<input type="file" accept=".txt,.md,.markdown,.json,.pdf,.docx,text/plain,text/markdown,application/json,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document" multiple onChange={importMaterial} disabled={busy}/></label>}
         >
           {materialSections.length ? <>
-            {materialAnalyses.map((analysis) => (
-              <div className={"studio-wf-pdf-diagnostic confidence-" + structureConfidenceLabel(analysis.confidence).toLowerCase()} key={analysis.id}>
-                <div className="studio-wf-pdf-diagnostic-head">
-                  <div>
-                    <span className="eyebrow">RELEVAMIENTO DEL PDF</span>
-                    <strong>{analysis.title}</strong>
-                    <small>{analysis.documentType} · método: {materialSegmentationLabel(analysis.method)}</small>
-                  </div>
-                  <div className="studio-wf-pdf-confidence">
-                    <strong>{Math.round(Number(analysis.confidence || 0) * 100)}%</strong>
-                    <span>confianza global</span>
-                  </div>
-                </div>
-                <div className="studio-wf-pdf-diagnostic-grid">
-                  <div><span>Páginas</span><strong>{analysis.pageCount}</strong></div>
-                  <div><span>Índice</span><strong>{analysis.tocDetected ? "Detectado" : "No detectado"}</strong></div>
-                  <div><span>Marcadores</span><strong>{analysis.outlineDetected ? "Detectados" : "No detectados"}</strong></div>
-                  <div><span>Columnas</span><strong>{analysis.columns?.two ? (analysis.columns?.one ? "Mixto" : "Dos") : "Una"}</strong></div>
-                  <div><span>Secciones</span><strong>{analysis.sectionCount}</strong></div>
-                  <div><span>Revisión</span><strong>{analysis.lowConfidenceSections ? analysis.lowConfidenceSections + " requiere(n) atención" : "Sin alertas"}</strong></div>
-                </div>
-                {analysis.warnings?.length > 0 && (
-                  <details className="studio-wf-details">
-                    <summary>Advertencias del relevamiento ({analysis.warnings.length})</summary>
-                    <ul className="studio-wf-pdf-warning-list">{analysis.warnings.map((warning) => <li key={warning}>{warning}</li>)}</ul>
-                  </details>
-                )}
-              </div>
-            ))}
-
             <div className="studio-wf-stats">
               <div><strong>{materialSections.length}</strong><span>secciones estructurales</span></div>
-              <div><strong>{draft.documents?.length || new Set(draft.corpus.map((x) => x.source).filter(Boolean)).size}</strong><span>documentos</span></div>
+              <div><strong>{materialDocumentGroups.length}</strong><span>documentos relevados</span></div>
               <div><strong>{draft.corpus?.length || 0}</strong><span>fragmentos de recuperación</span></div>
             </div>
 
@@ -1069,84 +1061,118 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
               El estado inicial de todo material es <strong>Incluido</strong>. La prioridad organiza el foco docente sin eliminar contenido.
             </div>
 
-            <div className="studio-wf-corpus-list">
-              {materialSections.map((section, i) => (
-                <article key={section.id || i} className={"studio-wf-material-section level-" + Math.min(Number(section.level || 1), 6) + " scope-" + (section.scope || "included")}>
-                  <div className="studio-wf-material-section-head">
+            <div className="studio-wf-material-documents">
+              {materialDocumentGroups.map((documentGroup, documentIndex) => (
+                <section className="studio-wf-material-document" key={documentGroup.id || documentIndex}>
+                  <div className="studio-wf-material-document-head">
                     <div>
-                      <strong>{section.title || "Sección"}</strong>
-                      <span>
-                        {section.path?.length ? section.path.join(" › ") : "Sin jerarquía detectada"}
-                        {section.printedPageStart ? " · libro pp. " + section.printedPageStart + (section.printedPageEnd && section.printedPageEnd !== section.printedPageStart ? "–" + section.printedPageEnd : "") : section.sourcePageStart ? " · PDF pp. " + section.sourcePageStart + (section.sourcePageEnd && section.sourcePageEnd !== section.sourcePageStart ? "–" + section.sourcePageEnd : "") : ""}
-                        {section.documentTitle ? " · " + section.documentTitle : ""}
-                      </span>
+                      <span className="eyebrow">DOCUMENTO {documentIndex + 1}</span>
+                      <h3>{documentGroup.title}</h3>
+                      {documentGroup.sourceName && <small>{documentGroup.sourceName}{documentGroup.pages ? " · " + documentGroup.pages + " páginas" : ""}</small>}
                     </div>
-                    <div className="studio-wf-material-scope">
-                      {MATERIAL_SCOPE_OPTIONS.map(([value, label]) => (
-                        <button
-                          key={value}
-                          className={"studio-wf-scope-btn " + ((section.scope || "included") === value ? "active" : "")}
-                          type="button"
-                          onClick={() => setMaterialScope(section.id, value)}
-                          disabled={!canEdit || busy}
-                        >
-                          {label}
-                        </button>
-                      ))}
+                    <div className="studio-wf-material-document-count">
+                      <strong>{documentGroup.sections.length}</strong>
+                      <span>secciones</span>
+                      <small>{documentGroup.fragmentCount} fragmentos</small>
                     </div>
                   </div>
 
-                  <p>{section.preview || "Sin vista previa disponible."}{section.preview?.length >= 180 ? "…" : ""}</p>
-
-                  <div className="studio-wf-material-meta">
-                    <small>
-  {section.fragmentCount || 0} fragmento(s) de recuperación · {section.segmentationLabel}
-  {section.confidence ? " · confianza " + Math.round(section.confidence * 100) + "%" : ""}
-  {section.childrenCount ? " · " + section.childrenCount + " subsección(es)" : ""}
-</small>
-                    <div className="studio-wf-material-priority">
-                      <span>Prioridad</span>
-                      {MATERIAL_PRIORITY_OPTIONS.map(([value, label]) => (
-                        <button
-                          key={value}
-                          className={"studio-wf-priority-btn " + ((section.priority || "normal") === value ? "active" : "")}
-                          type="button"
-                          onClick={() => setMaterialPriority(section.id, value)}
-                          disabled={!canEdit || busy}
-                        >
-                          {label}
-                        </button>
-                      ))}
+                  {documentGroup.analysis && (
+                    <div className={"studio-wf-pdf-diagnostic confidence-" + structureConfidenceLabel(documentGroup.analysis.confidence).toLowerCase()}>
+                      <div className="studio-wf-pdf-diagnostic-head">
+                        <div>
+                          <span className="eyebrow">RELEVAMIENTO DEL PDF</span>
+                          <strong>{documentGroup.title}</strong>
+                          <small>{documentGroup.analysis.documentType} · método: {materialSegmentationLabel(documentGroup.analysis.method)}</small>
+                        </div>
+                        <div className="studio-wf-pdf-confidence">
+                          <strong>{Math.round(Number(documentGroup.analysis.confidence || 0) * 100)}%</strong>
+                          <span>confianza global</span>
+                        </div>
+                      </div>
+                      <div className="studio-wf-pdf-diagnostic-grid">
+                        <div><span>Páginas</span><strong>{documentGroup.analysis.pageCount || documentGroup.pages || "—"}</strong></div>
+                        <div><span>Índice</span><strong>{documentGroup.analysis.tocDetected ? "Detectado" : "No detectado"}</strong></div>
+                        <div><span>Marcadores</span><strong>{documentGroup.analysis.outlineDetected ? "Detectados" : "No detectados"}</strong></div>
+                        <div><span>Columnas</span><strong>{documentGroup.analysis.columns?.two ? (documentGroup.analysis.columns?.one ? "Mixto" : "Dos") : "Una"}</strong></div>
+                        <div><span>Secciones</span><strong>{documentGroup.analysis.sectionCount || documentGroup.sections.length}</strong></div>
+                        <div><span>Revisión</span><strong>{documentGroup.analysis.lowConfidenceSections ? documentGroup.analysis.lowConfidenceSections + " requiere(n) atención" : "Sin alertas"}</strong></div>
+                      </div>
+                      {documentGroup.analysis.warnings?.length > 0 && (
+                        <details className="studio-wf-details">
+                          <summary>Advertencias del relevamiento ({documentGroup.analysis.warnings.length})</summary>
+                          <ul className="studio-wf-pdf-warning-list">{documentGroup.analysis.warnings.map((warning) => <li key={warning}>{warning}</li>)}</ul>
+                        </details>
+                      )}
                     </div>
+                  )}
+
+                  <div className="studio-wf-corpus-list">
+                    {documentGroup.sections.length ? documentGroup.sections.map((section, i) => (
+                      <article key={section.id || i} className={"studio-wf-material-section level-" + Math.min(Number(section.level || 1), 6) + " scope-" + (section.scope || "included")}>
+                        <div className="studio-wf-material-section-head">
+                          <div>
+                            <strong>{section.title || "Sección"}</strong>
+                            <span>
+                              {section.path?.length ? section.path.join(" › ") : "Sin jerarquía detectada"}
+                              {section.printedPageStart ? " · libro pp. " + section.printedPageStart + (section.printedPageEnd && section.printedPageEnd !== section.printedPageStart ? "–" + section.printedPageEnd : "") : section.sourcePageStart ? " · PDF pp. " + section.sourcePageStart + (section.sourcePageEnd && section.sourcePageEnd !== section.sourcePageStart ? "–" + section.sourcePageEnd : "") : ""}
+                            </span>
+                          </div>
+                          <div className="studio-wf-material-scope">
+                            {MATERIAL_SCOPE_OPTIONS.map(([value, label]) => (
+                              <button
+                                key={value}
+                                className={"studio-wf-scope-btn " + ((section.scope || "included") === value ? "active" : "")}
+                                type="button"
+                                onClick={() => setMaterialScope(section.id, value)}
+                                disabled={!canEdit || busy}
+                              >
+                                {label}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+
+                        <p>{section.preview || "Sin vista previa disponible."}{section.preview?.length >= 180 ? "…" : ""}</p>
+
+                        <div className="studio-wf-material-meta">
+                          <small>
+                            {section.fragmentCount || 0} fragmento(s) de recuperación · {section.segmentationLabel}
+                            {section.confidence ? " · confianza " + Math.round(section.confidence * 100) + "%" : ""}
+                            {section.childrenCount ? " · " + section.childrenCount + " subsección(es)" : ""}
+                          </small>
+                          <div className="studio-wf-material-priority">
+                            <span>Prioridad</span>
+                            {MATERIAL_PRIORITY_OPTIONS.map(([value, label]) => (
+                              <button
+                                key={value}
+                                className={"studio-wf-priority-btn " + ((section.priority || "normal") === value ? "active" : "")}
+                                type="button"
+                                onClick={() => setMaterialPriority(section.id, value)}
+                                disabled={!canEdit || busy}
+                              >
+                                {label}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+
+                        <details className="studio-wf-material-focus">
+                          <summary>Definir foco docente</summary>
+                          <div className="studio-wf-grid">
+                            <Field label="Tema" value={section.teacherTopic} onChange={(v) => updateMaterialSection(section.id, { teacherTopic: v })} placeholder="Ej. Escucha audiovisual" />
+                            <Field label="Conceptos" value={(section.teacherConcepts || []).join(", ")} onChange={(v) => updateMaterialSection(section.id, { teacherConcepts: list(v) })} placeholder="Ej. escucha, imagen, sincronismo" />
+                            <Field label="Límite / indicación docente" value={section.teacherLimit} onChange={(v) => updateMaterialSection(section.id, { teacherLimit: v })} placeholder="Qué abordar, qué dejar en segundo plano o qué evitar" multiline />
+                          </div>
+                        </details>
+                      </article>
+                    )) : (
+                      <Empty title="No se detectaron secciones estructurales." text="El documento quedó incorporado al corpus, pero todavía no hay una estructura confiable para mostrar como secciones."/>
+                    )}
+                    {documentGroup.sections.length > 60 && <small>Mostrando 60 de {documentGroup.sections.length} secciones de este documento.</small>}
                   </div>
-
-                  <details className="studio-wf-material-focus">
-                    <summary>Definir foco docente</summary>
-                    <div className="studio-wf-grid">
-                      <Field
-                        label="Tema"
-                        value={section.teacherTopic}
-                        onChange={(v) => updateMaterialSection(section.id, { teacherTopic: v })}
-                        placeholder="Ej. Escucha audiovisual"
-                      />
-                      <Field
-                        label="Conceptos"
-                        value={(section.teacherConcepts || []).join(", ")}
-                        onChange={(v) => updateMaterialSection(section.id, { teacherConcepts: list(v) })}
-                        placeholder="Ej. escucha, imagen, sincronismo"
-                      />
-                      <Field
-                        label="Límite / indicación docente"
-                        value={section.teacherLimit}
-                        onChange={(v) => updateMaterialSection(section.id, { teacherLimit: v })}
-                        placeholder="Qué abordar, qué dejar en segundo plano o qué evitar"
-                        multiline
-                      />
-                    </div>
-                  </details>
-                </article>
+                </section>
               ))}
-              {materialSections.length > 60 && <small>Mostrando 60 de {materialSections.length} secciones estructurales.</small>}
             </div>
           </> : <Empty title="El corpus está vacío." text="Empezá cargando un PDF, DOCX, TXT, Markdown o JSON. AULIA conservará toda la estructura detectada y la dejará incluida por defecto."/>}
         </Panel>
