@@ -128,10 +128,9 @@ export default function StudioApp() {
           return;
         }
         setSession(restored);
-        // Render the Studio shell as soon as the session is known.
-        // Course listing/selection continues independently so a slow backend
-        // does not make the whole Studio appear empty or blocked.
-        setLoading(false);
+        // Do not render the Studio shell until the authorized course list and
+        // initial course are ready. This avoids the empty-shell -> loading-screen
+        // transition that made the interface look broken.
         await loadCourses(restored);
       } catch (err) {
         if (mounted) {
@@ -149,8 +148,10 @@ export default function StudioApp() {
     const next = await loginTeacher(email, password);
     setSession(next);
     setError("");
-    setLoading(false);
+    // Keep the login transition atomic: the Studio appears only after the
+    // authorized course list and its initial selection are ready.
     await loadCourses(next);
+    setLoading(false);
   }
 
   async function handleCreateCourse() {
@@ -315,7 +316,7 @@ export default function StudioApp() {
   }
 
   if (!STUDIO_API_ENDPOINT) return <BackendUnavailable />;
-  if (loading) return <LoadingScreen />;
+  if (loading) return <LoadingScreen text={session ? "Cargando tus cátedras…" : "Cargando Studio…"} />;
   if (!session) return (
     <>
       <StudioLogin onReady={handleLogin} error={error} />
