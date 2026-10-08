@@ -581,8 +581,21 @@ function buildSectionsFromBoundaries(pages, boundaries, repeatedFurniture, sourc
     const next = normalized[i + 1];
 
     const startPage = Math.max(1, Math.min(pages.length, current.page));
-    const endPage = next
-      ? Math.max(startPage, Math.min(pages.length, next.page - (next.lineIndex > 0 ? 0 : 1)))
+
+    // A structural section runs until the next sibling or ancestor. Child
+    // headings must not truncate their parent section boundary.
+    let boundary = null;
+    if (next) {
+      for (let j = i + 1; j < normalized.length; j += 1) {
+        if (Number(normalized[j].level || 1) <= Number(current.level || 1)) {
+          boundary = normalized[j];
+          break;
+        }
+      }
+    }
+
+    const endPage = boundary
+      ? Math.max(startPage, Math.min(pages.length, boundary.page - (boundary.lineIndex > 0 ? 0 : 1)))
       : pages.length;
 
     const contentLines = [];
@@ -613,8 +626,8 @@ function buildSectionsFromBoundaries(pages, boundaries, repeatedFurniture, sourc
       ...(current.printedPage
         ? { printedPageStart: current.printedPage }
         : {}),
-      ...(next?.printedPage
-        ? { printedPageEnd: Math.max(current.printedPage || next.printedPage, next.printedPage - 1) }
+      ...(boundary?.printedPage
+        ? { printedPageEnd: Math.max(current.printedPage || boundary.printedPage, boundary.printedPage - 1) }
         : {}),
       segmentationSource: source,
       confidence: Number(current.confidence || 0.5),
