@@ -310,32 +310,82 @@ async function flattenPdfOutline(pdf, items, level = 1, parentPath = [], output 
   return output;
 }
 
-function parsePdfTocLine(line, pageCount) {
-  const clean = cleanPdfLine(line);
-  if (!clean || clean.length > 150) return null;
+function tocNumberInfo(title) {
+  const match = String(title || "").match(/^(\d+(?:\.\d+){0,8})[.)]?\s+/);
+  if (!match) return null;
+  const number = match[1];
+  return {
+    number,
+    level: Math.min(number.split(".").length, 8),
+  };
+}
 
-  const dotted = clean.match(/^(.+?)(?:\.{2,}|·{2,})\s*(\d{1,4})$/);
-  const plain = clean.match(/^(?:(\d+(?:\.\d+){0,4})[.)]?\s+)?(.{3,120}?)\s+(\d{1,4})$/);
+function parsePdfTocLine(line, pageCount) {
+  const raw = String(line ?? "").replace(/\u00a0/g, " ");
+  const clean = cleanPdfLine(raw);
+  if (!clean || clean.length > 180) return null;
+
+  const dotted = clean.match(/^(.+?)(?:\.{2,}|·{2,}|\s{2,})\s*(\d{1,4})$/);
+  const plain = clean.match(/^(?:(\d+(?:\.\d+){0,8})[.)]?\s+)?(.{3,150}?)\s+(\d{1,4})$/);
   const match = dotted || plain;
   if (!match) return null;
 
   const printedPage = Number(dotted ? match[2] : match[3]);
-  const title = cleanPdfLine(dotted ? match[1] : match[2]);
-  if (!title || !Number.isFinite(printedPage) || printedPage < 1 || printedPage > Math.max(pageCount, 2000)) {
-    return null;
-  }
-  if (/^(?:índice|indice|contenido|contents|table of contents|sumario)$/i.test(title)) {
+  let title = cleanPdfLine(dotted ? match[1] : match[2]);
+
+  title = title
+    .replace(/\.{2,}\s*$/, "")
+    .replace(/·{2,}\s*$/, "")
+    .trim();
+
+  if (
+    !title ||
+    !Number.isFinite(printedPage) ||
+    printedPage < 1 ||
+    printedPage > Math.max(pageCount, 5000) ||
+    /^(?:índice|indice|contenido|contents|table of contents|sumario)$/i.test(title)
+  ) {
     return null;
   }
 
-  return { title, printedPage };
+  const numbered = tocNumberInfo(title);
+  const level = numbered?.level ||
+    (/^(?:PARTE|CAP[ÍI]TULO|CHAPTER|UNIDAD|MÓDULO|MODULE)\b/i.test(title) ? 1 : 2);
+
+  return {
+    title,
+    printedPage,
+    level,
+    number: numbered?.number || "",
+  };
 }
 
 function findPdfTocWindow(pageData) {
-  for (let i = 0; i < Math.min(pageData.length, 30); i += 1) {
-    const joined = pageData[i].lines.join(" ");
-    if (/\b(?:índice|indice|contenido|contents|table of contents|sumario)\b/i.test(joined)) {
-      return { start: i, end: Math.min(pageData.length, i + 8) };
+  for (let start = 0; start < Math.min(pageData.length, 40); start += 1) {
+    const joined = pageData[start].lines.join(" ");
+    if (!/\b(?:índice|indice|contenido|contents|table of contents|sumario)\b/i.test(joined)) {
+      continue;
+    }
+
+    const maxEnd = Math.min(pageData.length, start + 40);
+    let lastEntryPage = start;
+    let emptyPagesAfterEntries = 0;
+    let foundEntries = 0;
+
+    for (let pageIndex = start; pageIndex < maxEnd; pageIndex += 1) {
+      const pageHasEntry = pageData[pageIndex].lines.some((line) => parsePdfTocLine(line, pageData.length));
+      if (pageHasEntry) {
+        foundEntries += 1;
+        lastEntryPage = pageIndex;
+        emptyPagesAfterEntries = 0;
+      } else if (foundEntries) {
+        emptyPagesAfterEntries += 1;
+        if (emptyPagesAfterEntries >= 2) break;
+      }
+    }
+
+    if (foundEntries >= 3) {
+      return { start, end: Math.min(maxEnd, lastEntryPage + 1) };
     }
   }
   return null;
@@ -368,6 +418,56 @@ function findPdfHeadingPage(pageData, title, startPage) {
   return null;
 }
 
+function findPdfTitlePage(pageData, title, estimatedPage) {
+  const target = Math.max(1, Math.min(pageData.length, Number(estimatedPage || 1)));
+  const windows = [
+    [target - 8, target + 8],
+    [0, pageData.length - 1],
+  ];
+
+  for (const [start, end] of windows) {
+    for (let pageIndex = Math.max(0, start); pageIndex <= Math.min(pageData.length - 1, end); pageIndex += 1) {
+      const lines = pageData[pageIndex].lines;
+      if (lines.some((line) => headingInfo(line) && headingMatchesTitle(line, title))) {
+        return pageIndex + 1;
+      }
+    }
+  }
+
+  // Last resort: exact/near-exact title match without requiring the line to
+  // satisfy the local heading heuristic.
+  for (const [start, end] of windows) {
+    for (let pageIndex = Math.max(0, start); pageIndex <= Math.min(pageData.length - 1, end); pageIndex += 1) {
+      if (pageData[pageIndex].lines.some((line) => headingMatchesTitle(line, title))) {
+        return pageIndex + 1;
+      }
+    }
+  }
+
+  return null;
+}
+
+function buildTocHierarchy(entries) {
+  const stack = [];
+  return entries.map((entry) => {
+    const level = Math.max(1, Number(entry.level || 1));
+    stack.length = Math.max(0, level - 1);
+    stack[level - 1] = entry.title;
+    const path = stack.slice(0, level).filter(Boolean);
+    stack.length = level;
+    return { ...entry, level, path };
+  });
+}
+
+function median(values) {
+  const sorted = values.filter(Number.isFinite).slice().sort((a, b) => a - b);
+  if (!sorted.length) return null;
+  const middle = Math.floor(sorted.length / 2);
+  return sorted.length % 2
+    ? sorted[middle]
+    : (sorted[middle - 1] + sorted[middle]) / 2;
+}
+
 async function buildPdfTocSections(pageData) {
   const window = findPdfTocWindow(pageData);
   if (!window) return null;
@@ -377,39 +477,73 @@ async function buildPdfTocSections(pageData) {
     for (const line of pageData[pageIndex].lines) {
       const entry = parsePdfTocLine(line, pageData.length);
       if (!entry) continue;
-      if (!entries.some((item) => item.title === entry.title && item.printedPage === entry.printedPage)) {
-        entries.push(entry);
-      }
+
+      const duplicate = entries.some(
+        (item) => item.title === entry.title && item.printedPage === entry.printedPage
+      );
+      if (!duplicate) entries.push(entry);
     }
   }
 
   if (entries.length < 3) return null;
 
-  const mapped = [];
-  for (const entry of entries.slice(0, 120)) {
-    const page = findPdfHeadingPage(pageData, entry.title, window.end);
-    if (page) mapped.push({ ...entry, page });
-  }
+  const structuredEntries = buildTocHierarchy(entries);
 
-  // Keep only entries whose located pages advance through the document.
-  const boundaries = [];
-  for (const entry of mapped.sort((a, b) => a.page - b.page)) {
-    if (!boundaries.length || entry.page > boundaries[boundaries.length - 1].page) {
-      boundaries.push(entry);
+  // First use exact headings to learn the PDF's printed-page -> physical-page
+  // offset. This is much more reliable than assuming page 1 of the PDF is
+  // printed page 1 of the book.
+  const mappedByTitle = structuredEntries.map((entry) => ({
+    ...entry,
+    physicalPage: findPdfTitlePage(
+      pageData,
+      entry.title,
+      Math.max(1, Math.min(pageData.length, entry.printedPage))
+    ),
+  }));
+
+  const offsets = mappedByTitle
+    .filter((entry) => Number.isFinite(entry.physicalPage))
+    .map((entry) => entry.physicalPage - entry.printedPage);
+
+  const pageOffset = median(offsets) ?? 0;
+
+  const mapped = mappedByTitle.map((entry) => ({
+    ...entry,
+    page: entry.physicalPage ||
+      Math.max(1, Math.min(pageData.length, Math.round(entry.printedPage + pageOffset))),
+  }));
+
+  // Keep the index order. It is the authoritative hierarchy. Only remove
+  // impossible/out-of-order page assignments that cannot represent real
+  // section boundaries.
+  const ordered = [];
+  for (const entry of mapped) {
+    if (!ordered.length) {
+      ordered.push(entry);
+      continue;
     }
+
+    const previous = ordered[ordered.length - 1];
+    if (entry.page < previous.page) {
+      continue;
+    }
+
+    ordered.push(entry);
   }
 
-  if (boundaries.length < 3) return null;
+  if (ordered.length < 3) return null;
 
   const repeatedFurniture = findRepeatedPageFurniture(pageData.map((page) => page.lines));
   const sections = [];
 
-  for (let i = 0; i < boundaries.length; i += 1) {
-    const current = boundaries[i];
-    const next = boundaries[i + 1];
-    const startPage = current.page;
-    const endPage = next ? Math.min(pageData.length, next.page - 1) : pageData.length;
-    if (endPage < startPage) continue;
+  for (let i = 0; i < ordered.length; i += 1) {
+    const current = ordered[i];
+    const next = ordered[i + 1];
+
+    const startPage = Math.max(1, Math.min(pageData.length, current.page));
+    const endPage = next
+      ? Math.max(startPage, Math.min(pageData.length, next.page - 1))
+      : pageData.length;
 
     let lines = pageData
       .slice(startPage - 1, endPage)
@@ -422,23 +556,21 @@ async function buildPdfTocSections(pageData) {
     if (headingIndex >= 0) lines = lines.slice(headingIndex + 1);
 
     const content = normalizeWhitespace(repairHyphenation(lines.join(" ")));
-    if (!content) continue;
-
-    const numbered = current.title.match(/^(\d+(?:\.\d+){0,4})[.)]?\s+/);
-    const depth = numbered ? Math.min(numbered[1].split(".").length, 6) : 1;
 
     sections.push({
       title: current.title,
-      level: depth,
-      sectionPath: [current.title],
+      level: current.level,
+      sectionPath: current.path,
       content,
       sourcePageStart: startPage,
       sourcePageEnd: endPage,
+      printedPageStart: current.printedPage,
+      printedPageEnd: next?.printedPage ? Math.max(current.printedPage, next.printedPage - 1) : null,
       segmentationSource: "pdf-toc",
     });
   }
 
-  return sections.length >= 2 ? sections : null;
+  return sections.length >= 3 ? sections : null;
 }
 
 function isGenericOutlineTitle(title) {
@@ -685,16 +817,20 @@ async function readPdf(file) {
     page.cleanup?.();
   }
 
-  await pdf.cleanup?.();
-  await pdf.destroy?.();
-
   if (!pages.some((page) => page.lines.length)) {
+    await pdf.cleanup?.();
+    await pdf.destroy?.();
     throw new Error("El PDF no contiene texto extraíble. Si es un escaneo de páginas, todavía hace falta OCR antes de incorporarlo a AULIA.");
   }
 
-  const outlineSections = await buildPdfOutlineSections(pdf, pages);
-  const tocSections = outlineSections ? null : await buildPdfTocSections(pages);
-  const sections = outlineSections || tocSections || buildPdfSections(pages);
+  // The book's own index is the primary structural source. The embedded PDF
+  // outline is only a fallback when an index cannot be recovered.
+  const tocSections = await buildPdfTocSections(pages);
+  const outlineSections = tocSections ? null : await buildPdfOutlineSections(pdf, pages);
+  const sections = tocSections || outlineSections || buildPdfSections(pages);
+
+  await pdf.cleanup?.();
+  await pdf.destroy?.();
   const documentId = makeDocumentId(file.name);
   const corpus = buildSectionFragments({
     sections,
