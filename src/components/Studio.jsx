@@ -321,6 +321,8 @@ function buildMaterialStructure(course) {
         level: Number(section.level || 1),
         sourcePageStart: section.sourcePageStart || first.sourcePageStart || null,
         sourcePageEnd: section.sourcePageEnd || first.sourcePageEnd || first.sourcePage || null,
+        printedPageStart: section.printedPageStart || first.printedPageStart || null,
+        printedPageEnd: section.printedPageEnd || first.printedPageEnd || null,
         segmentationSource: section.segmentationSource || "text-structure",
         scope: section.scope || "included",
         priority: section.priority || "normal",
@@ -991,7 +993,7 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
                       <strong>{section.title || "Sección"}</strong>
                       <span>
                         {section.path?.length ? section.path.join(" › ") : "Sin jerarquía detectada"}
-                        {section.sourcePageStart ? " · págs. " + section.sourcePageStart + (section.sourcePageEnd && section.sourcePageEnd !== section.sourcePageStart ? "–" + section.sourcePageEnd : "") : ""}
+                        {section.printedPageStart ? " · libro pp. " + section.printedPageStart + (section.printedPageEnd && section.printedPageEnd !== section.printedPageStart ? "–" + section.printedPageEnd : "") : section.sourcePageStart ? " · PDF pp. " + section.sourcePageStart + (section.sourcePageEnd && section.sourcePageEnd !== section.sourcePageStart ? "–" + section.sourcePageEnd : "") : ""}
                         {section.documentTitle ? " · " + section.documentTitle : ""}
                       </span>
                     </div>
