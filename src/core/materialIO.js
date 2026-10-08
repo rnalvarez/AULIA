@@ -114,6 +114,15 @@ function splitAtNaturalBoundaries(text, maxChars = MAX_UNIT_CHARS) {
   });
 }
 
+function makeSectionId(documentId, section, index) {
+  return slugify([
+    documentId,
+    ...(section?.sectionPath || []),
+    section?.title || "material",
+    Number(index || 0) + 1,
+  ].join("-"));
+}
+
 function buildSectionFragments({
   sections,
   sourceName,
@@ -123,7 +132,7 @@ function buildSectionFragments({
   const corpus = [];
   let index = 0;
 
-  for (const section of sections || []) {
+  for (const [sectionIndex, section] of (sections || []).entries()) {
     const content = normalizeWhitespace(repairHyphenation(section.content));
     if (!content) continue;
 
@@ -138,6 +147,7 @@ function buildSectionFragments({
       index += 1;
       const unitId = base || "unidad-" + index;
       corpus.push({
+        sectionId: makeSectionId(documentId, section, sectionIndex),
         id: unitId + (parts.length > 1 ? "-p" + (partIndex + 1) : ""),
         unitId,
         title: parts.length > 1
@@ -174,12 +184,7 @@ function buildDocumentMeta({
     format,
     pages: pages || null,
     sections: (sections || []).map((section, index) => ({
-      id: slugify([
-        documentId,
-        ...(section.sectionPath || []),
-        section.title || "material",
-        index + 1,
-      ].join("-")),
+      id: makeSectionId(documentId, section, index),
       title: section.title || "Material",
       path: Array.isArray(section.sectionPath) ? section.sectionPath : [],
       level: Number(section.level || 1),
@@ -916,6 +921,7 @@ function normalizeChunk(item, index, sourceName = "") {
     ...(item.sourcePageEnd ? { sourcePageEnd: item.sourcePageEnd } : {}),
     ...(item.sourcePageCount ? { sourcePageCount: item.sourcePageCount } : {}),
     ...(item.documentId ? { documentId: item.documentId } : {}),
+    ...(item.sectionId ? { sectionId: item.sectionId } : {}),
     ...(item.sourceBibliographyId ? { sourceBibliographyId: item.sourceBibliographyId } : {}),
   };
 }
