@@ -20,6 +20,9 @@ function score(question, item) {
     item.summary,
     item.explanation,
     item.content,
+    item.teacherTopic,
+    item.teacherLimit,
+    ...(item.teacherConcepts || []),
     ...(item.aliases || []),
     ...(item.keywords || []),
   ].join(" "));
@@ -39,10 +42,20 @@ function score(question, item) {
   return value;
 }
 
-function rank(items, question) {
+function rank(items, question, optionsIncludeReference = false) {
   return items
-    .map(item => ({ item, score: score(question, item) }))
-    .filter(({ score: value }) => value > 0)
+    .map(item => {
+      let value = score(question, item);
+      if (item.priority === "central") value += 2;
+      if (item.priority === "context") value += 0.25;
+      return { item, score: value };
+    })
+    .filter(({ item, score: value }) => {
+      const scope = item.scope || "included";
+      if (scope === "excluded") return false;
+      if (scope === "reference" && !optionsIncludeReference) return false;
+      return value > 0;
+    })
     .sort((a, b) => b.score - a.score)
     .map(({ item, score: value }) => ({ ...item, _score: value }));
 }
@@ -52,8 +65,9 @@ export function retrieveFromCourse(course, question, options = {}) {
   const conceptLimit = options.conceptLimit ?? (modeId === "socratico" ? 2 : 3);
   const corpusLimit = options.corpusLimit ?? (modeId === "socratico" ? 1 : modeId === "analisis" ? 2 : 2);
 
-  const concepts = rank(course.concepts || [], question).slice(0, conceptLimit);
-  const corpus = rank(course.corpus || [], question).slice(0, corpusLimit);
+  const includeReference = options.includeReference === true;
+  const concepts = rank(course.concepts || [], question, includeReference).slice(0, conceptLimit);
+  const corpus = rank(course.corpus || [], question, includeReference).slice(0, corpusLimit);
 
   const seen = new Set();
   return concepts.concat(corpus).filter(item => {
