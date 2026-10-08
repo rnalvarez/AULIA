@@ -650,9 +650,9 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
         corpus: [...(current.corpus || []), ...collected],
         documents: mergeImportedDocuments(current.documents || [], documents),
         bibliography: mergeImportedBibliography(current.bibliography || [], bibliography),
-      }), `${collected.length} fragmentos técnicos incorporados desde ${files.length} documento${files.length === 1 ? "" : "s"}.` +
+      }), `${collected.length} fragmentos de recuperación incorporados desde ${files.length} documento${files.length === 1 ? "" : "s"}.` +
         (pages ? ` · ${pages} páginas.` : "") +
-        (warnings ? ` · ${warnings} aviso(s) de conversión.` : ""));
+        (warnings ? ` · ${warnings} aviso(s) de relevamiento o conversión.` : ""));
     } catch (err) {
       setStatus(err.message);
     } finally {
@@ -1040,7 +1040,7 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
                   <div><span>Páginas</span><strong>{analysis.pageCount}</strong></div>
                   <div><span>Índice</span><strong>{analysis.tocDetected ? "Detectado" : "No detectado"}</strong></div>
                   <div><span>Marcadores</span><strong>{analysis.outlineDetected ? "Detectados" : "No detectados"}</strong></div>
-                  <div><span>Columnas</span><strong>{analysis.columns?.two ? "Mixto" : "Una"}</strong></div>
+                  <div><span>Columnas</span><strong>{analysis.columns?.two ? (analysis.columns?.one ? "Mixto" : "Dos") : "Una"}</strong></div>
                   <div><span>Secciones</span><strong>{analysis.sectionCount}</strong></div>
                   <div><span>Revisión</span><strong>{analysis.lowConfidenceSections ? analysis.lowConfidenceSections + " requiere(n) atención" : "Sin alertas"}</strong></div>
                 </div>
