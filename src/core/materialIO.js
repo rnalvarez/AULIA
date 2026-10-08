@@ -419,8 +419,8 @@ async function buildPdfTocSections(pageData) {
     const content = normalizeWhitespace(repairHyphenation(lines.join(" ")));
     if (!content) continue;
 
-    const numbered = current.title.match(/^\d+(?:\.\d+){0,4}[.)]?\s+/);
-    const depth = numbered ? Math.min(numbered[0].trim().split(".").length, 6) : 1;
+    const numbered = current.title.match(/^(\d+(?:\.\d+){0,4})[.)]?\s+/);
+    const depth = numbered ? Math.min(numbered[1].split(".").length, 6) : 1;
 
     sections.push({
       title: current.title,
