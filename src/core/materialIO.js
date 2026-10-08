@@ -489,28 +489,23 @@ function headingMatchesTitle(line, title) {
   return overlap >= 0.86;
 }
 
-function findPdfTitlePage(pageData, title, estimatedPage) {
-  const target = Math.max(1, Math.min(pageData.length, Number(estimatedPage || 1)));
+function findPdfTitlePage(pageData, title, estimatedPage, minContentPage = 1) {
+  const minimumIndex = Math.max(1, Number(minContentPage || 1));
+  const target = Math.max(minimumIndex, Math.min(pageData.length, Number(estimatedPage || minimumIndex)));
   const windows = [
-    [target - 16, target + 16],
-    [0, pageData.length - 1],
+    [Math.max(minimumIndex - 1, target - 16), Math.min(pageData.length - 1, target + 16)],
+    [minimumIndex - 1, pageData.length - 1],
   ];
 
   for (const [start, end] of windows) {
-    for (let pageIndex = Math.max(0, start); pageIndex <= Math.min(pageData.length - 1, end); pageIndex += 1) {
-      if (!pageData[pageIndex].lines.some((line) => headingMatchesTitle(line, title))) continue;
-
-      // Prefer a heading-like occurrence, but accept a normal line if the title
-      // is otherwise exact. This helps PDFs with weak typography metadata.
-      const heading = pageData[pageIndex].lines.some(
-        (line) => headingInfo(line) && headingMatchesTitle(line, title)
-      );
-      if (heading) return pageIndex + 1;
+    for (let pageIndex = start; pageIndex <= end; pageIndex += 1) {
+      if (!pageData[pageIndex].lines.some((line) => headingInfo(line) && headingMatchesTitle(line, title))) continue;
+      return pageIndex + 1;
     }
   }
 
   for (const [start, end] of windows) {
-    for (let pageIndex = Math.max(0, start); pageIndex <= Math.min(pageData.length - 1, end); pageIndex += 1) {
+    for (let pageIndex = start; pageIndex <= end; pageIndex += 1) {
       if (pageData[pageIndex].lines.some((line) => headingMatchesTitle(line, title))) {
         return pageIndex + 1;
       }
@@ -606,7 +601,8 @@ async function buildPdfTocSections(pageData) {
     physicalPage: findPdfTitlePage(
       pageData,
       entry.title,
-      Math.max(1, Math.min(pageData.length, entry.printedPage))
+      Math.max(window.end + 1, Math.min(pageData.length, entry.printedPage)),
+      window.end + 1
     ),
   }));
 
