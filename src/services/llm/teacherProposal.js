@@ -37,13 +37,8 @@ const PROPOSAL_SCHEMA = {
         additionalProperties: false,
       },
     },
-    concepts: {
-      type: "array",
-      maxItems: 0,
-      items: { type: "string" },
-    },
   },
-  required: ["pedagogicalSummary", "pedagogicalUnits", "concepts"],
+  required: ["pedagogicalSummary", "pedagogicalUnits"],
   additionalProperties: false,
 };
 
@@ -314,12 +309,13 @@ async function request(endpoint, apiKey, model, prompt, responseFormat, signal) 
   }
 
   return {
-    proposal: parsed || {
-      pedagogicalSummary: "",
-      pedagogicalUnits: [],
-      concepts: [],
-      examples: [],
-      activities: [],
+    proposal: {
+      ...(parsed || {}),
+      pedagogicalSummary: parsed?.pedagogicalSummary || "",
+      pedagogicalUnits: Array.isArray(parsed?.pedagogicalUnits) ? parsed.pedagogicalUnits : [],
+      concepts: Array.isArray(parsed?.concepts) ? parsed.concepts : [],
+      examples: Array.isArray(parsed?.examples) ? parsed.examples : [],
+      activities: Array.isArray(parsed?.activities) ? parsed.activities : [],
     },
     model: data?.model || model,
     usage: data?.usage || null,
@@ -379,7 +375,7 @@ export async function requestTeacherProposal({
       );
 
       const proposal = result.proposal || {};
-      if (!Array.isArray(proposal.pedagogicalUnits) || !Array.isArray(proposal.concepts)) {
+      if (!Array.isArray(proposal.pedagogicalUnits)) {
         throw new Error("La propuesta de IA no tiene la estructura esperada.");
       }
 
