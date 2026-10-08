@@ -804,12 +804,18 @@ async function buildTocBoundaries(pdf, pages, headingCandidates) {
     };
   });
 
-  const validMappings = remapped.filter((entry) => entry.confidence >= 0.65);
-  if (validMappings.length < Math.max(3, Math.ceil(remapped.length * 0.45))) return null;
+  // Never turn an unconfirmed TOC page estimate into a structural boundary.
+  // A title must be located in the body with a real heading candidate. Otherwise
+  // we fall back to another structural source instead of inventing a section.
+  const confirmed = remapped.filter(
+    (entry) => entry.page >= bodyMinPage && Number.isFinite(entry.physicalPage) && entry.confidence >= 0.72
+  );
+
+  if (confirmed.length < Math.max(3, Math.ceil(remapped.length * 0.55))) return null;
 
   const ordered = [];
   for (const entry of remapped) {
-    if (entry.page < bodyMinPage || entry.confidence < 0.55) continue;
+    if (!Number.isFinite(entry.physicalPage) || entry.confidence < 0.72) continue;
     const lineIndex = entry.lineIndex >= 0 ? entry.lineIndex : 0;
     if (!ordered.length || entry.page > ordered[ordered.length - 1].page || (entry.page === ordered[ordered.length - 1].page && lineIndex >= ordered[ordered.length - 1].lineIndex)) {
       ordered.push({ ...entry, lineIndex });
@@ -910,7 +916,10 @@ export async function analyzePdfStructure({ pdf, pages, structTreePages = 0 }) {
 
   const repeatedFurniture = findRepeatedFurniture(pages);
   const headingCandidates = detectHeadingCandidates(pages, repeatedFurniture, 1);
-  const bodyPage = Math.max(1, Math.min(totalPages, Math.round(totalPages * 0.08)));
+  // A conservative fallback must never silently discard the first part of
+  // the uploaded document. Front matter can be identified separately later;
+  // until then, keep page 1 as the source of truth.
+  const bodyPage = 1;
 
   const tocResult = await buildTocBoundaries(pdf, pages, headingCandidates);
   const outlineResult = tocResult ? null : await buildOutlineBoundaries(pdf, pages, headingCandidates);
@@ -967,6 +976,9 @@ export async function analyzePdfStructure({ pdf, pages, structTreePages = 0 }) {
 
   if (!tocDetected && !outlineDetected && sections.length > 1) {
     warnings.push("La estructura se reconstruyó mediante evidencias tipográficas y geométricas; no se encontró un índice o marcador PDF suficientemente fiable.");
+  }
+  if (tocResult && sections.some((section) => Number(section.confidence || 0) < 0.72)) {
+    warnings.push("Algunas entradas del índice no pudieron contrastarse con un encabezado real del cuerpo y fueron descartadas como límites estructurales.");
   }
   if (twoColumnPages > 0 && oneColumnPages > 0) {
     warnings.push("El documento combina páginas de una y dos columnas; AULIA adaptó el orden de lectura por página.");
