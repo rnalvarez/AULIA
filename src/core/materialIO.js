@@ -169,6 +169,11 @@ function buildSectionFragments({
         confidence: Number(section.confidence || 0.5),
         structureEvidence: Array.isArray(section.evidence) ? section.evidence : [],
         ...(section.childrenCount ? { childrenCount: section.childrenCount } : {}),
+        scope: section.scope || "included",
+        priority: section.priority || "normal",
+        teacherTopic: section.teacherTopic || "",
+        teacherConcepts: Array.isArray(section.teacherConcepts) ? section.teacherConcepts : [],
+        teacherLimit: section.teacherLimit || "",
         documentId,
         ...(sourcePageCount ? { sourcePageCount } : {}),
       });
@@ -603,6 +608,11 @@ function normalizeChunk(item, index, sourceName = "") {
     ...(Number.isFinite(Number(item.confidence)) ? { confidence: Number(item.confidence) } : {}),
     ...(Array.isArray(item.structureEvidence) ? { structureEvidence: item.structureEvidence } : {}),
     ...(item.childrenCount ? { childrenCount: Number(item.childrenCount) } : {}),
+    scope: item.scope || "included",
+    priority: item.priority || "normal",
+    teacherTopic: item.teacherTopic || "",
+    teacherConcepts: Array.isArray(item.teacherConcepts) ? item.teacherConcepts : [],
+    teacherLimit: item.teacherLimit || "",
     ...(item.sourceBibliographyId ? { sourceBibliographyId: item.sourceBibliographyId } : {}),
   };
 }
