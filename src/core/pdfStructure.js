@@ -614,7 +614,11 @@ function buildSectionsFromBoundaries(pages, boundaries, repeatedFurniture, sourc
     }
 
     const endPage = boundary
-      ? Math.max(startPage, Math.min(pages.length, boundary.page - (boundary.lineIndex > 0 ? 0 : 1)))
+      ? (
+          boundary.page === startPage
+            ? startPage
+            : Math.max(startPage, Math.min(pages.length, boundary.page - 1))
+        )
       : pages.length;
 
     const contentLines = [];
