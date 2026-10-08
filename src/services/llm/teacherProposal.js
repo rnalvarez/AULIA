@@ -15,23 +15,26 @@ const DEFAULT_MODELS = [
 // structural dossier plus short excerpts from representative sections.
 const MAX_CONTEXT_CHARS = 7000;
 const MAX_OUTPUT_TOKENS = 1400;
+const MAX_PEDAGOGICAL_UNITS = 8;
 const MAX_REPRESENTATIVE_UNITS = 20;
 
 const PROPOSAL_SCHEMA = {
   type: "object",
   properties: {
-    pedagogicalSummary: { type: "string" },
+    pedagogicalSummary: { type: "string", maxLength: 240 },
     pedagogicalUnits: {
       type: "array",
+      minItems: 3,
+      maxItems: MAX_PEDAGOGICAL_UNITS,
       items: {
         type: "object",
         properties: {
-          title: { type: "string" },
-          learningGoal: { type: "string" },
-          phase: { type: "string" },
-          sequence: { type: "integer" },
-          prerequisiteTitles: { type: "array", items: { type: "string" } },
-          sourceIds: { type: "array", items: { type: "string" } },
+          title: { type: "string", maxLength: 70 },
+          learningGoal: { type: "string", maxLength: 180 },
+          phase: { type: "string", maxLength: 40 },
+          sequence: { type: "integer", minimum: 1, maximum: MAX_PEDAGOGICAL_UNITS },
+          prerequisiteTitles: { type: "array", maxItems: 3, items: { type: "string", maxLength: 70 } },
+          sourceIds: { type: "array", minItems: 1, maxItems: 4, items: { type: "string", maxLength: 80 } },
         },
         required: ["title", "learningGoal", "phase", "sequence", "prerequisiteTitles", "sourceIds"],
         additionalProperties: false,
@@ -213,9 +216,9 @@ function buildPrompt({ course, bibliography, materialText, sampled }) {
       ? "La biblioteca completa está disponible en AULIA, pero para esta consulta se usa una muestra representativa de unidades para respetar los límites de una cuenta gratuita. No infieras contenido que no aparezca en los extractos."
       : "El conjunto de unidades relevantes entra en esta consulta.",
     "NO resumas cada página y NO conviertas cada fragmento técnico en una unidad pedagógica. Las secciones entregadas ya representan la estructura documental detectada por AULIA.",
-    "Construí solamente una propuesta de ORGANIZACIÓN PEDAGÓGICA: entre 6 y 10 unidades conceptuales coherentes, cuando la evidencia lo permita. Agrupá secciones que pertenezcan naturalmente a un mismo núcleo, problema o pregunta.",
-    "Cada unidad debe tener un título conceptual breve, un learningGoal de una sola frase y una phase breve. No uses 'página', 'parte' ni nombres mecánicos de fragmentos.",
-    "Construí también el orden curricular: sequence único desde 1. prerequisiteTitles solo puede usar títulos EXACTOS de otras unidades de esta misma respuesta y debe representar dependencias reales; no inventes ciclos.",
+    "Construí solamente una propuesta de ORGANIZACIÓN PEDAGÓGICA: entre 3 y 8 unidades conceptuales coherentes, cuando la evidencia lo permita. Agrupá secciones que pertenezcan naturalmente a un mismo núcleo, problema o pregunta.",
+    "Cada unidad debe tener un título conceptual breve, un learningGoal de una sola frase y una phase de pocas palabras. No uses 'página', 'parte' ni nombres mecánicos de fragmentos.",
+    "Construí también el orden curricular: sequence único desde 1. prerequisiteTitles solo puede usar títulos EXACTOS de otras unidades de esta misma respuesta; como máximo 3 y solo cuando sean dependencias reales.",
     "Los sourceIds deben copiar EXACTAMENTE IDs que aparezcan en [ID:...].",
     "En esta primera consulta NO generes conceptos, ejemplos ni actividades. AULIA los trabajará en pasos separados para reducir consumo de la cuenta gratuita de Groq.",
     "Trabajá exclusivamente con la evidencia suministrada. Si no alcanza para una unidad, proponé menos. La precisión es más importante que la cantidad.",
@@ -250,7 +253,7 @@ function analysisCacheKey(course, corpus, bibliography) {
     item?.author,
     item?.year,
   ]);
-  return "aulia:teacher-analysis:v2:" + String(course?.id || "course") + ":" +
+  return "aulia:teacher-analysis:v3:" + String(course?.id || "course") + ":" +
     simpleHash(JSON.stringify({ materialSignature, bibliographySignature }));
 }
 
