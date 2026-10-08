@@ -407,6 +407,7 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
     setStudioKeyInput("");
     setShowStudioKey(false);
     setLegalAccepted(false);
+    setAnalysisReport(null);
   }, [course.id]);
 
   function mutate(updater, message = "Cambios pendientes de guardar.") {
@@ -522,6 +523,7 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
     const files = Array.from(e.target.files || []);
     e.target.value = "";
     if (!files.length) return;
+    setAnalysisReport(null);
     setBusy(true);
     try {
       const baseIds = [...(draft.corpus || [])];
