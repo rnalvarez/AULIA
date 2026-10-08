@@ -4,14 +4,18 @@ export default function StudioLogin({ onReady, error: externalError = "" }) {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
+  const [submitting, setSubmitting] = useState(false);
 
   async function submit(event) {
     event.preventDefault();
+    if (submitting) return;
     setError("");
+    setSubmitting(true);
     try {
       await onReady(email.trim(), password);
     } catch (err) {
       setError(err.message || "No se pudo iniciar sesión.");
+      setSubmitting(false);
     }
   }
 
@@ -56,8 +60,8 @@ export default function StudioLogin({ onReady, error: externalError = "" }) {
               <div className="studio-access-error">⚠ {error || externalError}</div>
             )}
 
-            <button className="access-primary" type="submit" disabled={!email.trim() || !password}>
-              Entrar →
+            <button className="access-primary" type="submit" disabled={!email.trim() || !password || submitting}>
+              {submitting ? "Cargando tus cátedras…" : "Entrar →"}
             </button>
           </div>
         </form>
