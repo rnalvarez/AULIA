@@ -16,6 +16,17 @@ const STEPS = [
   ["commissions", "05", "Comisiones"],
 ];
 
+const MATERIAL_SCOPE_OPTIONS = [
+  ["included", "Incluido"],
+  ["reference", "Referencial"],
+  ["excluded", "Excluir"],
+];
+const MATERIAL_PRIORITY_OPTIONS = [
+  ["central", "Central"],
+  ["normal", "Complementario"],
+  ["context", "Contexto"],
+];
+
 const MODES = {
   retrieve: ["Consulta", "comprender", "Preguntá por un concepto..."],
   "scene-analysis": ["Análisis de escena", "aplicar", "Describí la escena..."],
@@ -311,6 +322,11 @@ function buildMaterialStructure(course) {
         sourcePageStart: section.sourcePageStart || first.sourcePageStart || null,
         sourcePageEnd: section.sourcePageEnd || first.sourcePageEnd || first.sourcePage || null,
         segmentationSource: section.segmentationSource || "text-structure",
+        scope: section.scope || "included",
+        priority: section.priority || "normal",
+        teacherTopic: section.teacherTopic || "",
+        teacherConcepts: Array.isArray(section.teacherConcepts) ? section.teacherConcepts : [],
+        teacherLimit: section.teacherLimit || "",
         fragmentCount: ordered.length,
         preview: preview.slice(0, 180),
       });
@@ -519,6 +535,31 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
       setValidation({ valid: false, errors: [err.message] }); setStatus("No se pudo importar el course pack.");
     }
   }
+  function updateMaterialSection(sectionId, patch) {
+    mutate((current) => {
+      const documents = (current.documents || []).map((document) => ({
+        ...document,
+        sections: (document.sections || []).map((section) =>
+          section.id === sectionId ? { ...section, ...patch } : section
+        ),
+      }));
+
+      const corpus = (current.corpus || []).map((chunk) =>
+        chunk.sectionId === sectionId ? { ...chunk, ...patch } : chunk
+      );
+
+      return { ...current, documents, corpus };
+    });
+  }
+
+  function setMaterialScope(sectionId, scope) {
+    updateMaterialSection(sectionId, { scope });
+  }
+
+  function setMaterialPriority(sectionId, priority) {
+    updateMaterialSection(sectionId, { priority });
+  }
+
   async function importMaterial(e) {
     const files = Array.from(e.target.files || []);
     e.target.value = "";
@@ -904,21 +945,105 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
             <Field label="Título" value={x.title} onChange={(v) => edit("bibliography", i, { title: v })}/><Field label="Autor" value={x.author} onChange={(v) => edit("bibliography", i, { author: v })}/><Field label="Editorial" value={x.publisher} onChange={(v) => edit("bibliography", i, { publisher: v })}/><Field label="Año" value={x.year} onChange={(v) => edit("bibliography", i, { year: v })}/><Field label="Rol" value={x.role} onChange={(v) => edit("bibliography", i, { role: v })}/>
           </div></Row>)}</div> : <Empty title="Todavía no cargaste fuentes." text="Podés agregarlas manualmente o incorporarlas desde un JSON." action={<button className="ghost" type="button" onClick={addBibliography}>Agregar primera fuente</button>}/>}
         </Panel>
-        <Panel eyebrow="MATERIAL" title="Material que AULIA podrá recuperar" description="AULIA primero intenta reconocer la estructura del documento. Las secciones visibles no son páginas: son unidades estructurales. Cuando una sección es demasiado larga para recuperación, AULIA la divide internamente sin convertir esos cortes en nuevas unidades pedagógicas." actions={<label className="primary studio-wf-file-btn">{busy ? "Procesando…" : "Cargar material"}<input type="file" accept=".txt,.md,.markdown,.json,.pdf,.docx,text/plain,text/markdown,application/json,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document" multiple onChange={importMaterial} disabled={busy}/></label>}>
-          {materialSections.length ? <><div className="studio-wf-stats"><div><strong>{materialSections.length}</strong><span>secciones estructurales</span></div><div><strong>{draft.documents?.length || new Set(draft.corpus.map((x) => x.source).filter(Boolean)).size}</strong><span>documentos</span></div><div><strong>{draft.corpus?.length || 0}</strong><span>fragmentos técnicos de recuperación</span></div></div>
-          <div className="studio-wf-structure-note">La lista muestra la estructura que AULIA usará como base. Los fragmentos técnicos quedan asociados a su sección y no se presentan como capítulos o páginas independientes.</div>
-          <div className="studio-wf-corpus-list">{materialSections.slice(0, 60).map((section, i) => <article key={section.id || i}>
-            <div>
-              <strong>{section.title || "Sección"}</strong>
-              <span>
-                {section.path?.length ? section.path.join(" › ") : "Sin jerarquía detectada"}
-                {section.sourcePageStart ? " · págs. " + section.sourcePageStart + (section.sourcePageEnd && section.sourcePageEnd !== section.sourcePageStart ? "–" + section.sourcePageEnd : "") : ""}
-                {section.documentTitle ? " · " + section.documentTitle : ""}
-              </span>
+        <Panel
+          eyebrow="MATERIAL"
+          title="Bibliografía y corpus de la cátedra"
+          description="Al cargar un libro, AULIA conserva toda la estructura detectada y la deja incluida por defecto. Después podés marcar la prioridad de cada sección y, opcionalmente, dejarla como referencial o excluirla. Nada se excluye automáticamente."
+          actions={<label className="primary studio-wf-file-btn">{busy ? "Procesando…" : "Cargar material"}<input type="file" accept=".txt,.md,.markdown,.json,.pdf,.docx,text/plain,text/markdown,application/json,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document" multiple onChange={importMaterial} disabled={busy}/></label>}
+        >
+          {materialSections.length ? <>
+            <div className="studio-wf-stats">
+              <div><strong>{materialSections.length}</strong><span>secciones estructurales</span></div>
+              <div><strong>{draft.documents?.length || new Set(draft.corpus.map((x) => x.source).filter(Boolean)).size}</strong><span>documentos</span></div>
+              <div><strong>{draft.corpus?.length || 0}</strong><span>fragmentos de recuperación</span></div>
             </div>
-            <p>{section.preview || "Sin vista previa disponible."}{section.preview?.length >= 180 ? "…" : ""}</p>
-            <small>{section.fragmentCount || 1} fragmento(s) de recuperación · {section.segmentationSource === "pdf-outline" ? "estructura interna del PDF" : "estructura detectada localmente"}</small>
-          </article>)}{materialSections.length > 60 && <small>Mostrando 60 de {materialSections.length} secciones estructurales.</small>}</div></> : <Empty title="El corpus está vacío." text="Empezá cargando un PDF, DOCX, TXT, Markdown o JSON. AULIA detectará la estructura antes de proponer la organización pedagógica."/>}
+
+            <div className="studio-wf-material-legend">
+              <span><b>Incluido</b> · la IA del curso puede usarlo.</span>
+              <span><b>Referencial</b> · queda disponible en Studio pero no se usa por defecto para responder a estudiantes.</span>
+              <span><b>Excluir</b> · permanece en el libro cargado, pero queda fuera del corpus activo.</span>
+            </div>
+
+            <div className="studio-wf-structure-note">
+              El estado inicial de todo material es <strong>Incluido</strong>. La prioridad organiza el foco docente sin eliminar contenido.
+            </div>
+
+            <div className="studio-wf-corpus-list">
+              {materialSections.map((section, i) => (
+                <article key={section.id || i} className={"studio-wf-material-section scope-" + (section.scope || "included")}>
+                  <div className="studio-wf-material-section-head">
+                    <div>
+                      <strong>{section.title || "Sección"}</strong>
+                      <span>
+                        {section.path?.length ? section.path.join(" › ") : "Sin jerarquía detectada"}
+                        {section.sourcePageStart ? " · págs. " + section.sourcePageStart + (section.sourcePageEnd && section.sourcePageEnd !== section.sourcePageStart ? "–" + section.sourcePageEnd : "") : ""}
+                        {section.documentTitle ? " · " + section.documentTitle : ""}
+                      </span>
+                    </div>
+                    <div className="studio-wf-material-scope">
+                      {MATERIAL_SCOPE_OPTIONS.map(([value, label]) => (
+                        <button
+                          key={value}
+                          className={"studio-wf-scope-btn " + ((section.scope || "included") === value ? "active" : "")}
+                          type="button"
+                          onClick={() => setMaterialScope(section.id, value)}
+                          disabled={!canEdit || busy}
+                        >
+                          {label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  <p>{section.preview || "Sin vista previa disponible."}{section.preview?.length >= 180 ? "…" : ""}</p>
+
+                  <div className="studio-wf-material-meta">
+                    <small>{section.fragmentCount || 1} fragmento(s) de recuperación · {section.segmentationSource === "pdf-outline" ? "estructura interna del PDF" : "estructura detectada localmente"}</small>
+                    <div className="studio-wf-material-priority">
+                      <span>Prioridad</span>
+                      {MATERIAL_PRIORITY_OPTIONS.map(([value, label]) => (
+                        <button
+                          key={value}
+                          className={"studio-wf-priority-btn " + ((section.priority || "normal") === value ? "active" : "")}
+                          type="button"
+                          onClick={() => setMaterialPriority(section.id, value)}
+                          disabled={!canEdit || busy}
+                        >
+                          {label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  <details className="studio-wf-material-focus">
+                    <summary>Definir foco docente</summary>
+                    <div className="studio-wf-grid">
+                      <Field
+                        label="Tema"
+                        value={section.teacherTopic}
+                        onChange={(v) => updateMaterialSection(section.id, { teacherTopic: v })}
+                        placeholder="Ej. Escucha audiovisual"
+                      />
+                      <Field
+                        label="Conceptos"
+                        value={(section.teacherConcepts || []).join(", ")}
+                        onChange={(v) => updateMaterialSection(section.id, { teacherConcepts: list(v) })}
+                        placeholder="Ej. escucha, imagen, sincronismo"
+                      />
+                      <Field
+                        label="Límite / indicación docente"
+                        value={section.teacherLimit}
+                        onChange={(v) => updateMaterialSection(section.id, { teacherLimit: v })}
+                        placeholder="Qué abordar, qué dejar en segundo plano o qué evitar"
+                        multiline
+                      />
+                    </div>
+                  </details>
+                </article>
+              ))}
+              {materialSections.length > 60 && <small>Mostrando 60 de {materialSections.length} secciones estructurales.</small>}
+            </div>
+          </> : <Empty title="El corpus está vacío." text="Empezá cargando un PDF, DOCX, TXT, Markdown o JSON. AULIA conservará toda la estructura detectada y la dejará incluida por defecto."/>}
         </Panel>
         <div className="studio-wf-next"><button className="primary" type="button" onClick={() => setStep("proposal")}>Ir a la propuesta pedagógica →</button></div>
       </>}
