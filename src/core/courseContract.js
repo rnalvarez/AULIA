@@ -42,6 +42,32 @@ export function validateCourse(course) {
     if (!chunk?.content) errors.push(`Corpus[${index}] no tiene content`);
   }
 
+  const validScopes = new Set(["included", "reference", "excluded"]);
+  const validPriorities = new Set(["central", "normal", "context"]);
+
+  for (const document of course?.documents || []) {
+    for (const section of document?.sections || []) {
+      if (section?.scope && !validScopes.has(section.scope)) {
+        errors.push(`La sección "${section?.title || "sin título"}" tiene scope inválido`);
+      }
+      if (section?.priority && !validPriorities.has(section.priority)) {
+        errors.push(`La sección "${section?.title || "sin título"}" tiene priority inválida`);
+      }
+      if (section?.teacherConcepts && !Array.isArray(section.teacherConcepts)) {
+        errors.push(`La sección "${section?.title || "sin título"}" tiene teacherConcepts inválidos`);
+      }
+    }
+  }
+
+  for (const [index, chunk] of (course?.corpus || []).entries()) {
+    if (chunk?.scope && !validScopes.has(chunk.scope)) {
+      errors.push(`Corpus[${index}] tiene scope inválido`);
+    }
+    if (chunk?.priority && !validPriorities.has(chunk.priority)) {
+      errors.push(`Corpus[${index}] tiene priority inválida`);
+    }
+  }
+
   for (const unit of course?.pedagogicalUnits || []) {
     if (!unit?.title) errors.push(`Una unidad pedagógica no tiene title`);
     if (unit?.reviewStatus && !["pending", "approved"].includes(unit.reviewStatus)) {
