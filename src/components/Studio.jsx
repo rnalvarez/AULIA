@@ -11,7 +11,7 @@ const VERSION = "0.7";
 const STEPS = [
   ["overview", "01", "Cátedra"],
   ["material", "02", "Material"],
-  ["proposal", "03", "Propuesta"],
+  ["proposal", "03", "Organización"],
   ["interaction", "04", "Interacción"],
   ["commissions", "05", "Comisiones"],
 ];
@@ -1045,191 +1045,109 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
             </div>
           </> : <Empty title="El corpus está vacío." text="Empezá cargando un PDF, DOCX, TXT, Markdown o JSON. AULIA conservará toda la estructura detectada y la dejará incluida por defecto."/>}
         </Panel>
-        <div className="studio-wf-next"><button className="primary" type="button" onClick={() => setStep("proposal")}>Ir a la propuesta pedagógica →</button></div>
+        <div className="studio-wf-next"><button className="primary" type="button" onClick={() => setStep("proposal")}>Definir organización pedagógica →</button></div>
       </>}
 
       {step === "proposal" && <>
-        <div className="studio-wf-hero"><div className="eyebrow">PASO 03 · PROPUESTA</div><h1>Ahora AULIA propone cómo organizar ese material.</h1><p>AULIA analiza las unidades detectadas y primero propone una organización pedagógica. Después genera conceptos derivados para sostener la recuperación del asistente. La revisión usa una sola consulta compacta para respetar las limitaciones de las cuentas gratuitas de Groq. Nada se publica automáticamente: todo queda como propuesta editable para la cátedra.</p></div>
-        <Panel eyebrow="ORGANIZACIÓN PEDAGÓGICA" title="Análisis asistido por IA" description="La IA no segmenta el libro página por página. AULIA primero construye localmente una estructura documental y luego envía a Groq solo un dossier compacto con títulos, jerarquías y extractos representativos. El libro completo permanece en el navegador." actions={<>
-          <button className="primary" type="button" onClick={analyzeWithAI} disabled={!canEdit || !draft.corpus?.length || busy}>{busy ? "Analizando organización…" : "Analizar organización con IA · 1 consulta"}</button>
-          <button className="ghost" type="button" onClick={() => setShowStudioKey((value) => !value)} disabled={!canEdit}>{studioApiKey ? "Cambiar clave IA" : "Configurar IA docente"}</button>
-        </>}>
-          {(showStudioKey || !studioApiKey) && <div className="studio-wf-ai-setup">
-            <div><strong>IA docente</strong><span>Usá una API key propia de Groq. Se mantiene en la sesión de este navegador y nunca entra al course pack.</span></div>
-            <div className="studio-wf-ai-key-row">
-              <input type="password" value={studioKeyInput} placeholder="gsk_…" autoComplete="off" onChange={(e) => setStudioKeyInput(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") saveTeacherKey(); }}/>
-              <button className="ghost" type="button" onClick={saveTeacherKey} disabled={!studioKeyInput.trim()}>Guardar clave</button>
-              {studioApiKey && <button className="ghost" type="button" onClick={forgetTeacherKey}>Quitar</button>}
+        <div className="studio-wf-hero">
+          <div className="eyebrow">PASO 03 · ORGANIZACIÓN</div>
+          <h1>Primero decidís qué querés enseñar con esta bibliografía.</h1>
+          <p>AULIA no arma una cátedra automáticamente a partir del libro. Usa tus decisiones para delimitar el corpus, definir prioridades y preparar después la recuperación para las consultas de los estudiantes.</p>
+        </div>
+
+        <Panel
+          eyebrow="FOCO DOCENTE"
+          title="Resumen de la selección"
+          description="Todo lo cargado permanece disponible. El estado define cómo podrá utilizarse después: Incluido es el valor inicial; Referencial queda fuera de la recuperación normal; Excluir deja el material fuera del corpus activo."
+          actions={<button className="ghost" type="button" onClick={() => setStep("material")}>← Volver a editar material</button>}
+        >
+          <div className="studio-wf-review-grid">
+            <div><span>Incluido</span><strong>{materialSections.filter((x) => (x.scope || "included") === "included").length}</strong></div>
+            <div><span>Referencial</span><strong>{materialSections.filter((x) => x.scope === "reference").length}</strong></div>
+            <div><span>Excluido</span><strong>{materialSections.filter((x) => x.scope === "excluded").length}</strong></div>
+            <div><span>Prioridad central</span><strong>{materialSections.filter((x) => x.priority === "central" && x.scope !== "excluded").length}</strong></div>
+          </div>
+
+          <div className="studio-wf-focus-summary">
+            <div>
+              <strong>Temas marcados</strong>
+              <span>{Array.from(new Set(materialSections.map((x) => String(x.teacherTopic || "").trim()).filter(Boolean))).length}</span>
             </div>
-          </div>}
-          {studioApiKey && !showStudioKey && <div className="studio-wf-ai-ready"><span>● IA docente lista</span><small>La clave está solo en esta sesión.</small></div>}
-
-          {analysisReport && (
-            <div className={"studio-wf-ai-report " + (analysisReport.ok ? "ok" : "error")}>
-              {analysisReport.ok ? (
-                <>
-                  <strong>✓ Análisis incorporado al borrador</strong>
-                  <span>
-                    {analysisReport.units} unidades pedagógicas · {analysisReport.concepts} conceptos
-                    {analysisReport.usedFragments ? " · " + analysisReport.usedFragments + "/" + analysisReport.totalFragments + " secciones analizadas" : ""}
-                    {analysisReport.requestCount ? " · " + analysisReport.requestCount + " consulta a Groq" : ""}
-                    {analysisReport.cached ? " · reutilizado desde la sesión" : ""}
-                  </span>
-                  <small>{analysisReport.sampled ? "Como el material supera el tamaño práctico de una consulta gratuita, se usó una muestra representativa. La estructura completa sigue disponible localmente." : "La IA recibió todas las secciones estructurales disponibles para esta revisión."}</small>
-                </>
-              ) : (
-                <>
-                  <strong>⚠ No se pudo completar el análisis</strong>
-                  <span>{analysisReport.message}</span>
-                </>
-              )}
+            <div>
+              <strong>Conceptos marcados</strong>
+              <span>{Array.from(new Set(materialSections.flatMap((x) => x.teacherConcepts || []).map((x) => String(x).trim()).filter(Boolean))).length}</span>
             </div>
-          )}
-
-          <details className="studio-wf-details">
-            <summary>Alternativas sin IA</summary>
-            <div className="studio-wf-tool-row">
-              <button className="ghost" type="button" onClick={proposeConceptsLocal} disabled={!canEdit || !draft.corpus?.length || busy}>Propuesta rápida por títulos y capítulos</button>
-              <button className="ghost" type="button" onClick={() => mutate((c) => ({...c, concepts:[...(c.concepts || []), {id:uniqueId("concepto",c.concepts), title:"Nuevo concepto", aliases:[], keywords:[], summary:"", explanation:""}]}))}>Agregar concepto manualmente</button>
+            <div>
+              <strong>Indicaciones / límites</strong>
+              <span>{materialSections.filter((x) => String(x.teacherLimit || "").trim()).length}</span>
             </div>
-          </details>
-
-          <Panel
-            eyebrow="MAPA CURRICULAR"
-            title="Secuencia de enseñanza sugerida"
-            description="AULIA ordena las unidades según una progresión conceptual y señala posibles prerrequisitos. Podés cambiar el orden y corregir las dependencias sin modificar el material original."
-            actions={draft.curriculumMap?.sequence?.length ? <>
-              <button className="primary" type="button" onClick={approveCurriculumMap} disabled={!canEdit || busy || !curriculumPending}>✓ Aprobar mapa</button>
-              <button className="ghost" type="button" onClick={buildLocalCurriculumMap} disabled={!canEdit || busy || !draft.pedagogicalUnits?.length}>Reordenar desde el material</button>
-            </> : (draft.pedagogicalUnits?.length ? <button className="primary" type="button" onClick={buildLocalCurriculumMap} disabled={!canEdit || busy}>Generar mapa inicial</button> : null)}
-          >
-            {curriculumUnits.length ? (
-              <div className="studio-wf-stack">
-                {curriculumUnits.map((unit, index) => {
-                  const prerequisiteTitles = (unit.prerequisiteUnitIds || [])
-                    .map((id) => draft.pedagogicalUnits?.find((candidate) => candidate.id === id)?.title)
-                    .filter(Boolean);
-                  return (
-                    <article className="studio-wf-concept" key={unit.id || index}>
-                      <div className="studio-wf-concept-head">
-                        <div>
-                          <strong>{index + 1}. {unit.title || "Unidad sin título"}</strong>
-                          <span>{unit.phase || "Etapa curricular"}{unit.reviewStatus === "approved" ? " · Unidad aprobada" : " · Unidad pendiente"}</span>
-                        </div>
-                        <div className="studio-wf-panel-actions">
-                          <button className="ghost" type="button" onClick={() => moveCurriculumUnit(index, -1)} disabled={!canEdit || busy || index === 0}>↑</button>
-                          <button className="ghost" type="button" onClick={() => moveCurriculumUnit(index, 1)} disabled={!canEdit || busy || index === curriculumUnits.length - 1}>↓</button>
-                        </div>
-                      </div>
-                      {unit.learningGoal && <p>{unit.learningGoal}</p>}
-                      <Field
-                        label="Requiere antes"
-                        value={prerequisiteTitles.join(", ")}
-                        onChange={(value) => setCurriculumPrerequisites(unit.id, value)}
-                        placeholder="Ej. Conceptos iniciales, percepción y escucha"
-                        hint="Escribí títulos de otras unidades separadas por coma. AULIA las vincula por unidad, no por texto libre."
-                      />
-                    </article>
-                  );
-                })}
-              </div>
-            ) : (
-              <Empty
-                title="Todavía no hay un mapa curricular."
-                text="Revisá el material con IA para que AULIA genere una secuencia. También podés construir un orden inicial con las unidades existentes."
-                action={<button className="ghost" type="button" onClick={buildLocalCurriculumMap} disabled={!canEdit || busy || !draft.pedagogicalUnits?.length}>Generar orden inicial</button>}
-              />
-            )}
-          </Panel>
-
-          <Panel
-            eyebrow="ORGANIZACIÓN PEDAGÓGICA"
-            title="Mapa sugerido por AULIA"
-            description="Estas unidades son la propuesta principal. Revisá el sentido de cada bloque y aprobalo, editá el nombre/objetivo o descartalo. Descartar una unidad no elimina el material original."
-            actions={pending > 0 ? <button className="primary" type="button" onClick={approveAllPedagogicalUnits} disabled={!canEdit || busy}>✓ Aprobar todas ({pending})</button> : null}
-          >
-            {draft.pedagogicalUnits?.length ? (
-              <div className="studio-wf-stack">
-                {draft.pedagogicalUnits.map((unit, i) => {
-                  const unitConcepts = (unit.conceptIds || [])
-                    .map((id) => draft.concepts?.find((concept) => concept.id === id)?.title)
-                    .filter(Boolean);
-                  const approved = unit.reviewStatus === "approved";
-                  return (
-                    <article className="studio-wf-concept" key={unit.id || i}>
-                      <div className="studio-wf-concept-head">
-                        <div>
-                          <strong>{unit.title || "Unidad sin título"}</strong>
-                          <span>
-                            {approved ? "✓ Aprobada" : "Pendiente de revisión"}
-                            {unit.sourceCorpusIds?.length ? " · " + unit.sourceCorpusIds.length + " unidad(es) de fuente" : ""}
-                          </span>
-                        </div>
-                        <div className="studio-wf-panel-actions">
-                          {!approved && (
-                            <button className="ghost" type="button" onClick={() => edit("pedagogicalUnits", i, { reviewStatus: "approved" })} disabled={!canEdit || busy}>
-                              ✓ Aprobar
-                            </button>
-                          )}
-                          {approved && (
-                            <button className="ghost" type="button" onClick={() => edit("pedagogicalUnits", i, { reviewStatus: "pending" })} disabled={!canEdit || busy}>
-                              Marcar para revisar
-                            </button>
-                          )}
-                          <button className="studio-wf-danger" type="button" onClick={() => remove("pedagogicalUnits", i)} disabled={!canEdit || busy}>
-                            Descartar
-                          </button>
-                        </div>
-                      </div>
-                      <div className="studio-wf-grid">
-                        <Field
-                          label="Nombre de la unidad"
-                          value={unit.title}
-                          onChange={(v) => edit("pedagogicalUnits", i, { title: v })}
-                          placeholder="Ej. El valor añadido y la sincronización"
-                        />
-                        <Field
-                          label="Qué debería comprender el estudiante"
-                          value={unit.learningGoal}
-                          onChange={(v) => edit("pedagogicalUnits", i, { learningGoal: v })}
-                          multiline
-                        />
-                        <Field
-                          label="Por qué AULIA propone esta unidad"
-                          value={unit.rationale}
-                          onChange={(v) => edit("pedagogicalUnits", i, { rationale: v })}
-                          multiline
-                        />
-                      </div>
-                      {unitConcepts.length > 0 && (
-                        <div className="studio-wf-concept-source">
-                          <strong>Conceptos relacionados:</strong> {unitConcepts.join(" · ")}
-                        </div>
-                      )}
-                    </article>
-                  );
-                })}
-              </div>
-            ) : (
-              <Empty
-                title="Todavía no hay una organización pedagógica."
-                text="Cargá material y usá “Revisar material con IA”."
-              />
-            )}
-          </Panel>
-
-          {draft.concepts?.length ? <div className="studio-wf-stack">{draft.concepts.map((x, i) => {
-            const sourceNames = (x.sourceBibliographyIds || [])
-              .map((id) => draft.bibliography?.find((ref) => ref.id === id))
-              .filter(Boolean)
-              .map((ref) => [ref.title, ref.author, ref.year].filter(Boolean).join(" · "));
-            return <article className="studio-wf-concept" key={x.id || i}><div className="studio-wf-concept-head"><div><strong>{x.title || "Sin título"}</strong><span>{x.suggested ? "Propuesto por AULIA" : "Editado por la cátedra"}{x.chapter ? " · " + x.chapter : ""}</span></div><button className="studio-wf-danger" type="button" onClick={() => remove("concepts", i)}>Eliminar</button></div>
-            {sourceNames.length > 0 && <div className="studio-wf-concept-source"><strong>Bibliografía:</strong> {sourceNames.join(" · ")}</div>}
-            <div className="studio-wf-grid"><Field label="Título" value={x.title} onChange={(v) => edit("concepts", i, {title:v, suggested:false})}/><Field label="Unidad / capítulo" value={x.chapter} onChange={(v) => edit("concepts", i, {chapter:v})}/><Field label="Resumen" value={x.summary} onChange={(v) => edit("concepts", i, {summary:v})} multiline/><Field label="Explicación docente (opcional)" value={x.explanation} onChange={(v) => edit("concepts", i, {explanation:v})} multiline/></div>
-            {x.confusionCriteria?.length > 0 && <details className="studio-wf-details"><summary>Criterios de posible confusión</summary><ul className="studio-wf-concept-criteria">{x.confusionCriteria.map((item, j) => <li key={j}>{item}</li>)}</ul></details>}
-            <details className="studio-wf-details"><summary>Detalles opcionales de recuperación</summary><div className="studio-wf-grid"><Field label="Aliases" value={(x.aliases || []).join(", ")} onChange={(v) => edit("concepts", i, {aliases:list(v)})} hint="Sinónimos o formas alternativas."/><Field label="Palabras clave" value={(x.keywords || []).join(", ")} onChange={(v) => edit("concepts", i, {keywords:list(v)})}/></div></details></article>; })}</div> : <Empty title="Todavía no hay una propuesta." text="Cargá material y elegí “Analizar con IA”. También podés usar una propuesta rápida sin IA."/>}
+          </div>
         </Panel>
-        <Panel eyebrow="EJEMPLOS" title="Ejemplos y obras" description="Conectan el corpus con escenas, obras o casos. Son opcionales al comienzo." actions={<button className="ghost" type="button" onClick={() => mutate((c) => ({...c, examples:[...(c.examples || []), {id:uniqueId("ejemplo",c.examples), title:"Nuevo ejemplo", director:"", concepts:[]}]}))}>+ Agregar ejemplo</button>}>
+
+        <Panel
+          eyebrow="TEMAS Y CONCEPTOS"
+          title="Lo que marcaste como foco"
+          description="Estos datos salen directamente de la clasificación docente en Material. No son conceptos inventados por la IA."
+        >
+          {(() => {
+            const activeSections = materialSections.filter((x) => x.scope !== "excluded");
+            const topics = Array.from(new Set(activeSections.map((x) => String(x.teacherTopic || "").trim()).filter(Boolean)));
+            const concepts = Array.from(new Set(activeSections.flatMap((x) => x.teacherConcepts || []).map((x) => String(x).trim()).filter(Boolean)));
+            const limits = activeSections.filter((x) => String(x.teacherLimit || "").trim());
+            if (!topics.length && !concepts.length && !limits.length) {
+              return <Empty title="Todavía no definiste focos." text="Volvé a Material y abrí “Definir foco docente” en las secciones que quieras trabajar." />;
+            }
+            return <div className="studio-wf-stack">
+              {topics.length > 0 && <div className="studio-wf-concept-source"><strong>Temas:</strong> {topics.join(" · ")}</div>}
+              {concepts.length > 0 && <div className="studio-wf-concept-source"><strong>Conceptos:</strong> {concepts.join(" · ")}</div>}
+              {limits.length > 0 && (
+                <details className="studio-wf-details">
+                  <summary>Indicaciones y límites definidos ({limits.length})</summary>
+                  <div className="studio-wf-stack">
+                    {limits.map((section) => (
+                      <div key={section.id} className="studio-wf-concept-source">
+                        <strong>{section.title}</strong><span> · {section.teacherLimit}</span>
+                      </div>
+                    ))}
+                  </div>
+                </details>
+              )}
+            </div>;
+          })()}
+        </Panel>
+
+        <Panel
+          eyebrow="UNIDADES PEDAGÓGICAS"
+          title="Construcción manual"
+          description="Una vez delimitado el material, las unidades pedagógicas pueden ser decisiones del docente. La automatización deja de ser obligatoria."
+        >
+          {draft.pedagogicalUnits?.length ? (
+            <div className="studio-wf-stack">
+              {draft.pedagogicalUnits.map((unit, i) => (
+                <article className="studio-wf-concept" key={unit.id || i}>
+                  <div className="studio-wf-concept-head">
+                    <div>
+                      <strong>{unit.title || "Unidad sin título"}</strong>
+                      <span>{unit.reviewStatus === "approved" ? "✓ Aprobada" : "Pendiente de revisión"}</span>
+                    </div>
+                    <button className="studio-wf-danger" type="button" onClick={() => remove("pedagogicalUnits", i)} disabled={!canEdit || busy}>Eliminar</button>
+                  </div>
+                  <div className="studio-wf-grid">
+                    <Field label="Nombre de la unidad" value={unit.title} onChange={(v) => edit("pedagogicalUnits", i, { title: v, reviewStatus: "pending" })}/>
+                    <Field label="Qué debería comprender el estudiante" value={unit.learningGoal} onChange={(v) => edit("pedagogicalUnits", i, { learningGoal: v, reviewStatus: "pending" })} multiline/>
+                  </div>
+                </article>
+              ))}
+            </div>
+          ) : (
+            <Empty title="Todavía no hay unidades pedagógicas." text="No es un problema: primero delimitá la bibliografía. Las unidades se pueden construir después a partir de los focos docentes." />
+          )}
+        </Panel>
+
+        <div className="studio-wf-next"><button className="primary" type="button" onClick={() => setStep("interaction")}>Configurar interacción →</button></div>
+      </>}
+
+      <Panel eyebrow="EJEMPLOS" title="Ejemplos y obras" description="Conectan el corpus con escenas, obras o casos. Son opcionales al comienzo." actions={<button className="ghost" type="button" onClick={() => mutate((c) => ({...c, examples:[...(c.examples || []), {id:uniqueId("ejemplo",c.examples), title:"Nuevo ejemplo", director:"", concepts:[]}]}))}>+ Agregar ejemplo</button>}>
           {draft.examples?.length ? <div className="studio-wf-stack">{draft.examples.map((x, i) => <Row key={x.id || i} title={x.title} meta={x.director} onRemove={() => remove("examples", i)}><div className="studio-wf-grid"><Field label="Obra / ejemplo" value={x.title} onChange={(v) => edit("examples", i, {title:v})}/><Field label="Autor / director" value={x.director} onChange={(v) => edit("examples", i, {director:v})}/><Field label="Descripción" value={x.description} onChange={(v) => edit("examples", i, {description:v})} multiline/><Field label="Conceptos relacionados" value={(x.concepts || []).join(", ")} onChange={(v) => edit("examples", i, {concepts:list(v)})}/></div></Row>)}</div> : <Empty title="Todavía no hay ejemplos." text="Podés agregarlos después, cuando tengas una selección de escenas o casos."/>}
         </Panel>
         <div className="studio-wf-next"><button className="primary" type="button" onClick={() => setStep("interaction")}>Configurar interacción →</button></div>
