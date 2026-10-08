@@ -13,9 +13,9 @@ const DEFAULT_MODELS = [
 // Keep the teacher review comfortably inside Groq's current free-plan token
 // budget. The complete book never goes to the model: AULIA sends a compact
 // structural dossier plus short excerpts from representative sections.
-const MAX_CONTEXT_CHARS = 8000;
-const MAX_OUTPUT_TOKENS = 1800;
-const MAX_REPRESENTATIVE_UNITS = 24;
+const MAX_CONTEXT_CHARS = 7000;
+const MAX_OUTPUT_TOKENS = 1400;
+const MAX_REPRESENTATIVE_UNITS = 20;
 
 const PROPOSAL_SCHEMA = {
   type: "object",
@@ -27,46 +27,20 @@ const PROPOSAL_SCHEMA = {
         type: "object",
         properties: {
           title: { type: "string" },
-          rationale: { type: "string" },
           learningGoal: { type: "string" },
           phase: { type: "string" },
           sequence: { type: "integer" },
           prerequisiteTitles: { type: "array", items: { type: "string" } },
-          conceptTitles: { type: "array", items: { type: "string" } },
           sourceIds: { type: "array", items: { type: "string" } },
         },
-        required: ["title", "rationale", "learningGoal", "phase", "sequence", "prerequisiteTitles", "conceptTitles", "sourceIds"],
+        required: ["title", "learningGoal", "phase", "sequence", "prerequisiteTitles", "sourceIds"],
         additionalProperties: false,
       },
     },
     concepts: {
       type: "array",
-      items: {
-        type: "object",
-        properties: {
-          title: { type: "string" },
-          chapter: { type: "string" },
-          summary: { type: "string" },
-          explanation: { type: "string" },
-          aliases: { type: "array", items: { type: "string" } },
-          keywords: { type: "array", items: { type: "string" } },
-          sourceIds: { type: "array", items: { type: "string" } },
-          sourceBibliographyIds: { type: "array", items: { type: "string" } },
-          confusionCriteria: { type: "array", items: { type: "string" } },
-        },
-        required: [
-          "title",
-          "chapter",
-          "summary",
-          "explanation",
-          "aliases",
-          "keywords",
-          "sourceIds",
-          "sourceBibliographyIds",
-          "confusionCriteria",
-        ],
-        additionalProperties: false,
-      },
+      maxItems: 0,
+      items: { type: "string" },
     },
   },
   required: ["pedagogicalSummary", "pedagogicalUnits", "concepts"],
@@ -244,15 +218,12 @@ function buildPrompt({ course, bibliography, materialText, sampled }) {
       ? "La biblioteca completa está disponible en AULIA, pero para esta consulta se usa una muestra representativa de unidades para respetar los límites de una cuenta gratuita. No infieras contenido que no aparezca en los extractos."
       : "El conjunto de unidades relevantes entra en esta consulta.",
     "NO resumas cada página y NO conviertas cada fragmento técnico en una unidad pedagógica. Las secciones entregadas ya representan la estructura documental detectada por AULIA.",
-    "Primero diseñá un mapa pedagógico de 8 a 12 unidades conceptuales coherentes, cuando la evidencia lo permita. Cada unidad debe agrupar varias secciones o un núcleo de contenido que pueda enseñarse como un bloque. No uses como nombre simplemente 'página X', 'parte 1' o el título mecánico de un fragmento.",
-    "Para cada unidad explicá brevemente por qué conviene agrupar ese material y qué debería comprender o poder hacer el estudiante. Una unidad puede reunir varias secciones de un mismo documento.",
-    "Después identificá solo los conceptos centrales que sean necesarios para recuperar y trabajar el material. No generes ejemplos ni actividades en esta pasada: los dejaremos para una etapa posterior y así evitamos gastar la cuota de Groq en una salida excesivamente grande.",
-    "Además construí un mapa curricular: sequence único empezando en 1, phase breve y prerequisiteTitles solo con títulos EXACTOS de otras unidades de esta misma propuesta. No inventes dependencias ni generes ciclos.",
-    "Trabajá exclusivamente con la evidencia suministrada. No inventes autores, obras, conceptos ni afirmaciones.",
+    "Construí solamente una propuesta de ORGANIZACIÓN PEDAGÓGICA: entre 6 y 10 unidades conceptuales coherentes, cuando la evidencia lo permita. Agrupá secciones que pertenezcan naturalmente a un mismo núcleo, problema o pregunta.",
+    "Cada unidad debe tener un título conceptual breve, un learningGoal de una sola frase y una phase breve. No uses 'página', 'parte' ni nombres mecánicos de fragmentos.",
+    "Construí también el orden curricular: sequence único desde 1. prerequisiteTitles solo puede usar títulos EXACTOS de otras unidades de esta misma respuesta y debe representar dependencias reales; no inventes ciclos.",
     "Los sourceIds deben copiar EXACTAMENTE IDs que aparezcan en [ID:...].",
-    "sourceBibliographyIds solo puede usar los [BIB-ID:...] declarados y debe corresponder a una fuente realmente relacionada.",
-    "confusionCriteria debe describir errores o confusiones plausibles y fundamentados por la evidencia.",
-    "Priorizá precisión sobre cantidad. Proponé 8 a 12 unidades y 6 a 10 conceptos cuando el material lo permita. Si la evidencia no alcanza, proponé menos antes que inventar.",
+    "En esta primera consulta NO generes conceptos, ejemplos ni actividades. AULIA los trabajará en pasos separados para reducir consumo de la cuenta gratuita de Groq.",
+    "Trabajá exclusivamente con la evidencia suministrada. Si no alcanza para una unidad, proponé menos. La precisión es más importante que la cantidad.",
     "Curso: " + String(course?.title || ""),
     "Descripción: " + String(course?.description || ""),
     refs ? "Bibliografía declarada:\n" + refs : "",
@@ -307,7 +278,7 @@ async function request(endpoint, apiKey, model, prompt, responseFormat, signal) 
       ],
       temperature: 0.15,
       top_p: 0.9,
-      max_tokens: MAX_OUTPUT_TOKENS,
+      max_completion_tokens: MAX_OUTPUT_TOKENS,
       reasoning_effort: "low",
       response_format: responseFormat,
       stream: false,
@@ -408,10 +379,7 @@ export async function requestTeacherProposal({
       );
 
       const proposal = result.proposal || {};
-      if (
-        !Array.isArray(proposal.pedagogicalUnits) ||
-        !Array.isArray(proposal.concepts)
-      ) {
+      if (!Array.isArray(proposal.pedagogicalUnits) || !Array.isArray(proposal.concepts)) {
         throw new Error("La propuesta de IA no tiene la estructura esperada.");
       }
 
