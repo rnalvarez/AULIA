@@ -267,6 +267,89 @@ function Row({ title, meta, onRemove, children }) {
   return <article className="studio-wf-row"><div className="studio-wf-row-main"><div className="studio-wf-row-title"><strong>{title || "Sin título"}</strong>{meta && <span>{meta}</span>}</div>{children}</div><button className="studio-wf-danger" type="button" onClick={onRemove}>Eliminar</button></article>;
 }
 
+function buildMaterialStructure(course) {
+  const corpus = Array.isArray(course?.corpus) ? course.corpus : [];
+  const documents = Array.isArray(course?.documents) ? course.documents : [];
+  const sections = [];
+  const corpusByDocument = new Map();
+
+  for (const chunk of corpus) {
+    const key = String(chunk?.documentId || chunk?.source || "material-general");
+    if (!corpusByDocument.has(key)) corpusByDocument.set(key, []);
+    corpusByDocument.get(key).push(chunk);
+  }
+
+  for (const document of documents) {
+    const documentChunks = corpusByDocument.get(String(document.id)) || [];
+
+    for (const section of document.sections || []) {
+      const path = Array.isArray(section.path) ? section.path : [];
+      const titleKey = slug(section.title || "");
+      const matches = documentChunks.filter((chunk) => {
+        const chunkPath = Array.isArray(chunk.sectionPath) ? chunk.sectionPath : [];
+        return (
+          chunkPath.join(" › ") === path.join(" › ") ||
+          slug(chunk.title || "").replace(/-parte-\d+$/i, "") === titleKey ||
+          slug(chunk.chapter || "") === slug(path.join(" › "))
+        );
+      });
+
+      const ordered = matches.slice().sort((x, y) =>
+        Number(x?.sourcePageStart || x?.sourcePage || 0) -
+        Number(y?.sourcePageStart || y?.sourcePage || 0)
+      );
+      const first = ordered[0] || {};
+      const preview = ordered.map((item) => String(item?.content || "")).join(" ").trim();
+
+      sections.push({
+        id: section.id || document.id + "-" + sections.length,
+        documentId: document.id,
+        documentTitle: document.title || document.sourceName || "Material",
+        title: section.title || path[path.length - 1] || "Sección",
+        path,
+        level: Number(section.level || 1),
+        sourcePageStart: section.sourcePageStart || first.sourcePageStart || null,
+        sourcePageEnd: section.sourcePageEnd || first.sourcePageEnd || first.sourcePage || null,
+        segmentationSource: section.segmentationSource || "text-structure",
+        fragmentCount: ordered.length,
+        preview: preview.slice(0, 180),
+      });
+    }
+  }
+
+  if (sections.length) return sections;
+
+  const groups = new Map();
+  for (const chunk of corpus) {
+    const key = String(chunk?.unitId || chunk?.id || "");
+    if (!key) continue;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(chunk);
+  }
+
+  return Array.from(groups.values()).map((items, index) => {
+    const ordered = items.slice().sort((x, y) =>
+      Number(x?.sourcePageStart || x?.sourcePage || 0) -
+      Number(y?.sourcePageStart || y?.sourcePage || 0)
+    );
+    const first = ordered[0] || {};
+    const last = ordered[ordered.length - 1] || first;
+    return {
+      id: first.unitId || first.id || "material-section-" + index,
+      documentId: first.documentId || "",
+      documentTitle: first.source || "Material",
+      title: String(first.title || first.chapter || "Sección").replace(/ · parte \d+$/i, ""),
+      path: Array.isArray(first.sectionPath) ? first.sectionPath : [],
+      level: Number(first.sectionLevel || 1),
+      sourcePageStart: first.sourcePageStart || first.sourcePage || null,
+      sourcePageEnd: last.sourcePageEnd || last.sourcePage || null,
+      segmentationSource: "corpus-fallback",
+      fragmentCount: ordered.length,
+      preview: String(first.content || "").slice(0, 180),
+    };
+  });
+}
+
 export default function Studio({ course, courseMeta = null, canEdit = true, onCourseChanged, onSaveCourse, onPublishCourse, onReloadCourse }) {
   const storageKey = useMemo(() => STORAGE_PREFIX + course.id, [course.id]);
   const [draft, setDraft] = useState(() => cloneCourse(course));
@@ -279,6 +362,7 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
   const [studioKeyInput, setStudioKeyInput] = useState("");
   const [showStudioKey, setShowStudioKey] = useState(false);
   const [legalAccepted, setLegalAccepted] = useState(false);
+  const [analysisReport, setAnalysisReport] = useState(null);
 
   useEffect(() => {
     const saved = localStorage.getItem(storageKey);
@@ -692,7 +776,8 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
     }
 
     setBusy(true);
-    setStatus("La IA está leyendo el material y preparando una propuesta pedagógica…");
+    setAnalysisReport(null);
+    setStatus("Analizando la estructura disponible y preparando una propuesta pedagógica…");
     try {
       const result = await requestTeacherProposal({
         apiKey: studioApiKey,
@@ -703,44 +788,54 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
         models: draft.llm?.models,
       });
       const merged = mergeTeacherProposal(draft, result.proposal);
+      const proposedUnits = (result.proposal?.pedagogicalUnits || []).length;
+      const proposedConcepts = (result.proposal?.concepts || []).length;
       const suffix = result.truncated
-        ? " · se revisaron " + result.usedFragments + " de " + result.totalFragments + " unidades representativas"
-        : " · se revisaron " + result.totalFragments + " unidades";
+        ? "Se revisaron " + result.usedFragments + " de " + result.totalFragments + " secciones representativas."
+        : "Se revisaron " + result.totalFragments + " secciones.";
       const requestSuffix = result.requestCount ? " · " + result.requestCount + " consulta a Groq" : "";
       const cacheSuffix = result.cached ? " · sin consumir una consulta nueva" : "";
       const warningSuffix = result.warning ? " · " + result.warning : "";
+
+      setAnalysisReport({
+        ok: true,
+        model: result.model || "",
+        usedFragments: result.usedFragments || 0,
+        totalFragments: result.totalFragments || 0,
+        sampled: Boolean(result.truncated),
+        requestCount: result.requestCount || 0,
+        cached: Boolean(result.cached),
+        units: proposedUnits,
+        concepts: proposedConcepts,
+      });
+
       mutate(() => merged.course,
         "Propuesta IA incorporada: " +
+        proposedUnits + " unidades pedagógicas · " +
         merged.stats.concepts + " conceptos · " +
-        merged.stats.examples + " ejemplos · " +
-        merged.stats.activities + " actividades · " +
-        (merged.course.curriculumMap?.sequence?.length || 0) + " unidades en el mapa curricular" +
-        suffix +
-        requestSuffix +
-        cacheSuffix +
-        warningSuffix +
-        ".");
+        suffix + requestSuffix + cacheSuffix + warningSuffix);
       setStatus(
         "Propuesta IA incorporada: " +
+        proposedUnits + " unidades pedagógicas · " +
         merged.stats.concepts + " conceptos · " +
-        merged.stats.examples + " ejemplos · " +
-        merged.stats.activities + " actividades" +
-        suffix +
-        requestSuffix +
-        warningSuffix +
-        "."
+        suffix + requestSuffix + warningSuffix
       );
       setStep("proposal");
     } catch (err) {
+      setAnalysisReport({
+        ok: false,
+        message: err.message || "No se pudo generar la propuesta con IA.",
+      });
       setStatus(err.message || "No se pudo generar la propuesta con IA.");
     } finally {
       setBusy(false);
     }
   }
 
+  const materialSections = useMemo(() => buildMaterialStructure(draft), [draft.documents, draft.corpus]);
   const counts = {
     overview: 1,
-    material: draft.corpus?.length || 0,
+    material: materialSections.length,
     proposal: draft.pedagogicalUnits?.length || draft.concepts?.length || 0,
     interaction: draft.modes?.length || 0,
     commissions: draft.commissions?.length || 0,
@@ -807,16 +902,29 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
             <Field label="Título" value={x.title} onChange={(v) => edit("bibliography", i, { title: v })}/><Field label="Autor" value={x.author} onChange={(v) => edit("bibliography", i, { author: v })}/><Field label="Editorial" value={x.publisher} onChange={(v) => edit("bibliography", i, { publisher: v })}/><Field label="Año" value={x.year} onChange={(v) => edit("bibliography", i, { year: v })}/><Field label="Rol" value={x.role} onChange={(v) => edit("bibliography", i, { role: v })}/>
           </div></Row>)}</div> : <Empty title="Todavía no cargaste fuentes." text="Podés agregarlas manualmente o incorporarlas desde un JSON." action={<button className="ghost" type="button" onClick={addBibliography}>Agregar primera fuente</button>}/>}
         </Panel>
-        <Panel eyebrow="MATERIAL" title="Material que AULIA podrá recuperar" description="PDF, DOCX, TXT, Markdown y JSON se convierten en unidades de lectura. AULIA conserva capítulos, secciones y páginas cuando puede detectarlos; la extracción ocurre localmente en este navegador." actions={<label className="primary studio-wf-file-btn">{busy ? "Procesando…" : "Cargar material"}<input type="file" accept=".txt,.md,.markdown,.json,.pdf,.docx,text/plain,text/markdown,application/json,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document" multiple onChange={importMaterial} disabled={busy}/></label>}>
-          {draft.corpus?.length ? <><div className="studio-wf-stats"><div><strong>{draft.corpus.length}</strong><span>unidades de lectura</span></div><div><strong>{draft.documents?.length || new Set(draft.corpus.map((x) => x.source).filter(Boolean)).size}</strong><span>documentos</span></div><div><strong>{new Set(draft.corpus.map((x) => (x.unitId || x.id)?.replace(/-p\\d+$/, "")).filter(Boolean)).size}</strong><span>secciones detectadas</span></div></div><div className="studio-wf-corpus-list">{draft.corpus.slice(0, 18).map((x, i) => <article key={x.id || i}><div><strong>{x.title || "Unidad"}</strong><span>{(x.sectionPath?.length ? x.sectionPath.join(" › ") : x.chapter) || "Sin sección detectada"}{x.sourcePageStart ? " · págs. " + x.sourcePageStart + (x.sourcePageEnd && x.sourcePageEnd !== x.sourcePageStart ? "–" + x.sourcePageEnd : "") : ""}{x.source ? " · " + x.source : ""}</span></div><p>{String(x.content || "").slice(0, 240)}{String(x.content || "").length > 240 ? "…" : ""}</p></article>)}{draft.corpus.length > 18 && <small>Mostrando 18 de {draft.corpus.length} unidades de lectura.</small>}</div></> : <Empty title="El corpus está vacío." text="Empezá cargando un PDF, DOCX, TXT, Markdown o JSON. AULIA detectará la estructura antes de proponer la organización pedagógica."/>}
+        <Panel eyebrow="MATERIAL" title="Material que AULIA podrá recuperar" description="AULIA primero intenta reconocer la estructura del documento. Las secciones visibles no son páginas: son unidades estructurales. Cuando una sección es demasiado larga para recuperación, AULIA la divide internamente sin convertir esos cortes en nuevas unidades pedagógicas." actions={<label className="primary studio-wf-file-btn">{busy ? "Procesando…" : "Cargar material"}<input type="file" accept=".txt,.md,.markdown,.json,.pdf,.docx,text/plain,text/markdown,application/json,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document" multiple onChange={importMaterial} disabled={busy}/></label>}>
+          {materialSections.length ? <><div className="studio-wf-stats"><div><strong>{materialSections.length}</strong><span>secciones estructurales</span></div><div><strong>{draft.documents?.length || new Set(draft.corpus.map((x) => x.source).filter(Boolean)).size}</strong><span>documentos</span></div><div><strong>{draft.corpus?.length || 0}</strong><span>fragmentos técnicos de recuperación</span></div></div>
+          <div className="studio-wf-structure-note">La lista muestra la estructura que AULIA usará como base. Los fragmentos técnicos quedan asociados a su sección y no se presentan como capítulos o páginas independientes.</div>
+          <div className="studio-wf-corpus-list">{materialSections.slice(0, 60).map((section, i) => <article key={section.id || i}>
+            <div>
+              <strong>{section.title || "Sección"}</strong>
+              <span>
+                {section.path?.length ? section.path.join(" › ") : "Sin jerarquía detectada"}
+                {section.sourcePageStart ? " · págs. " + section.sourcePageStart + (section.sourcePageEnd && section.sourcePageEnd !== section.sourcePageStart ? "–" + section.sourcePageEnd : "") : ""}
+                {section.documentTitle ? " · " + section.documentTitle : ""}
+              </span>
+            </div>
+            <p>{section.preview || "Sin vista previa disponible."}{section.preview?.length >= 180 ? "…" : ""}</p>
+            <small>{section.fragmentCount || 1} fragmento(s) de recuperación · {section.segmentationSource === "pdf-outline" ? "estructura interna del PDF" : "estructura detectada localmente"}</small>
+          </article>)}{materialSections.length > 60 && <small>Mostrando 60 de {materialSections.length} secciones estructurales.</small>}</div></> : <Empty title="El corpus está vacío." text="Empezá cargando un PDF, DOCX, TXT, Markdown o JSON. AULIA detectará la estructura antes de proponer la organización pedagógica."/>}
         </Panel>
         <div className="studio-wf-next"><button className="primary" type="button" onClick={() => setStep("proposal")}>Ir a la propuesta pedagógica →</button></div>
       </>}
 
       {step === "proposal" && <>
         <div className="studio-wf-hero"><div className="eyebrow">PASO 03 · PROPUESTA</div><h1>Ahora AULIA propone cómo organizar ese material.</h1><p>AULIA analiza las unidades detectadas y primero propone una organización pedagógica. Después genera conceptos derivados para sostener la recuperación del asistente. La revisión usa una sola consulta compacta para respetar las limitaciones de las cuentas gratuitas de Groq. Nada se publica automáticamente: todo queda como propuesta editable para la cátedra.</p></div>
-        <Panel eyebrow="CONCEPTOS DERIVADOS" title="Detalle pedagógico y recuperación" description="La propuesta semántica usa tu propia clave de IA docente. AULIA no envía esa clave al backend ni la guarda en el course pack." actions={<>
-          <button className="primary" type="button" onClick={analyzeWithAI} disabled={!canEdit || !draft.corpus?.length || busy}>{busy ? "Analizando…" : "Revisar material con IA"}</button>
+        <Panel eyebrow="ORGANIZACIÓN PEDAGÓGICA" title="Análisis asistido por IA" description="La IA no segmenta el libro página por página. AULIA primero construye localmente una estructura documental y luego envía a Groq solo un dossier compacto con títulos, jerarquías y extractos representativos. El libro completo permanece en el navegador." actions={<>
+          <button className="primary" type="button" onClick={analyzeWithAI} disabled={!canEdit || !draft.corpus?.length || busy}>{busy ? "Analizando organización…" : "Analizar organización con IA · 1 consulta"}</button>
           <button className="ghost" type="button" onClick={() => setShowStudioKey((value) => !value)} disabled={!canEdit}>{studioApiKey ? "Cambiar clave IA" : "Configurar IA docente"}</button>
         </>}>
           {(showStudioKey || !studioApiKey) && <div className="studio-wf-ai-setup">
@@ -828,6 +936,28 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
             </div>
           </div>}
           {studioApiKey && !showStudioKey && <div className="studio-wf-ai-ready"><span>● IA docente lista</span><small>La clave está solo en esta sesión.</small></div>}
+
+          {analysisReport && (
+            <div className={"studio-wf-ai-report " + (analysisReport.ok ? "ok" : "error")}>
+              {analysisReport.ok ? (
+                <>
+                  <strong>✓ Análisis incorporado al borrador</strong>
+                  <span>
+                    {analysisReport.units} unidades pedagógicas · {analysisReport.concepts} conceptos
+                    {analysisReport.usedFragments ? " · " + analysisReport.usedFragments + "/" + analysisReport.totalFragments + " secciones analizadas" : ""}
+                    {analysisReport.requestCount ? " · " + analysisReport.requestCount + " consulta a Groq" : ""}
+                    {analysisReport.cached ? " · reutilizado desde la sesión" : ""}
+                  </span>
+                  <small>{analysisReport.sampled ? "Como el material supera el tamaño práctico de una consulta gratuita, se usó una muestra representativa. La estructura completa sigue disponible localmente." : "La IA recibió todas las secciones estructurales disponibles para esta revisión."}</small>
+                </>
+              ) : (
+                <>
+                  <strong>⚠ No se pudo completar el análisis</strong>
+                  <span>{analysisReport.message}</span>
+                </>
+              )}
+            </div>
+          )}
 
           <details className="studio-wf-details">
             <summary>Alternativas sin IA</summary>
