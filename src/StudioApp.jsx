@@ -56,26 +56,40 @@ export default function StudioApp() {
   const [course, setCourse] = useState(null);
   const [courseMeta, setCourseMeta] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [loadingCourses, setLoadingCourses] = useState(false);
   const [loadingCourse, setLoadingCourse] = useState(false);
+  const [deletingCourseId, setDeletingCourseId] = useState("");
   const [error, setError] = useState("");
 
   async function loadCourses(activeSession, preferredCourseId = "") {
-    const result = await listTeacherCourses(activeSession.token);
-    const available = result.courses || [];
-    setCourses(available);
-
-    const params = new URLSearchParams(window.location.search);
-    const requested = preferredCourseId || params.get("course") || "";
-    const selected = available.find((item) => item.courseId === requested) || available[0];
-
-    if (selected) {
-      await selectCourse(selected.courseId, activeSession, available);
-    } else {
+    if (!activeSession?.token) {
+      setCourses([]);
       setCourse(null);
       setCourseMeta(null);
+      return [];
     }
 
-    return available;
+    setLoadingCourses(true);
+    try {
+      const result = await listTeacherCourses(activeSession.token);
+      const available = result.courses || [];
+      setCourses(available);
+
+      const params = new URLSearchParams(window.location.search);
+      const requested = preferredCourseId || params.get("course") || "";
+      const selected = available.find((item) => item.courseId === requested) || available[0];
+
+      if (selected) {
+        await selectCourse(selected.courseId, activeSession, available);
+      } else {
+        setCourse(null);
+        setCourseMeta(null);
+      }
+
+      return available;
+    } finally {
+      setLoadingCourses(false);
+    }
   }
 
   async function selectCourse(courseId, activeSession = session, availableCourses = courses) {
@@ -114,11 +128,17 @@ export default function StudioApp() {
           return;
         }
         setSession(restored);
+        // Render the Studio shell as soon as the session is known.
+        // Course listing/selection continues independently so a slow backend
+        // does not make the whole Studio appear empty or blocked.
+        setLoading(false);
         await loadCourses(restored);
       } catch (err) {
-        if (mounted) setError(err.message || "No se pudo recuperar la sesión.");
-      } finally {
-        if (mounted) setLoading(false);
+        if (mounted) {
+          setError(err.message || "No se pudo recuperar la sesión.");
+          setLoadingCourses(false);
+          setLoading(false);
+        }
       }
     }
     bootstrap();
@@ -129,23 +149,42 @@ export default function StudioApp() {
     const next = await loginTeacher(email, password);
     setSession(next);
     setError("");
-    await loadCourses(next);
     setLoading(false);
+    await loadCourses(next);
   }
 
   async function handleCreateCourse() {
-    if (!session?.token) return;
+    if (!session?.token || loadingCourse) return;
     setError("");
     setLoadingCourse(true);
     try {
       const result = await createTeacherCourse(session.token, "Nueva cátedra", "");
       setCourse(result.course);
       setCourseMeta(result.meta);
-      const refreshed = await listTeacherCourses(session.token);
-      setCourses(refreshed.courses || []);
+
+      const createdSummary = {
+        courseId: result.meta.courseId,
+        title: result.meta.title || result.course?.title || "Nueva cátedra",
+        status: result.meta.status || "draft",
+        role: result.meta.role || "owner",
+        publicSlug: result.meta.publicSlug || "",
+        updatedAt: result.meta.updatedAt || "",
+      };
+
+      // Reflect creation immediately; a background refresh reconciles the
+      // sidebar with the backend without making the interaction feel stale.
+      setCourses((current) => [
+        createdSummary,
+        ...current.filter((item) => item.courseId !== createdSummary.courseId),
+      ]);
+
       const url = new URL(window.location.href);
       url.searchParams.set("course", result.meta.courseId);
       window.history.replaceState({}, "", url);
+
+      listTeacherCourses(session.token)
+        .then((refreshed) => setCourses(refreshed.courses || []))
+        .catch(() => {});
     } catch (err) {
       setError(err.message || "No se pudo crear la cátedra.");
     } finally {
@@ -209,7 +248,7 @@ export default function StudioApp() {
   }
 
   async function handleDeleteCourse(courseId, title = "esta cátedra") {
-    if (!session?.token || !courseId) return;
+    if (!session?.token || !courseId || deletingCourseId === courseId) return;
 
     const confirmed = window.confirm(
       'Vas a eliminar la cátedra "' + String(title || "Nueva cátedra") + '".\n\n' +
@@ -219,21 +258,47 @@ export default function StudioApp() {
 
     if (!confirmed) return;
 
+    const removedIndex = courses.findIndex((item) => item.courseId === courseId);
+    const removedItem = removedIndex >= 0 ? courses[removedIndex] : null;
+    const wasSelected = courseMeta?.courseId === courseId;
+    const previousCourse = course;
+    const previousCourseMeta = courseMeta;
+
+    // Optimistic UI: the draft disappears from the sidebar immediately.
+    setCourses((current) => current.filter((item) => item.courseId !== courseId));
+    if (wasSelected) {
+      setCourse(null);
+      setCourseMeta(null);
+      const url = new URL(window.location.href);
+      url.searchParams.delete("course");
+      window.history.replaceState({}, "", url);
+    }
+
+    setDeletingCourseId(courseId);
     setError("");
+
     try {
       await deleteTeacherCourse(session.token, courseId);
-
-      setCourses((current) => current.filter((item) => item.courseId !== courseId));
-
-      if (courseMeta?.courseId === courseId) {
-        setCourse(null);
-        setCourseMeta(null);
+    } catch (err) {
+      // Roll back only when the backend rejects the deletion.
+      if (removedItem) {
+        setCourses((current) => {
+          if (current.some((item) => item.courseId === courseId)) return current;
+          const next = [...current];
+          next.splice(Math.max(0, removedIndex), 0, removedItem);
+          return next;
+        });
+      }
+      if (wasSelected) {
+        setCourse(previousCourse);
+        setCourseMeta(previousCourseMeta);
         const url = new URL(window.location.href);
-        url.searchParams.delete("course");
+        url.searchParams.set("course", courseId);
         window.history.replaceState({}, "", url);
       }
-    } catch (err) {
       setError(err.message || "No se pudo eliminar la cátedra.");
+    } finally {
+      setDeletingCourseId("");
     }
   }
 
@@ -283,7 +348,9 @@ export default function StudioApp() {
         <div className="studio-coursebar-section">
           <div className="studio-sidebar-label">MIS CÁTEDRAS</div>
           <div className="studio-course-list">
-            {courses.length ? courses.map((item) => (
+            {loadingCourses ? (
+              <div className="studio-course-empty">Cargando cátedras…</div>
+            ) : courses.length ? courses.map((item) => (
               <div
                 className={"studio-course-item" + (courseMeta?.courseId === item.courseId ? " active" : "")}
                 key={item.courseId}
@@ -292,6 +359,7 @@ export default function StudioApp() {
                   type="button"
                   className="studio-course-select"
                   onClick={() => selectCourse(item.courseId)}
+                  disabled={loadingCourse || deletingCourseId === item.courseId}
                 >
                   <strong>{item.title || "Sin título"}</strong>
                   <span>{item.role === "owner" ? "Responsable" : item.role === "editor" ? "Editor" : "Solo lectura"} · {item.status === "published" ? "Publicada" : item.status === "changes-pending" ? "Cambios pendientes" : "Borrador"}</span>
@@ -306,8 +374,9 @@ export default function StudioApp() {
                       event.stopPropagation();
                       handleDeleteCourse(item.courseId, item.title);
                     }}
+                    disabled={deletingCourseId === item.courseId}
                   >
-                    ×
+                    {deletingCourseId === item.courseId ? "…" : "×"}
                   </button>
                 )}
               </div>
