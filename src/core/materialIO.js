@@ -305,6 +305,137 @@ async function flattenPdfOutline(pdf, items, level = 1, parentPath = [], output 
   return output;
 }
 
+function parsePdfTocLine(line, pageCount) {
+  const clean = cleanPdfLine(line);
+  if (!clean || clean.length > 150) return null;
+
+  const dotted = clean.match(/^(.+?)(?:\.{2,}|·{2,})\s*(\d{1,4})$/);
+  const plain = clean.match(/^(?:(\d+(?:\.\d+){0,4})[.)]?\s+)?(.{3,120}?)\s+(\d{1,4})$/);
+  const match = dotted || plain;
+  if (!match) return null;
+
+  const printedPage = Number(dotted ? match[2] : match[3]);
+  const title = cleanPdfLine(dotted ? match[1] : match[2]);
+  if (!title || !Number.isFinite(printedPage) || printedPage < 1 || printedPage > Math.max(pageCount, 2000)) {
+    return null;
+  }
+  if (/^(?:índice|indice|contenido|contents|table of contents|sumario)$/i.test(title)) {
+    return null;
+  }
+
+  return { title, printedPage };
+}
+
+function findPdfTocWindow(pageData) {
+  for (let i = 0; i < Math.min(pageData.length, 30); i += 1) {
+    const joined = pageData[i].lines.join(" ");
+    if (/\b(?:índice|indice|contenido|contents|table of contents|sumario)\b/i.test(joined)) {
+      return { start: i, end: Math.min(pageData.length, i + 8) };
+    }
+  }
+  return null;
+}
+
+function headingMatchesTitle(line, title) {
+  const a = normalizedKey(line);
+  const b = normalizedKey(title);
+  if (!a || !b) return false;
+  if (a === b) return true;
+
+  const cleanA = a.replace(/^#+\s*/, "");
+  const cleanB = b.replace(/^#+\s*/, "");
+  if (cleanA === cleanB) return true;
+
+  const tokensA = new Set(cleanA.split(" ").filter((token) => token.length >= 3));
+  const tokensB = cleanB.split(" ").filter((token) => token.length >= 3);
+  if (!tokensA.size || !tokensB.length) return false;
+  const overlap = tokensB.filter((token) => tokensA.has(token)).length / tokensB.length;
+  return overlap >= 0.86;
+}
+
+function findPdfHeadingPage(pageData, title, startPage) {
+  for (let pageIndex = Math.max(0, startPage); pageIndex < pageData.length; pageIndex += 1) {
+    for (const line of pageData[pageIndex].lines) {
+      if (!headingInfo(line)) continue;
+      if (headingMatchesTitle(line, title)) return pageIndex + 1;
+    }
+  }
+  return null;
+}
+
+async function buildPdfTocSections(pageData) {
+  const window = findPdfTocWindow(pageData);
+  if (!window) return null;
+
+  const entries = [];
+  for (let pageIndex = window.start; pageIndex < window.end; pageIndex += 1) {
+    for (const line of pageData[pageIndex].lines) {
+      const entry = parsePdfTocLine(line, pageData.length);
+      if (!entry) continue;
+      if (!entries.some((item) => item.title === entry.title && item.printedPage === entry.printedPage)) {
+        entries.push(entry);
+      }
+    }
+  }
+
+  if (entries.length < 3) return null;
+
+  const mapped = [];
+  for (const entry of entries.slice(0, 120)) {
+    const page = findPdfHeadingPage(pageData, entry.title, window.end);
+    if (page) mapped.push({ ...entry, page });
+  }
+
+  // Keep only entries whose located pages advance through the document.
+  const boundaries = [];
+  for (const entry of mapped.sort((a, b) => a.page - b.page)) {
+    if (!boundaries.length || entry.page > boundaries[boundaries.length - 1].page) {
+      boundaries.push(entry);
+    }
+  }
+
+  if (boundaries.length < 3) return null;
+
+  const repeatedFurniture = findRepeatedPageFurniture(pageData.map((page) => page.lines));
+  const sections = [];
+
+  for (let i = 0; i < boundaries.length; i += 1) {
+    const current = boundaries[i];
+    const next = boundaries[i + 1];
+    const startPage = current.page;
+    const endPage = next ? Math.min(pageData.length, next.page - 1) : pageData.length;
+    if (endPage < startPage) continue;
+
+    let lines = pageData
+      .slice(startPage - 1, endPage)
+      .flatMap((page) => page.lines)
+      .map(cleanPdfLine)
+      .filter(Boolean)
+      .filter((line) => !isNoiseLine(line, repeatedFurniture));
+
+    const headingIndex = lines.findIndex((line) => headingMatchesTitle(line, current.title));
+    if (headingIndex >= 0) lines = lines.slice(headingIndex + 1);
+
+    const content = normalizeWhitespace(repairHyphenation(lines.join(" ")));
+    if (!content) continue;
+
+    const numbered = current.title.match(/^\d+(?:\.\d+){0,4}[.)]?\s+/);
+    const depth = numbered ? Math.min(numbered[0].trim().split(".").length, 6) : 1;
+
+    sections.push({
+      title: current.title,
+      level: depth,
+      sectionPath: [current.title],
+      content,
+      sourcePageStart: startPage,
+      sourcePageEnd: endPage,
+      segmentationSource: "pdf-toc",
+    });
+  }
+
+  return sections.length >= 2 ? sections : null;
+}
+
 function isGenericOutlineTitle(title) {
   return /^(?:[íi]ndice|contenido|contents|table of contents|sumario|pr[oó]logo|prefacio|bibliograf[ií]a|referencias|índice analítico)$/i.test(
     cleanPdfLine(title)
@@ -557,7 +688,8 @@ async function readPdf(file) {
   }
 
   const outlineSections = await buildPdfOutlineSections(pdf, pages);
-  const sections = outlineSections || buildPdfSections(pages);
+  const tocSections = outlineSections ? null : await buildPdfTocSections(pages);
+  const sections = outlineSections || tocSections || buildPdfSections(pages);
   const documentId = makeDocumentId(file.name);
   const corpus = buildSectionFragments({
     sections,
