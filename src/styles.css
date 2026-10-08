@@ -1585,3 +1585,117 @@ button { border: 0; }
     padding: 4px 8px;
   }
 }
+
+
+/* ---------- V2: diagnóstico y jerarquía de PDFs ---------- */
+.studio-wf-pdf-diagnostic {
+  margin: 0 0 18px;
+  padding: 16px;
+  border: 1px solid #2e2e2e;
+  border-radius: 12px;
+  background: #141414;
+}
+.studio-wf-pdf-diagnostic-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 16px;
+}
+.studio-wf-pdf-diagnostic-head > div:first-child {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.studio-wf-pdf-diagnostic-head .eyebrow {
+  margin-bottom: 2px;
+}
+.studio-wf-pdf-diagnostic-head strong {
+  color: #f0ece0;
+  font-size: 14px;
+}
+.studio-wf-pdf-diagnostic-head small {
+  color: #6e6a62;
+  font-size: 11px;
+}
+.studio-wf-pdf-confidence {
+  min-width: 76px;
+  padding: 8px 10px;
+  border: 1px solid #3a3a3a;
+  border-radius: 9px;
+  text-align: right;
+}
+.studio-wf-pdf-confidence strong {
+  display: block;
+  color: #d4843c;
+  font-size: 17px;
+}
+.studio-wf-pdf-confidence span {
+  display: block;
+  margin-top: 1px;
+  color: #6e6a62;
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: .06em;
+}
+.studio-wf-pdf-diagnostic-grid {
+  margin-top: 14px;
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 7px;
+}
+.studio-wf-pdf-diagnostic-grid > div {
+  min-width: 0;
+  padding: 9px 10px;
+  border: 1px solid #292929;
+  border-radius: 8px;
+  background: #191919;
+}
+.studio-wf-pdf-diagnostic-grid span,
+.studio-wf-pdf-diagnostic-grid strong {
+  display: block;
+}
+.studio-wf-pdf-diagnostic-grid span {
+  color: #6e6a62;
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: .05em;
+}
+.studio-wf-pdf-diagnostic-grid strong {
+  margin-top: 3px;
+  color: #d8d2c4;
+  font-size: 11px;
+}
+.studio-wf-pdf-warning-list {
+  margin: 8px 0 0;
+  padding-left: 18px;
+  color: #bdb6a9;
+  font-size: 11px;
+  line-height: 1.55;
+}
+.studio-wf-material-section.level-2,
+.studio-wf-material-section.level-3,
+.studio-wf-material-section.level-4,
+.studio-wf-material-section.level-5,
+.studio-wf-material-section.level-6 {
+  margin-left: 16px;
+}
+.studio-wf-material-section.level-3,
+.studio-wf-material-section.level-4,
+.studio-wf-material-section.level-5,
+.studio-wf-material-section.level-6 {
+  margin-left: 28px;
+}
+.studio-wf-material-section.level-4,
+.studio-wf-material-section.level-5,
+.studio-wf-material-section.level-6 {
+  margin-left: 40px;
+}
+@media (max-width: 760px) {
+  .studio-wf-pdf-diagnostic-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .studio-wf-material-section.level-2,
+  .studio-wf-material-section.level-3,
+  .studio-wf-material-section.level-4,
+  .studio-wf-material-section.level-5,
+  .studio-wf-material-section.level-6 { margin-left: 0; }
+}
