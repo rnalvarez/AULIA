@@ -280,6 +280,102 @@ function median(values) {
   return sorted.length % 2 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2;
 }
 
+function coreTitle(value) {
+  return normalizedKey(
+    String(value || "")
+      .replace(/\([^)]*\)/g, " ")
+      .replace(/[\u2020\u2021*]+/g, " ")
+      .replace(/[“”"']/g, " ")
+  );
+}
+
+function buildMultiLineHeadingCandidates(page, lines, bodySize, repeatedFurniture) {
+  const output = [];
+
+  for (let index = 0; index < lines.length; index += 1) {
+    const first = lines[index];
+    const firstText = cleanPdfLine(first.text);
+    if (!firstText || isNoiseLine(first, repeatedFurniture) || paragraphLike(first)) continue;
+
+    const firstNumbered = numberingInfo(firstText);
+    const firstSectionWord = SECTION_WORD_RE.test(firstText);
+    const firstSizeRatio = first.fontSize && bodySize ? first.fontSize / bodySize : 1;
+    const firstStrong =
+      Boolean(firstNumbered) ||
+      firstSectionWord ||
+      first.bold ||
+      firstSizeRatio >= 1.18;
+    if (!firstStrong) continue;
+
+    const group = [first];
+    let cursor = index + 1;
+
+    while (cursor < lines.length && group.length < 4) {
+      const next = lines[cursor];
+      const text = cleanPdfLine(next.text);
+      if (!text || isNoiseLine(next, repeatedFurniture) || paragraphLike(next)) break;
+
+      const gap = Math.abs(Number(group[group.length - 1].y || 0) - Number(next.y || 0));
+      const sameLeft = Math.abs(Number(first.xMin || 0) - Number(next.xMin || 0)) <= 18;
+      const sameStyle = styleKey(first) === styleKey(next);
+      const sizeCompatible =
+        !first.fontSize ||
+        !next.fontSize ||
+        Math.abs(first.fontSize - next.fontSize) / Math.max(first.fontSize, next.fontSize) <= 0.12;
+      const nextSizeRatio = next.fontSize && bodySize ? next.fontSize / bodySize : 1;
+      const nextStrong =
+        Boolean(numberingInfo(text)) ||
+        SECTION_WORD_RE.test(text) ||
+        next.bold ||
+        nextSizeRatio >= 1.18;
+
+      if (
+        gap > Math.max(16, Math.max(first.fontSize || 0, next.fontSize || 0) * 0.95) ||
+        !sameLeft ||
+        !sameStyle ||
+        !sizeCompatible ||
+        !nextStrong ||
+        text.length > 90
+      ) break;
+
+      group.push(next);
+      cursor += 1;
+    }
+
+    if (group.length < 2) continue;
+
+    const title = group.map((line) => cleanPdfLine(line.text)).join(" ").replace(/\s+/g, " ").trim();
+    if (!title || title.length > 150) continue;
+
+    const topRatio = page.height ? 1 - (first.y / page.height) : 0.5;
+    const sizeRatio = first.fontSize && bodySize ? first.fontSize / bodySize : 1;
+    let score = 8 + Math.min(4, (group.length - 1) * 2);
+    if (first.bold) score += 2;
+    if (sizeRatio >= 1.22) score += 2;
+    if (sizeRatio >= 1.38) score += 2;
+    if (topRatio <= 0.22) score += 2;
+    if (!SENTENCE_END_RE.test(title)) score += 1;
+    if (title.length <= 85) score += 1;
+
+    output.push({
+      pageNumber: page.pageNumber,
+      lineIndex: index,
+      endLineIndex: index + group.length - 1,
+      title,
+      level: numberingInfo(title)?.level || 1,
+      number: numberingInfo(title)?.number || "",
+      score,
+      confidence: Math.max(0.62, Math.min(0.995, 0.50 + score * 0.04)),
+      styleKey: styleKey(first),
+      evidence: ["bloque de título multilinea", "geometría y tipografía"],
+    });
+
+    index = cursor - 1;
+  }
+
+  return output;
+}
+
 function detectHeadingCandidates(pages, repeatedFurniture, minPage = 1) {
   const candidates = [];
   const styleUse = new Map();
@@ -347,6 +443,7 @@ function detectHeadingCandidates(pages, repeatedFurniture, minPage = 1) {
       const candidate = {
         pageNumber: page.pageNumber,
         lineIndex: index,
+        endLineIndex: index,
         title: text,
         level: numbered?.level || (sectionWord ? 1 : 2),
         number: numbered?.number || "",
@@ -359,6 +456,8 @@ function detectHeadingCandidates(pages, repeatedFurniture, minPage = 1) {
       styleUse.set(candidate.styleKey, (styleUse.get(candidate.styleKey) || 0) + 1);
       candidates.push(candidate);
     }
+
+    candidates.push(...buildMultiLineHeadingCandidates(page, lines, bodySize, repeatedFurniture));
   }
 
   const consistentStyles = new Set(
@@ -490,17 +589,25 @@ function findTocWindow(pages) {
 }
 
 function titleSimilarity(a, b) {
-  const na = normalizedKey(a);
-  const nb = normalizedKey(b);
+  const na = coreTitle(a);
+  const nb = coreTitle(b);
   if (!na || !nb) return 0;
   if (na === nb) return 1;
 
   const tokensA = new Set(na.split(" ").filter((token) => token.length >= 3));
-  const tokensB = nb.split(" ").filter((token) => token.length >= 3);
-  if (!tokensA.size || !tokensB.length) return 0;
+  const tokensB = new Set(nb.split(" ").filter((token) => token.length >= 3));
+  if (!tokensA.size || !tokensB.size) return 0;
 
-  const overlap = tokensB.filter((token) => tokensA.has(token)).length / tokensB.length;
-  return overlap;
+  const intersection = Array.from(tokensA).filter((token) => tokensB.has(token)).length;
+  if (!intersection) return 0;
+
+  const shorter = Math.min(tokensA.size, tokensB.size);
+  const containment = intersection / shorter;
+  const coverageA = intersection / tokensA.size;
+  const coverageB = intersection / tokensB.size;
+
+  if (containment === 1 && shorter >= 2) return 0.93;
+  return Math.max(coverageA * 0.62 + coverageB * 0.18, containment * 0.84);
 }
 
 function findBestHeadingPage(entry, headingCandidates, minPage, estimatedPage) {
@@ -555,11 +662,23 @@ function inferIndentLevels(entries) {
 
 function buildHierarchy(entries) {
   const stack = [];
+  let activeGroup = "";
+
   return entries.map((entry) => {
-    const level = Math.max(1, Math.min(8, Number(entry.level || 1)));
+    if (entry.tocGroup) {
+      activeGroup = entry.tocGroup;
+      stack[0] = activeGroup;
+    }
+
+    const requestedLevel = Number(entry.level || 1);
+    const level = entry.tocGroup
+      ? Math.max(2, Math.min(8, requestedLevel))
+      : Math.max(1, Math.min(8, requestedLevel));
+
     stack.length = Math.max(0, level - 1);
     stack[level - 1] = entry.title;
     stack.length = level;
+
     return {
       ...entry,
       level,
@@ -625,9 +744,11 @@ function buildSectionsFromBoundaries(pages, boundaries, repeatedFurniture, sourc
     for (let pageNo = startPage; pageNo <= endPage; pageNo += 1) {
       const page = pages[pageNo - 1];
       const lines = orderedPageLines(page);
-      let startIndex = pageNo === startPage ? Math.max(0, current.lineIndex + 1) : 0;
-      let endIndex = pageNo === endPage && next && next.page === pageNo
-        ? Math.max(startIndex, next.lineIndex)
+      let startIndex = pageNo === startPage
+        ? Math.max(0, (current.endLineIndex ?? current.lineIndex ?? -1) + 1)
+        : 0;
+      let endIndex = pageNo === endPage && boundary && boundary.page === pageNo
+        ? Math.max(startIndex, boundary.lineIndex ?? boundary.endLineIndex ?? lines.length)
         : lines.length;
 
       for (let lineIndex = startIndex; lineIndex < endIndex; lineIndex += 1) {
@@ -725,6 +846,7 @@ async function buildOutlineBoundaries(pdf, pages, headingCandidates) {
       ...entry,
       page: physicalPage,
       lineIndex: lineIndex >= 0 ? lineIndex : 0,
+      endLineIndex: candidate?.candidate?.endLineIndex ?? (lineIndex >= 0 ? lineIndex : 0),
       confidence: candidate
         ? Math.max(0.76, Math.min(0.99, candidate.score))
         : 0.72,
@@ -784,6 +906,7 @@ async function buildTocBoundaries(pdf, pages, headingCandidates) {
       ...entry,
       physicalPage: match?.candidate?.pageNumber || null,
       lineIndex: match?.candidate?.lineIndex ?? -1,
+      endLineIndex: match?.candidate?.endLineIndex ?? (match?.candidate?.lineIndex ?? -1),
       matchScore: match?.score || 0,
       confidence: match
         ? Math.max(0.72, Math.min(0.995, match.score))
