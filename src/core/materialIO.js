@@ -161,6 +161,8 @@ function buildSectionFragments({
         sourcePage: section.sourcePageStart || undefined,
         sourcePageStart: section.sourcePageStart || undefined,
         sourcePageEnd: section.sourcePageEnd || undefined,
+        ...(section.printedPageStart ? { printedPageStart: section.printedPageStart } : {}),
+        ...(section.printedPageEnd ? { printedPageEnd: section.printedPageEnd } : {}),
         documentId,
         ...(sourcePageCount ? { sourcePageCount } : {}),
       });
