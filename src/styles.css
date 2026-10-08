@@ -996,6 +996,56 @@ button { border: 0; }
 .studio-wf-ai-report.error strong { color:#dda39b; }
 .studio-wf-ai-report.error span { color:#b88e87; }
 
+
+.studio-wf-material-legend {
+  display:flex;
+  flex-wrap:wrap;
+  gap:6px 14px;
+  margin:0 0 10px;
+  color:#68635b;
+  font-size:9px;
+  line-height:1.5;
+}
+.studio-wf-material-legend b { color:#9b958b; font-weight:600; }
+.studio-wf-material-section { transition:border-color .15s ease, opacity .15s ease; }
+.studio-wf-material-section.scope-reference { border-color:#3a352f !important; }
+.studio-wf-material-section.scope-excluded { border-color:#332b29 !important; opacity:.72; }
+.studio-wf-material-section-head { align-items:flex-start; }
+.studio-wf-material-scope { display:flex; flex-wrap:wrap; justify-content:flex-end; gap:4px; }
+.studio-wf-scope-btn, .studio-wf-priority-btn {
+  padding:5px 7px;
+  border:1px solid #32302c;
+  border-radius:7px;
+  color:#777169;
+  background:#171717;
+  cursor:pointer;
+  font:inherit;
+  font-size:9px;
+}
+.studio-wf-scope-btn:hover, .studio-wf-priority-btn:hover { color:#bbb3a8; border-color:#48433d; }
+.studio-wf-scope-btn.active, .studio-wf-priority-btn.active {
+  color:#e1d9cd;
+  border-color:#625c52;
+  background:#24221f;
+}
+.studio-wf-material-meta {
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:10px;
+  flex-wrap:wrap;
+  margin-top:7px;
+}
+.studio-wf-material-meta small { margin-top:0 !important; }
+.studio-wf-material-priority { display:flex; align-items:center; gap:4px; }
+.studio-wf-material-priority > span { margin-right:2px; color:#625d55; font-size:9px; }
+.studio-wf-material-focus {
+  margin-top:9px;
+  border-top:1px solid #292929;
+  padding-top:8px;
+}
+.studio-wf-material-focus summary { color:#817b72; cursor:pointer; font-size:9px; }
+.studio-wf-material-focus[open] summary { margin-bottom:9px; color:#aaa39a; }
 .studio-wf-corpus-list article { padding:10px 11px; border:1px solid #282828; border-radius:9px; background:#1a1a1a; }
 .studio-wf-corpus-list article div { display:flex; justify-content:space-between; gap:12px; }
 .studio-wf-corpus-list article strong { color:#d9d2c7; font-size:11px; }
