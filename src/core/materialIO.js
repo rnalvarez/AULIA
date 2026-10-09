@@ -314,7 +314,7 @@ function buildTextSections(text, sourceName, markdown = false) {
   return sections;
 }
 
-async function readPdf(file, { includePageImages = false } = {}) {
+async function readPdf(file, { includePageImages = false, onProgress = () => {} } = {}) {
   const pdfjsLib = await import("pdfjs-dist/legacy/build/pdf.mjs");
   pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
     "pdfjs-dist/legacy/build/pdf.worker.min.mjs",
@@ -381,6 +381,7 @@ async function readPdf(file, { includePageImages = false } = {}) {
         imageDataUrl,
       });
 
+      onProgress({ phase: includePageImages ? "rendering" : "extracting", processed: pageNumber, total: pageCount, pageNumber });
       page.cleanup?.();
     }
 
@@ -542,12 +543,12 @@ async function readDocx(file) {
   };
 }
 
-export async function readMaterialFile(file, { includePageImages = false } = {}) {
+export async function readMaterialFile(file, { includePageImages = false, onProgress = () => {} } = {}) {
   const name = file.name || "material";
   const ext = name.toLowerCase().split(".").pop();
   const documentId = makeDocumentId(name);
 
-  if (ext === "pdf") return readPdf(file, { includePageImages });
+  if (ext === "pdf") return readPdf(file, { includePageImages, onProgress });
   if (ext === "docx") return readDocx(file);
 
   if (!["txt", "md", "markdown", "json"].includes(ext)) {
@@ -714,7 +715,7 @@ export function mergeImportedDocuments(existing, incoming) {
 }
 
 
-export function applyAIMultimodalAnalysis(material, pageResults, model = "qwen/qwen3.8-27b") {
+export function applyAIMultimodalAnalysis(material, pageResults, model = "qwen/qwen3.8-27b", provider = "Groq") {
   const sourcePages = (material?.aiPages || []).slice().sort((a, b) => Number(a.pageNumber) - Number(b.pageNumber));
   const byNumber = new Map((pageResults || []).map(page => [Number(page.pageNumber), page]));
   if (!sourcePages.length || sourcePages.some(page => !byNumber.has(Number(page.pageNumber)))) {
@@ -862,7 +863,7 @@ export function applyAIMultimodalAnalysis(material, pageResults, model = "qwen/q
     warnings,
     aiPages: undefined,
     aiAnalysis: {
-      provider: "Groq",
+      provider,
       model,
       method: "multimodal-page-analysis",
       pagesProcessed: pageResults.length,
