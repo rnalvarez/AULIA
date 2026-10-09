@@ -1,4 +1,4 @@
-import { KNOWLEDGE_BASE_VERSION, knowledgeCorpusSignature, isKnowledgeBaseCurrent } from "../../core/knowledgeBase.js";
+import { KNOWLEDGE_BASE_VERSION, knowledgeCorpusSignature, legacyKnowledgeCorpusSignature, isKnowledgeBaseCurrent } from "../../core/knowledgeBase.js";
 
 const DEFAULT_MODELS = [
   "openai/gpt-oss-120b",
@@ -105,10 +105,10 @@ function findBoundary(text, start, proposedEnd) {
   return boundary >= 0 ? minimum + boundary + 1 : proposedEnd;
 }
 
-export function buildKnowledgePassages(corpus = []) {
+export function buildKnowledgePassages(corpus = [], { includeExcluded = true } = {}) {
   const passages = [];
   for (const [sourceIndex, item] of (Array.isArray(corpus) ? corpus : []).entries()) {
-    if ((item?.scope || "included") === "excluded") continue;
+    if (!includeExcluded && (item?.scope || "included") === "excluded") continue;
     const text = String(item?.content || item?.explanation || item?.summary || "").trim();
     if (!text) continue;
 
@@ -464,6 +464,8 @@ function validateEntries(rawEntries, batch) {
         pageEnd: passage.pageEnd,
         printedPageStart: passage.printedPageStart,
         printedPageEnd: passage.printedPageEnd,
+        scope: passage.scope || "included",
+        priority: passage.priority || "normal",
         excerpt,
         _key: key,
       });
@@ -589,8 +591,24 @@ export async function buildKnowledgeBase({
   if (!passages.length) throw new Error("No hay pasajes activos para indexar. Revisá el material y el alcance de sus secciones.");
 
   const sourceSignature = knowledgeCorpusSignature(corpus);
-  const current = existingIndex && existingIndex.sourceSignature === sourceSignature &&
+  const currentV2 = existingIndex && existingIndex.sourceSignature === sourceSignature &&
     existingIndex.version === KNOWLEDGE_BASE_VERSION ? existingIndex : null;
+  const legacyMatchesCurrentText = existingIndex?.version === 1 &&
+    existingIndex?.sourceSignature === legacyKnowledgeCorpusSignature(corpus);
+  const legacyMigrated = !currentV2 && legacyMatchesCurrentText
+    ? {
+        ...existingIndex,
+        version: KNOWLEDGE_BASE_VERSION,
+        sourceSignature,
+        status: "partial",
+        totalPassages: passages.length,
+        processedPassageIds: Array.isArray(existingIndex.processedPassageIds)
+          ? existingIndex.processedPassageIds
+          : [],
+        updatedAt: new Date().toISOString(),
+      }
+    : null;
+  const current = currentV2 || legacyMigrated;
 
   if (current && isKnowledgeBaseCurrent({ corpus, knowledgeBase: current })) {
     return { ...current, cached: true, requestCount: 0 };
