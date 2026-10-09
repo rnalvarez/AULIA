@@ -57,6 +57,14 @@ El backend de Teacher Studio utiliza:
 
 Esto evita almacenar grandes corpus dentro de celdas de la Sheet y mantiene separados contenido y control administrativo.
 
+## Eliminación segura de cátedras
+
+Solo el responsable (owner) puede borrar una cátedra. Studio solicita una primera confirmación y luego exige escribir el título exacto como segunda autorización. El backend emite un permiso temporal de un solo uso, ligado a la sesión docente, la cátedra y su versión; si la cátedra cambia o el permiso vence, hay que iniciar de nuevo.
+
+En una cátedra publicada, el enlace público queda deshabilitado y las versiones de Course Pack se envían a la papelera de Drive. La planilla de alumnos se conserva intencionalmente para no destruir el padrón ni el historial de interacciones. La operación se registra en la auditoría del backend.
+
+**Importante:** el despliegue de GitHub Pages solo publica el frontend. Para habilitar el borrado de cátedras publicadas, el backend ya desplegado en Google Apps Script también debe actualizarse con los archivos backend/google-apps-script/studio/Code.gs y backend/google-apps-script/studio/studio-data.gs, y luego hay que volver a implementar el Web App. La interfaz mantiene compatibilidad con el borrado de borradores mientras el backend anterior siga desplegado, pero no habilita el borrado de publicadas hasta que el backend actualizado responda.
+
 ## Control de concurrencia
 
 Cada cátedra tiene una marca de versión temporal. Studio envía la versión que cargó al intentar guardar.
