@@ -1,8 +1,8 @@
-const DEFAULT_MODELS = ["qwen/qwen3.8-27b", "qwen/qwen3.6-27b"];
+const DEFAULT_MODELS = ["qwen/qwen3.8-27b"];
 const ENDPOINT = "https://api.groq.com/openai/v1/chat/completions";
 const CACHE_PREFIX = "aulia:multimodal-ingestion:v1:";
 const DIGITAL_BATCH_SIZE = 2;
-const MAX_DIGITAL_OUTPUT_TOKENS = 2400;
+const MAX_DIGITAL_OUTPUT_TOKENS = 1500;
 const MAX_OCR_OUTPUT_TOKENS = 4500;
 
 function hashString(value) {
@@ -75,7 +75,7 @@ function pagePrompt(courseTitle, pages, batchNumber) {
   const details = pages.map(page => [
     "PÁGINA " + page.pageNumber,
     "TEXTO EXTRAÍDO AUTOMÁTICAMENTE (puede estar desordenado o incompleto):",
-    cleanText(page.extractedText, 6000) || "[No se extrajo texto; la imagen requiere lectura/OCR]",
+    cleanText(page.extractedText, 2400) || "[No se extrajo texto; la imagen requiere lectura/OCR]",
   ].join("\n")).join("\n\n----------------\n\n");
 
   return [
@@ -103,6 +103,7 @@ function pagePrompt(courseTitle, pages, batchNumber) {
 async function requestBatch({ apiKey, courseTitle, pages, batchNumber, signal }) {
   const content = [{ type: "text", text: pagePrompt(courseTitle, pages, batchNumber) }];
   for (const page of pages) {
+    content.push({ type: "text", text: "La siguiente imagen corresponde a la página " + page.pageNumber + " del documento." });
     content.push({
       type: "image_url",
       image_url: { url: page.imageDataUrl },
@@ -161,7 +162,9 @@ async function requestBatch({ apiKey, courseTitle, pages, batchNumber, signal })
     const raw = String(choice?.message?.content || "").trim();
     if (!raw) throw new Error("Groq devolvió una respuesta vacía para las páginas " + pages.map(page => page.pageNumber).join(", ") + ".");
     if (choice?.finish_reason === "length") {
-      throw new Error("La respuesta visual quedó truncada. El avance de las tandas anteriores se conservó; volvé a cargar el PDF para continuar.");
+      const error = new Error("La respuesta visual quedó truncada. El avance de las tandas anteriores se conservó; volvé a cargar el PDF para continuar.");
+      error.code = "AULIA_OUTPUT_TRUNCATED";
+      throw error;
     }
 
     let parsed;
@@ -230,13 +233,38 @@ export async function analyzePdfWithVision(material, {
       }
     }
 
-    const result = await requestBatch({
-      apiKey,
-      courseTitle,
-      pages: batch,
-      batchNumber: Math.floor(Object.keys(pageResults).length / DIGITAL_BATCH_SIZE) + 1,
-      signal,
-    });
+    let result;
+    try {
+      result = await requestBatch({
+        apiKey,
+        courseTitle,
+        pages: batch,
+        batchNumber: Math.floor(Object.keys(pageResults).length / DIGITAL_BATCH_SIZE) + 1,
+        signal,
+      });
+    } catch (error) {
+      // If a pair of rich pages overflows the JSON response, retry the pages separately.
+      if (error?.code !== "AULIA_OUTPUT_TRUNCATED" || batch.length < 2) throw error;
+      for (const singlePage of batch) {
+        const singleResult = await requestBatch({
+          apiKey,
+          courseTitle,
+          pages: [singlePage],
+          batchNumber: Math.floor(Object.keys(pageResults).length / DIGITAL_BATCH_SIZE) + 1,
+          signal,
+        });
+        model = singleResult.model || model;
+        for (const page of singleResult.pages) pageResults[String(page.pageNumber)] = page;
+        saveCache(cacheKey, signature, pageResults);
+        onProgress({
+          processed: Object.keys(pageResults).length,
+          total,
+          model,
+          pageNumbers: [singlePage.pageNumber],
+        });
+      }
+      continue;
+    }
     model = result.model || model;
     for (const page of result.pages) pageResults[String(page.pageNumber)] = page;
     saveCache(cacheKey, signature, pageResults);
