@@ -311,42 +311,85 @@ export default function StudioApp() {
   async function handleDeleteCourse(courseId, title = "esta cátedra") {
     if (!session?.token || !courseId || deletingCourseId === courseId) return;
 
-    const confirmed = window.confirm(
-      'Vas a eliminar la cátedra "' + String(title || "Nueva cátedra") + '".\n\n' +
-      "Solo puede eliminarse porque todavía está en borrador y no fue publicada. " +
-      "Su Course Pack se enviará a la papelera de Drive.\n\n¿Continuar?"
+    const listedCourse = courses.find((item) => item.courseId === courseId);
+    const displayedTitle = String(listedCourse?.title || title || "Nueva cátedra");
+    const appearsPublished = listedCourse
+      ? listedCourse.status !== "draft"
+      : (courseMeta?.courseId === courseId && courseMeta.status !== "draft");
+
+    const firstConfirmation = window.confirm(
+      "PRIMERA CONFIRMACIÓN DE BORRADO\n\n" +
+      'Cátedra: "' + displayedTitle + '"\n\n' +
+      (appearsPublished
+        ? "Esta cátedra está publicada o tiene una versión publicada. Al eliminarla, el enlace público dejará de funcionar y los estudiantes ya no podrán abrirla.\n\n"
+        : "Esta cátedra todavía está en borrador.\n\n") +
+      "Se retirarán los Course Packs de Drive y se quitará la cátedra de AULIA.\n" +
+      "La planilla de alumnos (padrón e interacciones) NO se elimina: se conserva para evitar perder esos datos.\n\n" +
+      "La operación no se puede deshacer desde Studio. ¿Querés continuar con la segunda autorización?"
     );
-
-    if (!confirmed) return;
-
-    const removedIndex = courses.findIndex((item) => item.courseId === courseId);
-    const removedItem = removedIndex >= 0 ? courses[removedIndex] : null;
-    const wasSelected = courseMeta?.courseId === courseId;
-    const previousCourse = course;
-    const previousCourseMeta = courseMeta;
-
-    // Optimistic UI: the draft disappears from the sidebar immediately.
-    setCourses((current) => {
-      const next = current.filter((item) => item.courseId !== courseId);
-      writeCachedCourses(session.teacher?.email, next);
-      return next;
-    });
-    if (wasSelected) {
-      setCourse(null);
-      setCourseMeta(null);
-      const url = new URL(window.location.href);
-      url.searchParams.delete("course");
-      window.history.replaceState({}, "", url);
-    }
+    if (!firstConfirmation) return;
 
     setDeletingCourseId(courseId);
     setError("");
+    setNotice("");
+
+    let removedItem = null;
+    let removedIndex = -1;
+    let wasSelected = false;
+    let previousCourse = null;
+    let previousCourseMeta = null;
+    let removalOptimistic = false;
 
     try {
-      await deleteTeacherCourse(session.token, courseId);
+      const prepared = await prepareTeacherCourseDeletion(session.token, courseId);
+      const authoritativeTitle = String(prepared.title || displayedTitle);
+      const exactTitle = window.prompt(
+        "SEGUNDA AUTORIZACIÓN\n\n" +
+        "Para confirmar el borrado, escribí exactamente el título de la cátedra:\n\n" +
+        authoritativeTitle + "\n\n" +
+        "Esta confirmación también se exige para cátedras publicadas."
+      );
+
+      if (exactTitle === null) return;
+      if (exactTitle.trim() !== authoritativeTitle) {
+        setError("No se eliminó la cátedra: el título escrito no coincide exactamente. No se realizaron cambios.");
+        return;
+      }
+
+      removedIndex = courses.findIndex((item) => item.courseId === courseId);
+      removedItem = removedIndex >= 0 ? courses[removedIndex] : null;
+      wasSelected = courseMeta?.courseId === courseId;
+      previousCourse = course;
+      previousCourseMeta = courseMeta;
+
+      // Optimistic update only after the second confirmation has succeeded.
+      setCourses((current) => {
+        const next = current.filter((item) => item.courseId !== courseId);
+        writeCachedCourses(session.teacher?.email, next);
+        return next;
+      });
+      if (wasSelected) {
+        setCourse(null);
+        setCourseMeta(null);
+        const url = new URL(window.location.href);
+        url.searchParams.delete("course");
+        window.history.replaceState({}, "", url);
+      }
+      removalOptimistic = true;
+
+      const result = await deleteTeacherCourse(session.token, courseId, {
+        confirmationToken: prepared.confirmationToken,
+        confirmationTitle: exactTitle.trim(),
+        confirmPublished: prepared.published === true,
+      });
+
+      if (result.studentSheetPreserved) {
+        setNotice("Cátedra eliminada. La planilla de alumnos se conservó para mantener el padrón y el historial de interacciones.");
+      } else {
+        setNotice("Cátedra eliminada correctamente.");
+      }
     } catch (err) {
-      // Roll back only when the backend rejects the deletion.
-      if (removedItem) {
+      if (removalOptimistic && removedItem) {
         setCourses((current) => {
           if (current.some((item) => item.courseId === courseId)) return current;
           const next = [...current];
@@ -355,7 +398,7 @@ export default function StudioApp() {
           return next;
         });
       }
-      if (wasSelected) {
+      if (removalOptimistic && wasSelected) {
         setCourse(previousCourse);
         setCourseMeta(previousCourseMeta);
         const url = new URL(window.location.href);
