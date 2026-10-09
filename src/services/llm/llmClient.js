@@ -77,6 +77,31 @@ function buildSystemPrompt({ course, assistant, mode, retrieved }) {
     ].filter(Boolean).join(" · "), 220);
   };
 
+  const indexedKnowledge = (retrieved || [])
+    .filter(item => item?._retrievalKind === "knowledge" && item?.knowledgeEntry)
+    .slice(0, 4);
+  const knowledgeContext = indexedKnowledge.map(item => {
+    const entry = item.knowledgeEntry || {};
+    const evidence = (Array.isArray(entry.evidence) ? entry.evidence : []).slice(0, 2);
+    const evidenceText = evidence.map(ref => [
+      "FUENTE: " + promptText(ref.sourceName || ref.title || "", 120),
+      ref.sectionPath?.length ? "SECCIÓN: " + promptText(ref.sectionPath.join(" › "), 150) : "",
+      ref.pageStart ? "PÁGINAS: " + ref.pageStart + (ref.pageEnd && ref.pageEnd !== ref.pageStart ? "-" + ref.pageEnd : "") : "",
+      "PASO DE EVIDENCIA: " + promptText(ref.excerpt || "", 210),
+    ].filter(Boolean).join(" · ")).join("\\n");
+    return [
+      "CONCEPTO INDEXADO: " + promptText(entry.term || item.title || "", 120),
+      entry.aliases?.length ? "OTROS NOMBRES: " + entry.aliases.slice(0, 6).map(value => promptText(value, 80)).join(" | ") : "",
+      entry.category ? "TIPO: " + promptText(entry.category, 70) : "",
+      entry.definition ? "DEFINICIÓN: " + promptText(entry.definition, 480) : "",
+      entry.explanation ? "DESARROLLO: " + promptText(entry.explanation, 420) : "",
+      entry.distinctions?.length ? "DISTINCIONES: " + entry.distinctions.slice(0, 2).map(value => promptText(value, 150)).join(" | ") : "",
+      entry.relatedTerms?.length ? "RELACIONES: " + entry.relatedTerms.slice(0, 5).map(value => promptText(value, 70)).join(" | ") : "",
+      entry.examples?.length ? "EJEMPLOS: " + entry.examples.slice(0, 2).map(value => promptText(value, 140)).join(" | ") : "",
+      evidenceText ? "TRAZABILIDAD AL MATERIAL ORIGINAL:\\n" + evidenceText : "",
+    ].filter(Boolean).join("\\n");
+  }).join("\\n\\n");
+
   const conceptIds = new Set((course?.concepts || []).map(concept => String(concept?.id || "")));
   const retrievedConcepts = (retrieved || [])
     .filter(item => conceptIds.has(String(item?.id || "")))
@@ -113,7 +138,7 @@ function buildSystemPrompt({ course, assistant, mode, retrieved }) {
   // Conceptos ya se incluyen arriba, con un formato específico y compacto.
   // No volver a incluirlos dentro del corpus: duplicaba tokens sin sumar evidencia.
   const retrievedCorpus = (retrieved || [])
-    .filter(item => !conceptIds.has(String(item?.id || "")))
+    .filter(item => item?._retrievalKind !== "knowledge" && !conceptIds.has(String(item?.id || "")))
     .slice(0, 4);
 
   const context = retrievedCorpus.map(item => {
@@ -164,6 +189,8 @@ function buildSystemPrompt({ course, assistant, mode, retrieved }) {
     "Interpretá los textos con libertad académica razonable: relacioná ideas, conceptos y términos equivalentes cuando el material dé sustento para hacerlo. Podés formular inferencias, pero no las presentes como citas o afirmaciones explícitas del autor si son interpretaciones tuyas.",
     "No afirmes que un concepto no está en la bibliografía solo porque no aparezca literalmente en los fragmentos recuperados. Si la evidencia seleccionada no alcanza, decí que no localizaste evidencia suficiente en los pasajes consultados; no concluyas que el libro completo no lo trata. No uses conocimiento externo como evidencia factual.",
     "Instrucciones: " + promptText(mode?.instructions || "", MAX_MODE_INSTRUCTIONS_CHARS),
+    knowledgeContext ? "BASE DE CONOCIMIENTO CONSTRUIDA A PARTIR DE LA BIBLIOGRAFÍA:\\n" + knowledgeContext : "",
+    "Las entradas de la base conceptual se extrajeron de la bibliografía de esta cátedra. Usalas para reconocer conceptos aunque el estudiante emplee sinónimos o paráfrasis; verificá sus evidencias y páginas antes de afirmar que un tema no aparece.",
     conceptItems
       ? "CONCEPTOS AUTORIZADOS PARA EL ANÁLISIS DE ESTA INTERACCIÓN:\\n" + conceptItems
       : "No hay conceptos recuperados para clasificar esta interacción.",
