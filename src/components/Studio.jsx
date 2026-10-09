@@ -1070,6 +1070,7 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
     }
     saveStudioApiKey(course.id, trimmed);
     setStudioApiKey(trimmed);
+    setIngestionProvider("groq");
     setStudioKeyInput("");
     setShowStudioKey(false);
     setStatus("IA docente configurada en esta sesión del navegador.");
@@ -1929,7 +1930,7 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
           eyebrow="MATERIAL"
           title="Bibliografía y corpus de la cátedra"
           description="Si configuraste Groq, los PDF se analizan visual y semánticamente durante la carga. La IA identifica secciones, reconstruye tablas y describe gráficos; luego podés revisar las secciones, su alcance y prioridad."
-          actions={<label className="primary studio-wf-file-btn">{busy ? "Procesando…" : "Cargar material"}<input type="file" accept=".txt,.md,.markdown,.json,.pdf,.docx,text/plain,text/markdown,application/json,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document" multiple onChange={importMaterial} disabled={busy}/></label>}
+          actions={ingestionProvider === "external" ? <span className="studio-wf-security-note">En modo externo, importá arriba el JSON que generó la otra IA.</span> : <label className={"primary studio-wf-file-btn" + (busy || (ingestionProvider === "groq" && !studioApiKey) ? " disabled" : "")}>{busy ? "Procesando…" : ingestionProvider === "groq" ? (studioApiKey ? "Cargar PDF y analizar con IA" : "Configurá Groq para continuar") : "Cargar material (extracción local)"}<input type="file" accept=".txt,.md,.markdown,.json,.pdf,.docx,text/plain,text/markdown,application/json,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document" multiple onChange={importMaterial} disabled={busy || (ingestionProvider === "groq" && !studioApiKey)}/></label>}
         >
           {materialSections.length ? <>
             <div className="studio-wf-stats">
