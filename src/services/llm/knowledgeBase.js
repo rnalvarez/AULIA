@@ -11,7 +11,11 @@ const PASSAGE_OVERLAP_CHARS = 150;
 const MAX_BATCH_CHARS = 4600;
 const MAX_ENTRIES_PER_BATCH = 4;
 const MAX_OUTPUT_TOKENS = 1400;
-const INTER_BATCH_WAIT_MS = 30000;
+const DEFAULT_TOKENS_PER_MINUTE = 8000;
+const SAFE_TPM_FRACTION = 0.88;
+const TOKEN_ESTIMATE_CHARS_PER_TOKEN = 3.2;
+const FALLBACK_OUTPUT_TOKEN_ESTIMATE = 500;
+const RATE_LIMIT_SAFETY_MS = 750;
 
 const INDEX_SCHEMA = {
   type: "object",
@@ -214,6 +218,50 @@ async function wait(milliseconds) {
   return new Promise(resolve => setTimeout(resolve, milliseconds));
 }
 
+function parseRateLimitDuration(value) {
+  const text = String(value || "");
+  const minutes = Number(text.match(/([0-9]+(?:\\.[0-9]+)?)m/i)?.[1] || 0);
+  const seconds = Number(text.match(/([0-9]+(?:\\.[0-9]+)?)s/i)?.[1] || 0);
+  const milliseconds = Number(text.match(/([0-9]+(?:\\.[0-9]+)?)ms/i)?.[1] || 0);
+  return minutes * 60000 + seconds * 1000 + milliseconds;
+}
+
+function estimateRequestTokens(prompt, recentUsage) {
+  const recentOutputs = recentUsage
+    .slice(-5)
+    .map(item => Number(item.completionTokens || 0))
+    .filter(value => value > 0);
+  const averageOutput = recentOutputs.length
+    ? recentOutputs.reduce((sum, value) => sum + value, 0) / recentOutputs.length
+    : FALLBACK_OUTPUT_TOKEN_ESTIMATE;
+  return Math.ceil(String(prompt || "").length / TOKEN_ESTIMATE_CHARS_PER_TOKEN) +
+    Math.ceil(Math.min(MAX_OUTPUT_TOKENS, Math.max(300, averageOutput * 1.2))) + 150;
+}
+
+async function waitForRateLimit({ estimatedTokens, rateLimit, recentUsage, fallbackLimit }) {
+  // Prefer Groq's own live token-budget headers whenever the browser exposes them.
+  if (Number.isFinite(rateLimit?.remainingTokens)) {
+    if (rateLimit.remainingTokens >= estimatedTokens) return;
+    const resetMs = Number(rateLimit.resetTokensMs || 0);
+    if (resetMs > 0) {
+      await wait(resetMs + RATE_LIMIT_SAFETY_MS);
+      return;
+    }
+    // If reset timing is unavailable, fall through to the local rolling-window guard.
+  }
+
+  const tokenLimit = Number(rateLimit?.limitTokens || fallbackLimit || DEFAULT_TOKENS_PER_MINUTE);
+  const safeLimit = Math.max(1000, Math.floor(tokenLimit * SAFE_TPM_FRACTION));
+  while (true) {
+    const now = Date.now();
+    while (recentUsage.length && now - recentUsage[0].at >= 60000) recentUsage.shift();
+    const usedTokens = recentUsage.reduce((sum, item) => sum + item.tokens, 0);
+    if (!recentUsage.length || usedTokens + estimatedTokens <= safeLimit) return;
+    const firstRequestExpires = recentUsage[0].at + 60000;
+    await wait(Math.max(500, firstRequestExpires - now + RATE_LIMIT_SAFETY_MS));
+  }
+}
+
 async function requestIndexBatch({ apiKey, endpoint, models, course, batch, batchNumber, totalBatches, signal }) {
   const prompt = buildIndexPrompt(course, batch, batchNumber, totalBatches);
   let lastError = null;
@@ -245,10 +293,21 @@ async function requestIndexBatch({ apiKey, endpoint, models, course, batch, batc
         signal,
       });
       const payload = await result.json().catch(() => ({}));
-      return { response: result, data: payload };
+      const limitTokens = Number(result.headers.get("x-ratelimit-limit-tokens"));
+      const remainingTokens = Number(result.headers.get("x-ratelimit-remaining-tokens"));
+      const resetTokensMs = parseRateLimitDuration(result.headers.get("x-ratelimit-reset-tokens"));
+      return {
+        response: result,
+        data: payload,
+        rateLimit: {
+          limitTokens: Number.isFinite(limitTokens) && limitTokens > 0 ? limitTokens : null,
+          remainingTokens: Number.isFinite(remainingTokens) ? remainingTokens : null,
+          resetTokensMs: resetTokensMs > 0 ? resetTokensMs : null,
+        },
+      };
     };
 
-    let { response, data } = await sendRequest(requestBody);
+    let { response, data, rateLimit } = await sendRequest(requestBody);
     let responseMessage = data?.error?.message || data?.message || "";
     // Some Groq models occasionally violate a strict JSON-schema string limit
     // even when the result is otherwise usable. Retry that batch in JSON mode;
@@ -258,7 +317,7 @@ async function requestIndexBatch({ apiKey, endpoint, models, course, batch, batc
       response.status === 400 &&
       /Generated JSON does not match the expected schema|jsonschema:/i.test(responseMessage)
     ) {
-      ({ response, data } = await sendRequest({
+      ({ response, data, rateLimit } = await sendRequest({
         ...requestBody,
         response_format: { type: "json_object" },
       }));
@@ -295,7 +354,7 @@ async function requestIndexBatch({ apiKey, endpoint, models, course, batch, batc
       throw new Error("Groq no confirmó la revisión de todos los pasajes del lote " + batchNumber + ". El lote no se marcó como procesado; volvé a intentar para asegurar la cobertura completa.");
     }
     const entries = Array.isArray(parsed?.entries) ? parsed.entries : [];
-    return { model: data?.model || model, entries, reviewedPassageIds, usage: data?.usage || null };
+    return { model: data?.model || model, entries, reviewedPassageIds, usage: data?.usage || null, rateLimit };
   }
   throw lastError || new Error("Ningún modelo configurado está disponible para el índice conceptual.");
 }
@@ -501,18 +560,25 @@ export async function buildKnowledgeBase({
   onProgress({ index: progressIndex, processed: processed.size, total: passages.length, entries: entries.length, requests: requestCount, model });
 
   const orderedModels = Array.from(new Set((Array.isArray(models) && models.length ? models : DEFAULT_MODELS).filter(Boolean)));
-  let lastRequestAt = 0;
+  const recentUsage = [];
+  let liveRateLimit = null;
+  let fallbackTokenLimit = DEFAULT_TOKENS_PER_MINUTE;
 
   for (let i = 0; i < batches.length; i += 1) {
     const batch = batches[i];
     if (batch.every(passage => processed.has(passage.passageId))) continue;
 
-    // The free plan is rate-limited by tokens per minute. Space requests so an
-    // uninterrupted indexing run does not send a burst of large batches.
-    const elapsed = Date.now() - lastRequestAt;
-    if (lastRequestAt && elapsed < INTER_BATCH_WAIT_MS) {
-      await wait(INTER_BATCH_WAIT_MS - elapsed);
-    }
+    // Pace by estimated token cost and the live Groq headers instead of a
+    // blanket 30-second delay. This preserves a safety margin on the free tier
+    // while letting small responses and low-usage windows proceed sooner.
+    const prompt = buildIndexPrompt(course, batch, i + 1, batches.length);
+    const estimatedTokens = estimateRequestTokens(prompt, recentUsage);
+    await waitForRateLimit({
+      estimatedTokens,
+      rateLimit: liveRateLimit,
+      recentUsage,
+      fallbackLimit: fallbackTokenLimit,
+    });
 
     try {
       const result = await requestIndexBatch({
@@ -530,7 +596,16 @@ export async function buildKnowledgeBase({
       const validated = validateEntries(result.entries, batch);
       entries = mergeEntries(entries, validated);
       batch.forEach(passage => processed.add(passage.passageId));
-      lastRequestAt = Date.now();
+      const promptTokens = Number(result.usage?.prompt_tokens || 0);
+      const completionTokens = Number(result.usage?.completion_tokens || 0);
+      const totalTokens = Number(result.usage?.total_tokens || 0) || estimatedTokens;
+      recentUsage.push({
+        at: Date.now(),
+        tokens: totalTokens,
+        completionTokens: completionTokens || Math.max(0, totalTokens - promptTokens),
+      });
+      liveRateLimit = result.rateLimit || null;
+      if (Number(liveRateLimit?.limitTokens) > 0) fallbackTokenLimit = liveRateLimit.limitTokens;
 
       progressIndex = makeIndex({
         sourceSignature,
