@@ -917,7 +917,11 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
           const rawText = await file.text();
           let parsed;
           try {
-            parsed = JSON.parse(rawText.replace(/^\\uFEFF/, "").trim());
+            const cleanedJson = rawText.replace(/^\uFEFF/, "").trim()
+              .replace(/^\x60{3}(?:json)?\\s*/i, "")
+              .replace(/\\s*\x60{3}$/, "")
+              .trim();
+            parsed = JSON.parse(cleanedJson);
           } catch {
             throw new Error("El archivo no contiene JSON válido. Guardá la respuesta de la IA como .json, sin texto adicional.");
           }
@@ -1546,8 +1550,10 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
             <span>
               {knowledgeBaseReport?.processed ?? knowledgeBaseStats.processedPassages}/
               {knowledgeBaseReport?.total ?? knowledgeBaseStats.totalPassages} pasajes procesados ·
-              {" "}{knowledgeBaseReport?.entries ?? knowledgeBaseStats.entries} entradas conceptuales ·
-              {" "}{knowledgeBaseReport?.requests ?? draft.knowledgeBase?.requestCount ?? 0} consultas a Groq
+              {" "}{knowledgeBaseReport?.entries ?? knowledgeBaseStats.entries} entradas conceptuales
+              {(knowledgeBaseReport?.model || draft.knowledgeBase?.model) === "Análisis externo"
+                ? " · análisis externo"
+                : " · " + (knowledgeBaseReport?.requests ?? draft.knowledgeBase?.requestCount ?? 0) + " consultas a Groq"}
             </span>
             {knowledgeBaseReport?.status === "processing" && (knowledgeBaseReport.total || 0) > 0 &&
               <progress className="studio-wf-progress" max={knowledgeBaseReport.total} value={Math.min(knowledgeBaseReport.processed || 0, knowledgeBaseReport.total)} />}
