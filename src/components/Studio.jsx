@@ -3,7 +3,8 @@ import { cloneCourse, validateCourse } from "../core/courseContract.js";
 import { downloadCoursePack, readCoursePackFile } from "../core/coursePackIO.js";
 import { readMaterialFile, materialToCorpus, mergeImportedBibliography, mergeImportedDocuments } from "../core/materialIO.js";
 import { requestTeacherProposal } from "../services/llm/teacherProposal.js";
-import { buildKnowledgeBase } from "../services/llm/knowledgeBase.js";
+import { buildKnowledgeBase, buildKnowledgePassages, isSupportedKnowledgeExcerpt, normalizeExternalKnowledgeEntries, mergeKnowledgeBaseEntries } from "../services/llm/knowledgeBase.js";
+import { createExternalKnowledgePackage, createExternalKnowledgePrompt, downloadJsonFile, EXTERNAL_KNOWLEDGE_OUTPUT_FORMAT } from "../core/externalKnowledgeBaseIO.js";
 import { isKnowledgeBaseCurrent, summarizeKnowledgeBase, knowledgeCorpusSignature } from "../core/knowledgeBase.js";
 import { clearStudioApiKey, isGroqApiKey, loadStudioApiKey, saveStudioApiKey } from "../utils/studioStorage.js";
 import LegalNotice from "./LegalNotice.jsx";
@@ -430,6 +431,7 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
   const [legalAccepted, setLegalAccepted] = useState(false);
   const [analysisReport, setAnalysisReport] = useState(null);
   const [knowledgeBaseReport, setKnowledgeBaseReport] = useState(null);
+  const [showExternalPrompt, setShowExternalPrompt] = useState(false);
 
   useEffect(() => {
     const saved = localStorage.getItem(storageKey);
@@ -869,6 +871,193 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
     setStatus("Se eliminó la clave de IA docente de esta sesión.");
   }
 
+  function downloadExternalKnowledgeSource() {
+    if (!externalPassages.length) {
+      setStatus("No hay pasajes activos para preparar. Revisá la bibliografía y el alcance de las secciones.");
+      return;
+    }
+    const pack = createExternalKnowledgePackage({ course: draft, passages: externalPassages });
+    downloadJsonFile(pack, slug(draft.title) + "-aulia-para-ia-externa.json");
+    setStatus("Archivo preparado. Subilo a la IA que prefieras y pegá las instrucciones copiadas desde Studio.");
+  }
+
+  async function copyExternalPrompt() {
+    try {
+      if (!navigator.clipboard?.writeText) throw new Error("El navegador no habilitó el portapapeles.");
+      await navigator.clipboard.writeText(externalPrompt);
+      setShowExternalPrompt(false);
+      setStatus("Instrucciones copiadas. Pegalas en el chat de la IA externa después de adjuntar el archivo JSON.");
+    } catch {
+      setShowExternalPrompt(true);
+      setStatus("No se pudo copiar automáticamente. Seleccioná el texto de instrucciones que aparece abajo y copialo manualmente.");
+    }
+  }
+
+  async function importExternalKnowledge(e) {
+    const files = Array.from(e.target.files || []);
+    e.target.value = "";
+    if (!files.length) return;
+
+    setBusy(true);
+    setStatus("Validando los archivos de análisis externo…");
+    let nextIndex = draft.knowledgeBase &&
+      draft.knowledgeBase.sourceSignature === knowledgeCorpusSignature(draft.corpus || []) &&
+      draft.knowledgeBase.version === 1
+      ? cloneCourse(draft.knowledgeBase)
+      : null;
+    const expectedSignature = knowledgeCorpusSignature(draft.corpus || []);
+    const passagesById = new Map(externalPassages.map(passage => [passage.passageId, passage]));
+    const failures = [];
+    let importedFiles = 0;
+    let importedConcepts = 0;
+
+    try {
+      for (const file of files) {
+        try {
+          const rawText = await file.text();
+          let parsed;
+          try {
+            parsed = JSON.parse(rawText.replace(/^\\uFEFF/, "").trim());
+          } catch {
+            throw new Error("El archivo no contiene JSON válido. Guardá la respuesta de la IA como .json, sin texto adicional.");
+          }
+
+          if (parsed?.format !== EXTERNAL_KNOWLEDGE_OUTPUT_FORMAT) {
+            throw new Error("No reconoce el formato de salida de AULIA. Copiá las instrucciones del Studio y pedile a la IA que respete el formato JSON indicado.");
+          }
+          if (parsed?.version !== 1) {
+            throw new Error("La versión del archivo no es compatible con esta versión de AULIA.");
+          }
+          if (parsed?.sourceSignature !== expectedSignature) {
+            throw new Error("Este resultado corresponde a otra versión de la bibliografía. Volvé a exportar el material y generar el análisis.");
+          }
+          if (Number(parsed?.totalPassages) !== externalPassages.length) {
+            throw new Error("El total de pasajes del archivo no coincide con la bibliografía actual.");
+          }
+          if (!Array.isArray(parsed?.processedPassageIds) || !Array.isArray(parsed?.entries)) {
+            throw new Error("Faltan processedPassageIds o entries en el archivo JSON.");
+          }
+
+          const processedIds = parsed.processedPassageIds.map(value => String(value || "").trim()).filter(Boolean);
+          const uniqueProcessedIds = Array.from(new Set(processedIds));
+          if (!uniqueProcessedIds.length) {
+            throw new Error("El archivo no declara ningún pasaje revisado.");
+          }
+          const unknownIds = uniqueProcessedIds.filter(id => !passagesById.has(id));
+          if (unknownIds.length) {
+            throw new Error("El resultado contiene IDs de pasajes que no pertenecen a esta bibliografía: " + unknownIds.slice(0, 3).join(", "));
+          }
+          if (uniqueProcessedIds.length !== processedIds.length) {
+            throw new Error("El archivo repite IDs dentro de processedPassageIds. Pedile a la IA que devuelva cada ID una sola vez.");
+          }
+
+          const processedSet = new Set(uniqueProcessedIds);
+          const relevantPassages = uniqueProcessedIds.map(id => passagesById.get(id));
+          for (const [entryIndex, entry] of parsed.entries.entries()) {
+            if (!String(entry?.term || "").trim()) {
+              throw new Error("La entrada conceptual " + (entryIndex + 1) + " no tiene term.");
+            }
+            if (!Array.isArray(entry?.evidence) || !entry.evidence.length) {
+              throw new Error("La entrada “" + String(entry.term).slice(0, 80) + "” no incluye evidencia bibliográfica.");
+            }
+            for (const evidence of entry.evidence) {
+              const passageId = String(evidence?.passageId || "");
+              if (!passagesById.has(passageId) || !processedSet.has(passageId)) {
+                throw new Error("La entrada “" + String(entry.term).slice(0, 80) + "” cita un pasaje que no fue declarado como revisado en este archivo.");
+              }
+              if (!isSupportedKnowledgeExcerpt(passagesById.get(passageId).text, evidence?.excerpt)) {
+                throw new Error("La cita de evidencia de “" + String(entry.term).slice(0, 80) + "” no coincide literalmente con el pasaje original. Pedile a la IA que use una cita breve copiada del archivo.");
+              }
+            }
+          }
+
+          const normalizedEntries = normalizeExternalKnowledgeEntries(parsed.entries, relevantPassages);
+          if (parsed.entries.length && !normalizedEntries.length) {
+            throw new Error("No se pudo validar ninguna entrada. Revisá que cada concepto tenga term y evidencia vinculada a un ID real.");
+          }
+
+          if (!nextIndex) {
+            nextIndex = {
+              version: 1,
+              sourceSignature: expectedSignature,
+              status: "partial",
+              totalPassages: externalPassages.length,
+              processedPassageIds: [],
+              entries: [],
+              requestCount: 0,
+              updatedAt: new Date().toISOString(),
+            };
+          }
+
+          const mergedProcessed = new Set([
+            ...(nextIndex.processedPassageIds || []),
+            ...uniqueProcessedIds,
+          ]);
+          const allPassageIds = externalPassages.map(passage => passage.passageId);
+          const orderedProcessed = allPassageIds.filter(id => mergedProcessed.has(id));
+          const mergedEntries = mergeKnowledgeBaseEntries(nextIndex.entries || [], normalizedEntries);
+          const complete = orderedProcessed.length === allPassageIds.length;
+
+          nextIndex = {
+            ...nextIndex,
+            version: 1,
+            sourceSignature: expectedSignature,
+            status: complete ? "complete" : "partial",
+            totalPassages: externalPassages.length,
+            processedPassageIds: orderedProcessed,
+            entries: mergedEntries,
+            model: "Análisis externo",
+            updatedAt: new Date().toISOString(),
+          };
+          importedFiles += 1;
+          importedConcepts += normalizedEntries.length;
+        } catch (err) {
+          failures.push(file.name + ": " + (err?.message || "No se pudo importar el archivo."));
+        }
+      }
+
+      if (!importedFiles || !nextIndex) {
+        throw new Error(failures.join("\\n") || "No se pudo importar ningún archivo.");
+      }
+
+      const nextDraft = { ...cloneCourse(draft), knowledgeBase: nextIndex };
+      setDraft(nextDraft);
+      setValidation(null);
+      setKnowledgeBaseReport({
+        status: nextIndex.status === "complete" ? "complete" : "partial",
+        processed: nextIndex.processedPassageIds.length,
+        total: nextIndex.totalPassages,
+        entries: nextIndex.entries.length,
+        requests: nextIndex.requestCount || 0,
+        model: "Análisis externo",
+        error: "",
+      });
+      try {
+        localStorage.setItem(storageKey, JSON.stringify({
+          version: courseMeta?.updatedAt || "",
+          draft: nextDraft,
+        }));
+      } catch {}
+
+      const coverage = nextIndex.processedPassageIds.length + "/" + nextIndex.totalPassages + " pasajes";
+      const failureText = failures.length
+        ? " No se importaron " + failures.length + " archivo(s): " + failures.slice(0, 2).join(" · ")
+        : "";
+      setStatus(
+        "Se importaron " + importedFiles + " archivo(s) de análisis externo (" + importedConcepts +
+        " entradas revisadas). Cobertura acumulada: " + coverage + ". " +
+        (nextIndex.status === "complete"
+          ? "La base conceptual está completa. Guardá la cátedra para conservarla y después publicá."
+          : "Podés importar más resultados de la misma conversación de IA hasta completar todos los pasajes.") +
+        failureText
+      );
+    } catch (err) {
+      setStatus(err?.message || "No se pudo importar el análisis externo.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function buildFullKnowledgeBase() {
     if (!draft.corpus?.length) {
       setStep("material");
@@ -1062,6 +1251,14 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
       setBusy(false);
     }
   }
+
+  const externalPassages = useMemo(() => buildKnowledgePassages(draft.corpus || []), [draft.corpus]);
+  const externalSourceSignature = useMemo(() => knowledgeCorpusSignature(draft.corpus || []), [draft.corpus]);
+  const externalPrompt = useMemo(() => createExternalKnowledgePrompt({
+    courseTitle: draft.title,
+    sourceSignature: externalSourceSignature,
+    totalPassages: externalPassages.length,
+  }), [draft.title, externalSourceSignature, externalPassages.length]);
 
   const knowledgeBaseCurrent = isKnowledgeBaseCurrent(draft);
   const knowledgeBaseStats = summarizeKnowledgeBase(draft.knowledgeBase);
@@ -1360,6 +1557,57 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
             {!knowledgeBaseCurrent && <small>La publicación requiere este análisis completo para que el chatbot utilice el índice. Las secciones marcadas como Excluir no se indexan; Incluido y Referencial sí.</small>}
           </div>
         </Panel>
+        <Panel
+          eyebrow="ALTERNATIVA SIN GROQ"
+          title="Analizar la bibliografía con otra IA"
+          description="Si preferís ChatGPT, Claude, Gemini u otro servicio, podés preparar un archivo con los pasajes y llevarlo a esa herramienta. No necesitás una API key ni saber programar."
+        >
+          <div className="studio-wf-external-intro">
+            <strong>Un asistente guiado para hacer el proceso por fuera de AULIA</strong>
+            <p>Studio prepara el material y las instrucciones. La IA externa genera uno o varios archivos JSON; al importarlos, AULIA verifica sus referencias y acumula el avance hasta cubrir toda la bibliografía activa.</p>
+          </div>
+          <details className="studio-wf-external-help">
+            <summary>Ver guía paso a paso</summary>
+            <ol>
+              <li><strong>Descargá el paquete de análisis.</strong> Contiene los pasajes con sus IDs y referencias. Solo incluye las secciones Incluido y Referencial; las excluidas no se envían.</li>
+              <li><strong>Abrí el servicio de IA que uses.</strong> Adjuntá el JSON descargado y pulsá «Copiar instrucciones». Pegá ese texto en el chat para explicarle a la IA qué debe hacer y en qué formato.</li>
+              <li><strong>Pedí que trabaje por tandas.</strong> Si no entra todo en una respuesta, escribí «CONTINUAR». Guardá cada resultado como un archivo .json independiente. Algunas herramientas pueden crear el archivo; si la respuesta aparece como texto, pedile que entregue JSON válido sin comentarios y guardalo con extensión .json.</li>
+              <li><strong>Importá los resultados.</strong> Podés seleccionar varios JSON a la vez. AULIA combinará sus conceptos y referencias, y mostrará cuántos pasajes quedan cubiertos.</li>
+              <li><strong>Guardá y publicá.</strong> La publicación se habilita cuando la base acumulada cubre todos los pasajes activos. Revisá los resultados de la IA antes de publicar.</li>
+            </ol>
+            <div className="studio-wf-tool-row">
+              <button className="primary" type="button" onClick={downloadExternalKnowledgeSource} disabled={!canEdit || !externalPassages.length || busy}>
+                1. Descargar paquete de bibliografía (.json)
+              </button>
+              <button className="ghost" type="button" onClick={copyExternalPrompt} disabled={!canEdit || !externalPassages.length || busy}>
+                2. Copiar instrucciones para la IA
+              </button>
+              <label className={"ghost studio-file" + (!canEdit || busy ? " disabled" : "")}>
+                3. Importar resultado(s) JSON
+                <input type="file" accept="application/json,.json,text/plain,.txt" multiple onChange={importExternalKnowledge} disabled={!canEdit || busy}/>
+              </label>
+            </div>
+            <small className="studio-wf-external-note">
+              El análisis externo se realiza en el servicio que elijas y queda sujeto a sus límites y políticas. No subas materiales que no estés autorizado a compartir con ese proveedor.
+            </small>
+            {showExternalPrompt && <label className="studio-wf-external-prompt">
+              <span>Instrucciones para copiar manualmente</span>
+              <textarea value={externalPrompt} readOnly onFocus={event => event.target.select()} rows={11}/>
+            </label>}
+          </details>
+          <div className={"studio-wf-ai-report " + (knowledgeBaseCurrent ? "ok" : knowledgeBaseReport?.status === "partial" ? "error" : "")}>
+            <strong>
+              {knowledgeBaseCurrent
+                ? "✓ Base conceptual completa"
+                : draft.knowledgeBase?.status === "partial"
+                  ? "Análisis externo o automático parcial; puede continuarse"
+                  : "Estado de la importación externa"}
+            </strong>
+            <span>{knowledgeBaseStats.processedPassages}/{knowledgeBaseStats.totalPassages} pasajes cubiertos · {knowledgeBaseStats.entries} entradas conceptuales</span>
+            {!knowledgeBaseCurrent && <small>Se acumula el progreso de los archivos que importes. Todos deben corresponder a esta versión de la bibliografía.</small>}
+          </div>
+        </Panel>
+
         <Panel eyebrow="ORGANIZACIÓN PEDAGÓGICA" title="Revisión automática opcional" description="Esta revisión no reemplaza la selección docente. Sirve para experimentar con una organización posible después de haber marcado prioridades, temas, conceptos y límites en Material." actions={<>
           <button className="primary" type="button" onClick={analyzeWithAI} disabled={!canEdit || !draft.corpus?.length || busy}>{busy ? "IA ocupada…" : "Revisar propuesta automática · 1 consulta"}</button>
           <button className="ghost" type="button" onClick={() => setShowStudioKey((value) => !value)} disabled={!canEdit}>{studioApiKey ? "Cambiar clave IA" : "Configurar IA docente"}</button>
