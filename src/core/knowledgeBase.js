@@ -12,7 +12,6 @@ function hashString(value) {
 
 export function knowledgeCorpusSignature(corpus = []) {
   const active = (Array.isArray(corpus) ? corpus : [])
-    .filter((item) => (item?.scope || "included") !== "excluded")
     .map((item) => [
       item?.id,
       item?.title,
