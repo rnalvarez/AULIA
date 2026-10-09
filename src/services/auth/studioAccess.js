@@ -114,10 +114,22 @@ export async function publishTeacherCourse(token, courseId, course, expectedUpda
   });
 }
 
-export async function deleteTeacherCourse(token, courseId) {
+export async function prepareTeacherCourseDeletion(token, courseId) {
+  return request({
+    action: "prepare-delete-course",
+    token,
+    courseId,
+    acknowledgeDelete: true,
+  });
+}
+
+export async function deleteTeacherCourse(token, courseId, confirmation = {}) {
   return request({
     action: "delete-course",
     token,
     courseId,
+    confirmationToken: confirmation.confirmationToken || "",
+    confirmationTitle: confirmation.confirmationTitle || "",
+    confirmPublished: confirmation.confirmPublished === true,
   });
 }
