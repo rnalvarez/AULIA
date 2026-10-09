@@ -45,8 +45,18 @@ function safePart(value) {
     .replace(/[^a-zA-Z0-9._-]+/g, "-").slice(0, 120) || "material";
 }
 
+function stableHash(value) {
+  let hash = 2166136261;
+  const text = String(value || "");
+  for (let index = 0; index < text.length; index += 1) {
+    hash ^= text.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(16).padStart(8, "0");
+}
+
 export function pendingPdfId(courseId, fileName) {
-  return "pending-pdf::" + safePart(courseId) + "::" + safePart(fileName);
+  return "pending-pdf::" + safePart(courseId) + "::" + safePart(fileName) + "::" + stableHash(fileName);
 }
 
 export async function savePendingPdf(courseId, file) {
@@ -91,8 +101,11 @@ export async function deletePendingPdf(id) {
 }
 
 export async function saveExternalAnalysisBatch(courseId, sourceName, batch) {
-  const id = "external-analysis::" + safePart(courseId) + "::" + safePart(sourceName);
+  const id = "external-analysis::" + safePart(courseId) + "::" + safePart(sourceName) + "::" + stableHash(sourceName);
   const current = await withStore("readonly", store => store.get(id));
+  if (current && current.kind === "external-analysis" && current.sourceName === sourceName && Number(current.totalPages) !== Number(batch.totalPages)) {
+    throw new Error("El total de páginas no coincide con las tandas externas que ya guardaste para este documento. Revisá totalPages antes de importar otra tanda.");
+  }
   const sameDocument = current &&
     current.kind === "external-analysis" &&
     Number(current.totalPages) === Number(batch.totalPages) &&
