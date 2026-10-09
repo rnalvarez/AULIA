@@ -908,6 +908,7 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
       : null;
     const expectedSignature = knowledgeCorpusSignature(draft.corpus || []);
     const passagesById = new Map(externalPassages.map(passage => [passage.passageId, passage]));
+    const passagePosition = new Map(externalPassages.map((passage, index) => [passage.passageId, index]));
     const failures = [];
     let importedFiles = 0;
     let importedConcepts = 0;
@@ -954,6 +955,10 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
           }
           if (uniqueProcessedIds.length !== processedIds.length) {
             throw new Error("El archivo repite IDs dentro de processedPassageIds. Pedile a la IA que devuelva cada ID una sola vez.");
+          }
+          const positions = uniqueProcessedIds.map(id => passagePosition.get(id)).sort((a, b) => a - b);
+          if (positions[positions.length - 1] - positions[0] + 1 !== positions.length) {
+            throw new Error("Los IDs de este archivo no forman una tanda consecutiva. Pedile a la IA que procese los pasajes en orden y no mezcle tandas.");
           }
 
           const processedSet = new Set(uniqueProcessedIds);
