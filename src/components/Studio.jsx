@@ -666,73 +666,215 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
     updateMaterialSection(sectionId, { priority });
   }
 
-  async function importMaterial(e) {
-    const files = Array.from(e.target.files || []);
-    e.target.value = "";
+  async function processMaterialFiles(files, { forceVision = false } = {}) {
     if (!files.length) return;
     setAnalysisReport(null);
     setBusy(true);
+    setUploadProgress(null);
+    let workingDraft = cloneCourse(draft);
+    let failedCount = 0;
+    let multimodalDocuments = 0;
+    let conventionalDocuments = 0;
+    let processedPages = 0;
+
     try {
-      const baseIds = [...(draft.corpus || [])];
-      const collected = [];
-      const bibliography = [];
-      const documents = [];
-      let warnings = 0;
-      let pages = 0;
-      let multimodalDocuments = 0;
-      let conventionalDocuments = 0;
-
       for (const file of files) {
-        setStatus("Preparando " + file.name + "…");
-        const extracted = await readMaterialFile(file, { includePageImages: Boolean(studioApiKey) });
-        let prepared = extracted;
+        const ext = String(file.name || "").toLowerCase().split(".").pop();
+        const useVision = ext === "pdf" && Boolean(studioApiKey) && (forceVision || ingestionProvider === "groq");
+        let pendingId = "";
+        try {
+          if (useVision) {
+            const pendingRecord = await savePendingPdf(course.id, file);
+            pendingId = pendingRecord.id;
+            setPendingPdfs(await listPendingPdfs(course.id));
+          }
 
-        if (studioApiKey && Array.isArray(extracted.aiPages) && extracted.aiPages.length) {
-          const result = await analyzePdfWithVision(extracted, {
-            apiKey: studioApiKey,
-            courseTitle: draft.title,
-            onProgress: (progress) => setStatus(
-              "IA multimodal · " + file.name + " · " + progress.processed + "/" + progress.total +
-              " páginas analizadas con " + (progress.model || "Groq") + ". El avance se conserva para reanudar."
-            ),
+          setUploadProgress({
+            fileName: file.name,
+            phase: "extracting",
+            processed: 0,
+            total: 0,
+            message: useVision
+              ? "Leyendo el PDF y preparando imágenes de sus páginas…"
+              : "Extrayendo el texto del documento…",
+            error: "",
+            pendingId,
           });
-          prepared = applyAIMultimodalAnalysis(extracted, result.pages, result.model);
-          multimodalDocuments += 1;
-        } else {
-          conventionalDocuments += 1;
-        }
+          setStatus("Preparando " + file.name + "…");
 
-        if (!prepared.corpus?.length) {
-          throw new Error(
-            "No se pudo recuperar texto de " + file.name + ". Para analizar un PDF escaneado, guardá tu clave de Groq antes de cargarlo y volvé a seleccionar el archivo."
-          );
-        }
+          const extracted = await readMaterialFile(file, {
+            includePageImages: useVision,
+            onProgress: (progress) => {
+              setUploadProgress(current => ({
+                ...(current || {}),
+                fileName: file.name,
+                phase: progress.phase || "extracting",
+                processed: progress.processed || 0,
+                total: progress.total || 0,
+                message: (progress.phase === "rendering" ? "Preparando imágenes" : "Extrayendo texto") +
+                  " · página " + (progress.processed || 0) + " de " + (progress.total || 0),
+                error: "",
+                pendingId,
+              }));
+            },
+          });
+          let prepared = extracted;
 
-        const material = materialToCorpus(prepared, [...baseIds, ...collected]);
-        collected.push(...material.corpus);
-        bibliography.push(...(material.bibliography || []));
-        if (material.document) documents.push(material.document);
-        warnings += material.warnings?.length || 0;
-        pages += material.pages || 0;
+          if (useVision && Array.isArray(extracted.aiPages) && extracted.aiPages.length) {
+            setUploadProgress({
+              fileName: file.name,
+              phase: "processing",
+              processed: 0,
+              total: extracted.aiPages.length,
+              message: "La IA está interpretando el contenido de las páginas, sus secciones y los elementos visuales.",
+              error: "",
+              pendingId,
+            });
+            const result = await analyzePdfWithVision(extracted, {
+              apiKey: studioApiKey,
+              courseTitle: workingDraft.title,
+              onProgress: (progress) => {
+                const activePages = progress.activePageNumbers || progress.pageNumbers || [];
+                setUploadProgress({
+                  fileName: file.name,
+                  phase: progress.phase || "processing",
+                  processed: progress.processed || 0,
+                  total: progress.total || extracted.aiPages.length,
+                  model: progress.model || "",
+                  activePages,
+                  message: progress.phase === "processing-batch"
+                    ? "Analizando página(s) " + activePages.join(", ") + "…"
+                    : "Análisis visual y semántico en curso.",
+                  error: "",
+                  pendingId,
+                });
+              },
+            });
+            prepared = applyAIMultimodalAnalysis(extracted, result.pages, result.model);
+            multimodalDocuments += 1;
+            processedPages += result.total || result.pages.length;
+          } else {
+            conventionalDocuments += 1;
+          }
+
+          if (!prepared.corpus?.length) {
+            throw new Error(
+              "No se pudo recuperar texto de " + file.name +
+              ". Para leer un PDF escaneado, elegí IA interna · Groq y configurá la clave antes de cargarlo."
+            );
+          }
+
+          const material = materialToCorpus(prepared, workingDraft.corpus || []);
+          workingDraft = {
+            ...workingDraft,
+            corpus: [...(workingDraft.corpus || []), ...material.corpus],
+            documents: mergeImportedDocuments(workingDraft.documents || [], material.document ? [material.document] : []),
+            bibliography: mergeImportedBibliography(workingDraft.bibliography || [], material.bibliography || []),
+            knowledgeBase: null,
+          };
+          setDraft(cloneCourse(workingDraft));
+          setValidation(null);
+          try {
+            localStorage.setItem(storageKey, JSON.stringify({
+              version: courseMeta?.updatedAt || "",
+              draft: workingDraft,
+            }));
+          } catch {}
+
+          if (pendingId) {
+            await deletePendingPdf(pendingId);
+            setPendingPdfs(await listPendingPdfs(course.id));
+          }
+          setUploadProgress({
+            fileName: file.name,
+            phase: "complete",
+            processed: useVision ? extracted.aiPages.length : 1,
+            total: useVision ? extracted.aiPages.length : 1,
+            model: prepared.aiAnalysis?.model || "",
+            message: useVision
+              ? "Documento incorporado al corpus con análisis visual y semántico de IA."
+              : "Documento incorporado al corpus.",
+            error: "",
+            pendingId: "",
+          });
+        } catch (error) {
+          failedCount += 1;
+          setUploadProgress({
+            fileName: file.name,
+            phase: pendingId ? "paused" : "error",
+            processed: uploadProgress?.processed || 0,
+            total: uploadProgress?.total || 0,
+            message: pendingId
+              ? "El análisis se pausó. AULIA conservó el PDF y las páginas ya analizadas en este navegador."
+              : "No se pudo completar la carga de este archivo.",
+            error: error?.message || "Error desconocido durante la carga.",
+            pendingId,
+          });
+          if (pendingId) {
+            try { setPendingPdfs(await listPendingPdfs(course.id)); } catch {}
+          }
+          setStatus(pendingId
+            ? "Análisis pausado para " + file.name + ". Usá «Reanudar análisis»; no hace falta seleccionar el archivo otra vez."
+            : (error?.message || "No se pudo cargar el material."));
+        }
       }
 
-      mutate((current) => ({
-        ...current,
-        corpus: [...(current.corpus || []), ...collected],
-        documents: mergeImportedDocuments(current.documents || [], documents),
-        bibliography: mergeImportedBibliography(current.bibliography || [], bibliography),
-      }), collected.length + " fragmentos de recuperación incorporados desde " +
-        files.length + " documento" + (files.length === 1 ? "" : "s") + "." +
-        (pages ? " · " + pages + " páginas." : "") +
-        (multimodalDocuments ? " · " + multimodalDocuments + " PDF(s) analizados visual y semánticamente con IA." : "") +
-        (conventionalDocuments ? " · " + conventionalDocuments + " archivo(s) procesados por extracción convencional." : "") +
-        (warnings ? " · " + warnings + " aviso(s) para revisar." : ""));
-    } catch (err) {
-      setStatus(err?.message || "No se pudo cargar el material.");
+      if (!failedCount) {
+        setStatus(
+          "Carga completada." +
+          (multimodalDocuments ? " " + multimodalDocuments + " PDF(s) analizados con IA multimodal (" + processedPages + " páginas)." : "") +
+          (conventionalDocuments ? " " + conventionalDocuments + " archivo(s) procesados por extracción local." : "") +
+          " Revisá las secciones y generá la base conceptual antes de publicar."
+        );
+      } else if (files.length > 1) {
+        setStatus(failedCount + " archivo(s) quedaron pendientes. Podés reanudarlos sin volver a seleccionarlos.");
+      }
+    } catch (error) {
+      setStatus(error?.message || "No se pudo cargar el material.");
     } finally {
       setBusy(false);
+      try { setPendingPdfs(await listPendingPdfs(course.id)); } catch {}
     }
   }
+
+  async function importMaterial(e) {
+    const files = Array.from(e.target.files || []);
+    e.target.value = "";
+    await processMaterialFiles(files);
+  }
+
+  async function resumePendingPdf(pending) {
+    if (!studioApiKey) {
+      setIngestionProvider("groq");
+      setShowStudioKey(true);
+      setStatus("El PDF está guardado. Configurá tu clave personal de Groq para reanudarlo; no hace falta volver a cargarlo.");
+      return;
+    }
+    setIngestionProvider("groq");
+    setBusy(true);
+    try {
+      const file = await getPendingPdf(pending.id);
+      if (!file) throw new Error("No se encontró el PDF guardado. Si el almacenamiento del navegador fue borrado, será necesario seleccionar el archivo otra vez.");
+      await processMaterialFiles([file], { forceVision: true });
+    } catch (error) {
+      setStatus(error?.message || "No se pudo recuperar el PDF pendiente.");
+    } finally {
+      setBusy(false);
+      try { setPendingPdfs(await listPendingPdfs(course.id)); } catch {}
+    }
+  }
+
+  async function discardPendingPdf(pending) {
+    try {
+      await deletePendingPdf(pending.id);
+      setPendingPdfs(await listPendingPdfs(course.id));
+      setStatus("Se descartó el archivo pendiente " + pending.fileName + ".");
+      if (uploadProgress?.pendingId === pending.id) setUploadProgress(null);
+    } catch (error) {
+      setStatus(error?.message || "No se pudo descartar el archivo pendiente.");
+    }
+  }
+
   function addBibliography() {
     mutate((c) => ({ ...c, bibliography: [...(c.bibliography || []), {
       id: uniqueId("bibliografia", c.bibliography), title: "Nueva referencia", author: "", publisher: "", year: "", role: "complementaria"
