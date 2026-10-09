@@ -132,6 +132,9 @@ export default function StudioApp() {
       }
 
       return available;
+    } catch (err) {
+      setError(err.message || "No se pudieron actualizar las cátedras.");
+      return readCachedCourses(activeSession.teacher?.email);
     } finally {
       setLoadingCourses(false);
     }
@@ -346,6 +349,7 @@ export default function StudioApp() {
           if (current.some((item) => item.courseId === courseId)) return current;
           const next = [...current];
           next.splice(Math.max(0, removedIndex), 0, removedItem);
+          writeCachedCourses(session.teacher?.email, next);
           return next;
         });
       }
