@@ -809,8 +809,8 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
           setUploadProgress({
             fileName: file.name,
             phase: pendingId ? "paused" : "error",
-            processed: uploadProgress?.processed || 0,
-            total: uploadProgress?.total || 0,
+            processed: lastProgress.processed,
+            total: lastProgress.total,
             message: pendingId
               ? "El análisis se pausó. AULIA conservó el PDF y las páginas ya analizadas en este navegador."
               : "No se pudo completar la carga de este archivo.",
