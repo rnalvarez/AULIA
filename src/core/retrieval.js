@@ -1,3 +1,18 @@
+const STOP_WORDS = new Set([
+  "a", "al", "algo", "algunas", "algunos", "ante", "antes", "asi", "aun",
+  "aunque", "bajo", "bien", "cada", "casi", "como", "con", "contra", "cual",
+  "cuando", "de", "del", "desde", "donde", "dos", "durante", "e", "el", "ella",
+  "ellas", "ello", "ellos", "en", "entre", "era", "eramos", "eran", "es", "esa",
+  "esas", "ese", "eso", "esos", "esta", "estaba", "estaban", "estado", "estamos",
+  "estan", "estar", "este", "esto", "estos", "fue", "fueron", "ha", "hace", "hacen",
+  "hacer", "hacia", "han", "hasta", "hay", "la", "las", "le", "les", "lo", "los",
+  "mas", "me", "mi", "mis", "mismo", "mucho", "muy", "no", "nos", "nuestra",
+  "nuestro", "o", "otra", "otras", "otro", "otros", "para", "pero", "poco", "por",
+  "porque", "que", "quien", "se", "sea", "segun", "ser", "si", "sin", "sobre",
+  "son", "su", "sus", "tambien", "te", "tiene", "tienen", "todo", "todos", "tras",
+  "tu", "tus", "un", "una", "unas", "uno", "unos", "y", "ya"
+]);
+
 function normalize(value) {
   return String(value ?? "")
     .toLowerCase()
@@ -8,54 +23,138 @@ function normalize(value) {
     .trim();
 }
 
-function tokens(value) {
-  return normalize(value).split(" ").filter(token => token.length >= 4);
+function rawTokens(value) {
+  return normalize(value).split(" ").filter(token => token.length >= 3);
 }
 
-function score(question, item) {
-  const q = normalize(question);
-  const qTokens = tokens(question);
-  const haystack = normalize([
-    item.title,
-    item.summary,
-    item.explanation,
-    item.content,
-    item.teacherTopic,
-    item.teacherLimit,
-    ...(item.teacherConcepts || []),
-    ...(item.aliases || []),
-    ...(item.keywords || []),
-  ].join(" "));
+function termStem(token) {
+  if (token.length > 6 && token.endsWith("es")) return token.slice(0, -2);
+  if (token.length > 5 && token.endsWith("s")) return token.slice(0, -1);
+  return token;
+}
 
-  if (!q || !haystack) return 0;
+function queryTokens(value) {
+  const seen = new Set();
+  return rawTokens(value)
+    .filter(token => !STOP_WORDS.has(token))
+    .map(termStem)
+    .filter(token => {
+      if (token.length < 3 || seen.has(token)) return false;
+      seen.add(token);
+      return true;
+    });
+}
 
-  let value = 0;
-  for (const token of qTokens) {
-    if (haystack.includes(token)) value += 1;
+function fieldsFor(item) {
+  const path = Array.isArray(item?.sectionPath) ? item.sectionPath.join(" ") : "";
+  const keywords = [
+    ...(Array.isArray(item?.teacherConcepts) ? item.teacherConcepts : []),
+    ...(Array.isArray(item?.aliases) ? item.aliases : []),
+    ...(Array.isArray(item?.keywords) ? item.keywords : []),
+  ].join(" ");
+  return {
+    title: normalize([item?.title, item?.chapter, path].filter(Boolean).join(" ")),
+    keywords: normalize([item?.teacherTopic, keywords].filter(Boolean).join(" ")),
+    summary: normalize([item?.summary, item?.explanation, item?.teacherLimit].filter(Boolean).join(" ")),
+    content: normalize(item?.content || ""),
+    source: normalize(item?.source || item?.sourceName || ""),
+  };
+}
+
+function stemmedField(value) {
+  return new Set(rawTokens(value).map(termStem));
+}
+
+function score(question, item, corpusStats) {
+  const normalizedQuestion = normalize(question);
+  const query = queryTokens(question);
+  if (!query.length) return 0;
+
+  const fields = fieldsFor(item);
+  const stemmed = Object.fromEntries(
+    Object.entries(fields).map(([name, value]) => [name, stemmedField(value)])
+  );
+  const weights = { title: 5.2, keywords: 4.6, summary: 2.7, content: 1.15, source: 0.45 };
+
+  let scoreValue = 0;
+  let matched = 0;
+  for (const token of query) {
+    let bestWeight = 0;
+    for (const [fieldName, terms] of Object.entries(stemmed)) {
+      if (terms.has(token)) bestWeight = Math.max(bestWeight, weights[fieldName]);
+    }
+    if (bestWeight > 0) {
+      matched += 1;
+      const idf = corpusStats?.idf?.get(token) ?? 1;
+      scoreValue += bestWeight * idf;
+    }
   }
 
-  for (const alias of item.aliases || []) {
-    const aliasText = normalize(alias);
-    if (aliasText && q.includes(aliasText)) value += 5;
+  // Explicit phrases and aliases are stronger signals than isolated word matches.
+  const titleAndKeywords = fields.title + " " + fields.keywords;
+  if (normalizedQuestion && titleAndKeywords.includes(normalizedQuestion)) scoreValue += 10;
+  if (normalizedQuestion && fields.content.includes(normalizedQuestion)) scoreValue += 4;
+
+  const aliases = [
+    ...(Array.isArray(item?.aliases) ? item.aliases : []),
+    ...(Array.isArray(item?.keywords) ? item.keywords : []),
+    ...(Array.isArray(item?.teacherConcepts) ? item.teacherConcepts : []),
+  ];
+  for (const alias of aliases) {
+    const normalizedAlias = normalize(alias);
+    if (normalizedAlias.length >= 3 && normalizedQuestion.includes(normalizedAlias)) {
+      scoreValue += 6;
+    }
   }
 
-  return value;
+  // Reward coverage of the question without favoring longer chapter fragments.
+  scoreValue += matched / query.length * 5;
+  return scoreValue;
+}
+
+function buildCorpusStats(items, question) {
+  const query = queryTokens(question);
+  const df = new Map(query.map(token => [token, 0]));
+  for (const item of items || []) {
+    const text = normalize([
+      item?.title, item?.chapter,
+      ...(Array.isArray(item?.sectionPath) ? item.sectionPath : []),
+      item?.summary, item?.explanation, item?.content,
+      item?.teacherTopic, item?.teacherLimit,
+      ...(Array.isArray(item?.teacherConcepts) ? item.teacherConcepts : []),
+      ...(Array.isArray(item?.aliases) ? item.aliases : []),
+      ...(Array.isArray(item?.keywords) ? item.keywords : []),
+    ].filter(Boolean).join(" "));
+    const unique = new Set(rawTokens(text).map(termStem));
+    for (const token of query) if (unique.has(token)) df.set(token, df.get(token) + 1);
+  }
+
+  const count = Math.max(1, (items || []).length);
+  const idf = new Map();
+  for (const token of query) {
+    const frequency = df.get(token) || 0;
+    idf.set(token, Math.log(1 + (count - frequency + 0.5) / (frequency + 0.5)));
+  }
+  return { idf };
 }
 
 function rank(items, question, optionsIncludeReference = false) {
-  return items
+  const available = (items || []).filter(item => {
+    const scope = item.scope || "included";
+    if (scope === "excluded") return false;
+    if (scope === "reference" && !optionsIncludeReference) return false;
+    return true;
+  });
+  const corpusStats = buildCorpusStats(available, question);
+  return available
     .map(item => {
-      let value = score(question, item);
-      if (item.priority === "central") value += 2;
-      if (item.priority === "context") value += 0.25;
-      return { item, score: value };
+      const value = score(question, item, corpusStats);
+      let adjusted = value;
+      if (item.priority === "central") adjusted += 1.5;
+      if (item.priority === "context") adjusted += 0.15;
+      return { item, score: adjusted };
     })
-    .filter(({ item, score: value }) => {
-      const scope = item.scope || "included";
-      if (scope === "excluded") return false;
-      if (scope === "reference" && !optionsIncludeReference) return false;
-      return value > 0;
-    })
+    .filter(({ score: value }) => value > 0)
     .sort((a, b) => b.score - a.score)
     .map(({ item, score: value }) => ({ ...item, _score: value }));
 }
@@ -63,8 +162,11 @@ function rank(items, question, optionsIncludeReference = false) {
 export function retrieveFromCourse(course, question, options = {}) {
   const modeId = options.modeId || "";
   const conceptLimit = options.conceptLimit ?? (modeId === "socratico" ? 2 : 3);
-  const corpusLimit = options.corpusLimit ?? (modeId === "socratico" ? 1 : modeId === "analisis" ? 2 : 2);
+  const corpusLimit = options.corpusLimit ?? (modeId === "socratico" ? 3 : 4);
 
+  // Rank against the entire loaded corpus locally. The LLM only receives a few
+  // relevant excerpts so the book is searchable in full without sending the book
+  // on every request or overrunning the student's Groq token budget.
   const includeReference = options.includeReference === true;
   const concepts = rank(course.concepts || [], question, includeReference).slice(0, conceptLimit);
   const corpus = rank(course.corpus || [], question, includeReference).slice(0, corpusLimit);
