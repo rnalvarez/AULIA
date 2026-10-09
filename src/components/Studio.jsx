@@ -1105,6 +1105,203 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
     }
   }
 
+  function downloadExternalDocumentPrompt() {
+    downloadTextFile(
+      createExternalDocumentAnalysisPrompt(),
+      "instrucciones-aulia-analisis-documental-multimodal.txt"
+    );
+    setStatus("Instrucciones descargadas. Adjuntá ese TXT y el PDF original en la IA externa; luego importá el JSON resultante aquí.");
+  }
+
+  async function importExternalDocumentAnalysis(e) {
+    const files = Array.from(e.target.files || []);
+    e.target.value = "";
+    if (!files.length) return;
+
+    setBusy(true);
+    setExternalDocumentProgress({ status: "importing", message: "Validando resultados de la IA externa…" });
+    let workingDraft = cloneCourse(draft);
+    let completedDocuments = 0;
+    const failures = [];
+
+    try {
+      for (const file of files) {
+        try {
+          const raw = await file.text();
+          let parsed;
+          try {
+            parsed = JSON.parse(raw.replace(/^\uFEFF/, "").trim()
+              .replace(/^\x60{3}(?:json)?\s*/i, "")
+              .replace(/\s*\x60{3}$/, "").trim());
+          } catch {
+            throw new Error("El archivo no contiene JSON válido. Guardá la respuesta de la IA como .json sin texto adicional.");
+          }
+
+          if (parsed?.format !== EXTERNAL_DOCUMENT_ANALYSIS_FORMAT ||
+              Number(parsed?.version) !== EXTERNAL_DOCUMENT_ANALYSIS_VERSION) {
+            throw new Error("Este JSON no corresponde al análisis documental multimodal de AULIA. Descargá las instrucciones de Studio y usalas con el PDF original.");
+          }
+          const sourceName = String(parsed?.sourceName || "").trim();
+          const totalPages = Number(parsed?.totalPages);
+          const pages = Array.isArray(parsed?.pages) ? parsed.pages : [];
+          const declared = Array.isArray(parsed?.processedPageNumbers) ? parsed.processedPageNumbers.map(Number) : [];
+          if (!sourceName || !Number.isInteger(totalPages) || totalPages < 1 || totalPages > 20000) {
+            throw new Error("El JSON debe incluir sourceName y totalPages válidos.");
+          }
+          if (!pages.length || !declared.length) {
+            throw new Error("El JSON no declara páginas procesadas. Volvé a pedirle a la IA el formato exacto que indican las instrucciones.");
+          }
+
+          const seen = new Set();
+          const normalizedPages = pages.map(page => {
+            const pageNumber = Number(page?.pageNumber);
+            if (!Number.isInteger(pageNumber) || pageNumber < 1 || pageNumber > totalPages || seen.has(pageNumber)) {
+              throw new Error("El resultado contiene páginas duplicadas o números fuera del rango del PDF.");
+            }
+            seen.add(pageNumber);
+            return {
+              pageNumber,
+              originalText: String(page?.originalText || "").trim(),
+              sectionTitle: String(page?.sectionTitle || "").trim(),
+              sectionPath: Array.isArray(page?.sectionPath)
+                ? page.sectionPath.map(value => String(value || "").trim()).filter(Boolean).slice(0, 8)
+                : [],
+              transcription: String(page?.transcription || "").trim(),
+              visualElements: (Array.isArray(page?.visualElements) ? page.visualElements : []).slice(0, 12).map(item => ({
+                kind: String(item?.kind || "other"),
+                title: String(item?.title || ""),
+                description: String(item?.description || ""),
+                tableMarkdown: String(item?.tableMarkdown || ""),
+                transcribedText: String(item?.transcribedText || ""),
+              })),
+              confidence: Math.max(0, Math.min(1, Number(page?.confidence ?? 0.5) || 0)),
+              needsReview: Boolean(page?.needsReview),
+              reviewNotes: String(page?.reviewNotes || ""),
+            };
+          });
+          const uniqueDeclared = Array.from(new Set(declared));
+          if (uniqueDeclared.length !== declared.length ||
+              uniqueDeclared.length !== normalizedPages.length ||
+              normalizedPages.some(page => !uniqueDeclared.includes(page.pageNumber))) {
+            throw new Error("processedPageNumbers debe coincidir exactamente con las páginas incluidas en este JSON.");
+          }
+
+          const batchInfo = await saveExternalAnalysisBatch(course.id, sourceName, {
+            totalPages,
+            pages: normalizedPages,
+          });
+          const updatedBatches = await listExternalAnalysisBatches(course.id);
+          setExternalAnalysisBatches(updatedBatches);
+
+          if (batchInfo.processed < totalPages) {
+            setExternalDocumentProgress({
+              status: "partial",
+              sourceName,
+              processed: batchInfo.processed,
+              total: totalPages,
+              message: "Tanda importada. Faltan " + (totalPages - batchInfo.processed) + " páginas. Importá el siguiente JSON de este mismo PDF.",
+            });
+            continue;
+          }
+
+          const stored = await getExternalAnalysisBatch(batchInfo.id);
+          const allPages = Object.values(stored?.pages || {}).sort((a, b) => Number(a.pageNumber) - Number(b.pageNumber));
+          const complete = allPages.length === totalPages &&
+            allPages.every((page, index) => Number(page.pageNumber) === index + 1);
+          if (!complete) {
+            setExternalDocumentProgress({
+              status: "partial",
+              sourceName,
+              processed: allPages.length,
+              total: totalPages,
+              message: "AULIA detectó páginas faltantes o fuera de orden. Revisá los JSON antes de continuar.",
+            });
+            continue;
+          }
+
+          const documentId = "doc-" + slug(sourceName);
+          const importedMaterial = {
+            sourceName,
+            pages: totalPages,
+            document: {
+              id: documentId,
+              title: sourceName.replace(/\.[^.]+$/, ""),
+              sourceName,
+              format: "external-ai-multimodal",
+              pages: totalPages,
+              sections: [],
+              sectionCount: 0,
+            },
+            analysis: {
+              version: 3,
+              method: "external-ai-multimodal",
+              documentType: "documento analizado por IA externa",
+              pageCount: totalPages,
+              model: "IA externa",
+              aiAnalyzedPages: totalPages,
+              confidence: allPages.reduce((sum, page) => sum + Number(page.confidence || 0), 0) / totalPages,
+              warnings: allPages.filter(page => page.needsReview).map(page =>
+                "Página " + page.pageNumber + (page.reviewNotes ? ": " + page.reviewNotes : ": requiere revisión.")
+              ),
+              sectionCount: 0,
+              lowConfidenceSections: allPages.filter(page => page.needsReview || Number(page.confidence || 0) < 0.62).length,
+            },
+            aiPages: allPages.map(page => ({
+              pageNumber: page.pageNumber,
+              extractedText: page.originalText || "",
+              imageDataUrl: "external-ai-analysis",
+            })),
+          };
+          const prepared = applyAIMultimodalAnalysis(importedMaterial, allPages, "IA externa", "IA externa");
+          prepared.document.pages = totalPages;
+          prepared.document.analysis = { ...(prepared.document.analysis || {}), pageCount: totalPages, model: "IA externa" };
+          const portable = materialToCorpus(prepared, workingDraft.corpus || []);
+          workingDraft = {
+            ...workingDraft,
+            corpus: [...(workingDraft.corpus || []), ...portable.corpus],
+            documents: mergeImportedDocuments(workingDraft.documents || [], portable.document ? [portable.document] : []),
+            knowledgeBase: null,
+          };
+          setDraft(cloneCourse(workingDraft));
+          setValidation(null);
+          try {
+            localStorage.setItem(storageKey, JSON.stringify({
+              version: courseMeta?.updatedAt || "",
+              draft: workingDraft,
+            }));
+          } catch {}
+          await deleteExternalAnalysisBatch(batchInfo.id);
+          completedDocuments += 1;
+          setExternalDocumentProgress({
+            status: "complete",
+            sourceName,
+            processed: totalPages,
+            total: totalPages,
+            message: "Análisis externo completo: " + totalPages + " páginas incorporadas al corpus. Ahora podés generar la base conceptual desde Studio.",
+          });
+          setExternalAnalysisBatches(await listExternalAnalysisBatches(course.id));
+        } catch (error) {
+          failures.push(file.name + ": " + (error?.message || "No se pudo importar el resultado."));
+        }
+      }
+
+      if (failures.length) {
+        setStatus("No se pudieron importar " + failures.length + " archivo(s): " + failures.slice(0, 2).join(" · "));
+        setExternalDocumentProgress(current => ({
+          ...(current || {}),
+          status: "error",
+          error: failures.slice(0, 3).join("\n"),
+        }));
+      } else if (completedDocuments) {
+        setStatus("Se incorporó el análisis multimodal de " + completedDocuments + " documento(s) generado(s) por IA externa.");
+      } else {
+        setStatus("Resultados parciales guardados. Podés importar las siguientes tandas sin perder las anteriores.");
+      }
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function importExternalKnowledge(e) {
     const files = Array.from(e.target.files || []);
     e.target.value = "";
