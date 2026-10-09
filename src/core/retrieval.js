@@ -1,3 +1,5 @@
+import { isKnowledgeBaseCurrent } from "./knowledgeBase.js";
+
 const STOP_WORDS = new Set([
   "a", "al", "algo", "algunas", "algunos", "ante", "antes", "asi", "aun",
   "aunque", "bajo", "bien", "cada", "casi", "como", "con", "contra", "cual",
@@ -228,13 +230,50 @@ export function retrieveFromCourse(course, question, options = {}) {
   // on every request or overrunning the student's Groq token budget.
   const includeReference = options.includeReference === true;
   const concepts = rank(course.concepts || [], question, includeReference).slice(0, conceptLimit);
+  // A generated concept index gives paraphrases and related terminology a second
+  // retrieval path, while every indexed item carries page/section evidence.
+  const indexIsCurrent = isKnowledgeBaseCurrent(course);
+  const knowledgeItems = indexIsCurrent
+    ? rank((course.knowledgeBase.entries || []).map(entry => {
+        const evidence = Array.isArray(entry.evidence) ? entry.evidence : [];
+        const first = evidence[0] || {};
+        return {
+          id: entry.id,
+          title: entry.term,
+          aliases: entry.aliases || [],
+          keywords: [
+            entry.category,
+            ...(entry.relatedTerms || []),
+            ...(entry.distinctions || []),
+          ].filter(Boolean),
+          summary: entry.definition || "",
+          explanation: entry.explanation || "",
+          content: [
+            entry.definition || "",
+            entry.explanation || "",
+            ...(entry.distinctions || []),
+            ...(entry.relatedTerms || []),
+            ...(entry.examples || []),
+          ].filter(Boolean).join(" "),
+          priority: "central",
+          scope: "included",
+          _retrievalKind: "knowledge",
+          knowledgeEntry: entry,
+          source: first.sourceName || "",
+          sectionPath: Array.isArray(first.sectionPath) ? first.sectionPath : [],
+          sourcePageStart: first.pageStart || first.printedPageStart || null,
+          sourcePageEnd: first.pageEnd || first.printedPageEnd || null,
+          sourceIds: Array.from(new Set(evidence.map(item => item.sourceId).filter(Boolean))),
+        };
+      }), question, true).slice(0, options.knowledgeLimit ?? 4)
+    : [];
   // Rank overlapping passages, not whole chapters. This prevents a concept
   // mentioned halfway through a long section from being lost when the prompt
   // later trims the text to fit the student's Groq budget.
   const corpus = rankCorpusPassages(course.corpus || [], question, includeReference, corpusLimit);
 
   const seen = new Set();
-  return concepts.concat(corpus).filter(item => {
+  return knowledgeItems.concat(concepts, corpus).filter(item => {
     const key = item.id || item.title;
     if (seen.has(key)) return false;
     seen.add(key);
