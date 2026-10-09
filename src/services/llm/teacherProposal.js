@@ -15,13 +15,17 @@ const DEFAULT_MODELS = [
 // structural dossier plus short excerpts from representative sections.
 const MAX_CONTEXT_CHARS = 7000;
 const MAX_OUTPUT_TOKENS = 1400;
+const MAX_PEDAGOGICAL_SUMMARY_CHARS = 240;
+// Groq may exceed a requested string limit slightly during constrained generation.
+// Accept a safe transport margin, then normalize the summary before it enters Studio.
+const MAX_MODEL_PEDAGOGICAL_SUMMARY_CHARS = 500;
 const MAX_PEDAGOGICAL_UNITS = 8;
 const MAX_REPRESENTATIVE_UNITS = 20;
 
 const PROPOSAL_SCHEMA = {
   type: "object",
   properties: {
-    pedagogicalSummary: { type: "string", maxLength: 240 },
+    pedagogicalSummary: { type: "string", maxLength: MAX_MODEL_PEDAGOGICAL_SUMMARY_CHARS },
     pedagogicalUnits: {
       type: "array",
       minItems: 3,
@@ -48,6 +52,17 @@ const PROPOSAL_SCHEMA = {
 function compact(value, max) {
   const clean = String(value || "").replace(/\\s+/g, " ").trim();
   return clean.length > max ? clean.slice(0, max) + "…" : clean;
+}
+
+function normalizePedagogicalSummary(value) {
+  const clean = String(value || "").replace(/\s+/g, " ").trim();
+  if (clean.length <= MAX_PEDAGOGICAL_SUMMARY_CHARS) return clean;
+
+  const limit = MAX_PEDAGOGICAL_SUMMARY_CHARS - 1;
+  let shortened = clean.slice(0, limit);
+  const lastSpace = shortened.lastIndexOf(" ");
+  if (lastSpace >= limit * 0.75) shortened = shortened.slice(0, lastSpace);
+  return shortened.trimEnd() + "…";
 }
 
 function logicalUnits(corpus) {
@@ -211,6 +226,7 @@ function buildPrompt({ course, bibliography, materialText, sampled }) {
 
   return [
     "Construí una primera propuesta pedagógica para una cátedra universitaria a partir de los materiales suministrados.",
+    "pedagogicalSummary debe ser una síntesis breve de la organización pedagógica, en español y con un máximo de 240 caracteres. Redactá una sola frase, sin desarrollar explicaciones extensas.",
     "La extracción y organización documental se hicieron localmente antes de esta consulta.",
     sampled
       ? "La biblioteca completa está disponible en AULIA, pero para esta consulta se usa una muestra representativa de unidades para respetar los límites de una cuenta gratuita. No infieras contenido que no aparezca en los extractos."
@@ -314,7 +330,7 @@ async function request(endpoint, apiKey, model, prompt, responseFormat, signal) 
   return {
     proposal: {
       ...(parsed || {}),
-      pedagogicalSummary: parsed?.pedagogicalSummary || "",
+      pedagogicalSummary: normalizePedagogicalSummary(parsed?.pedagogicalSummary),
       pedagogicalUnits: Array.isArray(parsed?.pedagogicalUnits) ? parsed.pedagogicalUnits : [],
       concepts: Array.isArray(parsed?.concepts) ? parsed.concepts : [],
       examples: Array.isArray(parsed?.examples) ? parsed.examples : [],
