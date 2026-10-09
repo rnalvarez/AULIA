@@ -2,10 +2,12 @@ import { useEffect, useMemo, useState } from "react";
 import { cloneCourse, validateCourse } from "../core/courseContract.js";
 import { downloadCoursePack, readCoursePackFile } from "../core/coursePackIO.js";
 import { readMaterialFile, materialToCorpus, mergeImportedBibliography, mergeImportedDocuments, applyAIMultimodalAnalysis } from "../core/materialIO.js";
+import { savePendingPdf, getPendingPdf, listPendingPdfs, deletePendingPdf, saveExternalAnalysisBatch, listExternalAnalysisBatches, getExternalAnalysisBatch, deleteExternalAnalysisBatch } from "../core/studioPersistence.js";
+import { createExternalDocumentAnalysisPrompt, EXTERNAL_DOCUMENT_ANALYSIS_FORMAT, EXTERNAL_DOCUMENT_ANALYSIS_VERSION } from "../core/externalDocumentAnalysis.js";
 import { analyzePdfWithVision } from "../services/llm/multimodalIngestion.js";
 import { requestTeacherProposal } from "../services/llm/teacherProposal.js";
 import { buildKnowledgeBase, buildKnowledgePassages, isSupportedKnowledgeExcerpt, normalizeExternalKnowledgeEntries, mergeKnowledgeBaseEntries } from "../services/llm/knowledgeBase.js";
-import { createExternalKnowledgePackage, createExternalKnowledgePrompt, downloadJsonFile, EXTERNAL_KNOWLEDGE_OUTPUT_FORMAT } from "../core/externalKnowledgeBaseIO.js";
+import { createExternalKnowledgePackage, createExternalKnowledgePrompt, downloadJsonFile, downloadTextFile, EXTERNAL_KNOWLEDGE_OUTPUT_FORMAT } from "../core/externalKnowledgeBaseIO.js";
 import { KNOWLEDGE_BASE_VERSION, isKnowledgeBaseCurrent, summarizeKnowledgeBase, knowledgeCorpusSignature, legacyKnowledgeCorpusSignature } from "../core/knowledgeBase.js";
 import { clearStudioApiKey, isGroqApiKey, loadStudioApiKey, saveStudioApiKey } from "../utils/studioStorage.js";
 import LegalNotice from "./LegalNotice.jsx";
@@ -441,6 +443,11 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
   const [knowledgeBaseReport, setKnowledgeBaseReport] = useState(null);
   const [showExternalPrompt, setShowExternalPrompt] = useState(false);
   const [knowledgeProvider, setKnowledgeProvider] = useState("groq");
+  const [ingestionProvider, setIngestionProvider] = useState(() => loadStudioApiKey(course.id) ? "groq" : "external");
+  const [uploadProgress, setUploadProgress] = useState(null);
+  const [pendingPdfs, setPendingPdfs] = useState([]);
+  const [externalAnalysisBatches, setExternalAnalysisBatches] = useState([]);
+  const [externalDocumentProgress, setExternalDocumentProgress] = useState(null);
 
   useEffect(() => {
     const saved = localStorage.getItem(storageKey);
@@ -488,6 +495,33 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
     setAnalysisReport(null);
     setKnowledgeBaseReport(null);
     setShowExternalPrompt(false);
+    setIngestionProvider(loadStudioApiKey(course.id) ? "groq" : "external");
+    setUploadProgress(null);
+    setExternalDocumentProgress(null);
+  }, [course.id]);
+
+  useEffect(() => {
+    let active = true;
+    Promise.all([
+      listPendingPdfs(course.id),
+      listExternalAnalysisBatches(course.id),
+    ]).then(([pending, external]) => {
+      if (!active) return;
+      setPendingPdfs(pending);
+      setExternalAnalysisBatches(external);
+      const partial = external.find(item => item.processed < item.totalPages);
+      if (partial) {
+        setExternalDocumentProgress({
+          sourceName: partial.sourceName,
+          processed: partial.processed,
+          total: partial.totalPages,
+          status: "partial",
+        });
+      }
+    }).catch(() => {
+      if (active) setStatus("No se pudo consultar el trabajo guardado en este navegador. Verificá que el almacenamiento del sitio esté habilitado.");
+    });
+    return () => { active = false; };
   }, [course.id]);
 
   function mutate(updater, message = "Cambios pendientes de guardar.") {
@@ -635,73 +669,219 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
     updateMaterialSection(sectionId, { priority });
   }
 
-  async function importMaterial(e) {
-    const files = Array.from(e.target.files || []);
-    e.target.value = "";
+  async function processMaterialFiles(files, { forceVision = false } = {}) {
     if (!files.length) return;
     setAnalysisReport(null);
     setBusy(true);
+    setUploadProgress(null);
+    let workingDraft = cloneCourse(draft);
+    let failedCount = 0;
+    let multimodalDocuments = 0;
+    let conventionalDocuments = 0;
+    let processedPages = 0;
+
     try {
-      const baseIds = [...(draft.corpus || [])];
-      const collected = [];
-      const bibliography = [];
-      const documents = [];
-      let warnings = 0;
-      let pages = 0;
-      let multimodalDocuments = 0;
-      let conventionalDocuments = 0;
-
       for (const file of files) {
-        setStatus("Preparando " + file.name + "…");
-        const extracted = await readMaterialFile(file, { includePageImages: Boolean(studioApiKey) });
-        let prepared = extracted;
+        const ext = String(file.name || "").toLowerCase().split(".").pop();
+        const useVision = ext === "pdf" && Boolean(studioApiKey) && (forceVision || ingestionProvider === "groq");
+        let pendingId = "";
+        let lastProgress = { processed: 0, total: 0 };
+        try {
+          if (useVision) {
+            const pendingRecord = await savePendingPdf(course.id, file);
+            pendingId = pendingRecord.id;
+            setPendingPdfs(await listPendingPdfs(course.id));
+          }
 
-        if (studioApiKey && Array.isArray(extracted.aiPages) && extracted.aiPages.length) {
-          const result = await analyzePdfWithVision(extracted, {
-            apiKey: studioApiKey,
-            courseTitle: draft.title,
-            onProgress: (progress) => setStatus(
-              "IA multimodal · " + file.name + " · " + progress.processed + "/" + progress.total +
-              " páginas analizadas con " + (progress.model || "Groq") + ". El avance se conserva para reanudar."
-            ),
+          setUploadProgress({
+            fileName: file.name,
+            phase: "extracting",
+            processed: 0,
+            total: 0,
+            message: useVision
+              ? "Leyendo el PDF y preparando imágenes de sus páginas…"
+              : "Extrayendo el texto del documento…",
+            error: "",
+            pendingId,
           });
-          prepared = applyAIMultimodalAnalysis(extracted, result.pages, result.model);
-          multimodalDocuments += 1;
-        } else {
-          conventionalDocuments += 1;
-        }
+          setStatus("Preparando " + file.name + "…");
 
-        if (!prepared.corpus?.length) {
-          throw new Error(
-            "No se pudo recuperar texto de " + file.name + ". Para analizar un PDF escaneado, guardá tu clave de Groq antes de cargarlo y volvé a seleccionar el archivo."
-          );
-        }
+          const extracted = await readMaterialFile(file, {
+            includePageImages: useVision,
+            onProgress: (progress) => {
+              lastProgress = { processed: progress.processed || 0, total: progress.total || 0 };
+              setUploadProgress(current => ({
+                ...(current || {}),
+                fileName: file.name,
+                phase: progress.phase || "extracting",
+                processed: progress.processed || 0,
+                total: progress.total || 0,
+                message: (progress.phase === "rendering" ? "Preparando imágenes" : "Extrayendo texto") +
+                  " · página " + (progress.processed || 0) + " de " + (progress.total || 0),
+                error: "",
+                pendingId,
+              }));
+            },
+          });
+          let prepared = extracted;
 
-        const material = materialToCorpus(prepared, [...baseIds, ...collected]);
-        collected.push(...material.corpus);
-        bibliography.push(...(material.bibliography || []));
-        if (material.document) documents.push(material.document);
-        warnings += material.warnings?.length || 0;
-        pages += material.pages || 0;
+          if (useVision && Array.isArray(extracted.aiPages) && extracted.aiPages.length) {
+            lastProgress = { processed: 0, total: extracted.aiPages.length };
+            setUploadProgress({
+              fileName: file.name,
+              phase: "processing",
+              processed: 0,
+              total: extracted.aiPages.length,
+              message: "La IA está interpretando el contenido de las páginas, sus secciones y los elementos visuales.",
+              error: "",
+              pendingId,
+            });
+            const result = await analyzePdfWithVision(extracted, {
+              apiKey: studioApiKey,
+              courseTitle: workingDraft.title,
+              onProgress: (progress) => {
+                lastProgress = { processed: progress.processed || 0, total: progress.total || extracted.aiPages.length };
+                const activePages = progress.phase === "processing-batch" ? (progress.activePageNumbers || []) : [];
+                setUploadProgress({
+                  fileName: file.name,
+                  phase: progress.phase || "processing",
+                  processed: progress.processed || 0,
+                  total: progress.total || extracted.aiPages.length,
+                  model: progress.model || "",
+                  activePages,
+                  message: progress.phase === "processing-batch"
+                    ? "Analizando página(s) " + activePages.join(", ") + "…"
+                    : "Análisis visual y semántico en curso.",
+                  error: "",
+                  pendingId,
+                });
+              },
+            });
+            prepared = applyAIMultimodalAnalysis(extracted, result.pages, result.model);
+            multimodalDocuments += 1;
+            processedPages += result.total || result.pages.length;
+          } else {
+            conventionalDocuments += 1;
+          }
+
+          if (!prepared.corpus?.length) {
+            throw new Error(
+              "No se pudo recuperar texto de " + file.name +
+              ". Para leer un PDF escaneado, elegí IA interna · Groq y configurá la clave antes de cargarlo."
+            );
+          }
+
+          const material = materialToCorpus(prepared, workingDraft.corpus || []);
+          workingDraft = {
+            ...workingDraft,
+            corpus: [...(workingDraft.corpus || []), ...material.corpus],
+            documents: mergeImportedDocuments(workingDraft.documents || [], material.document ? [material.document] : []),
+            bibliography: mergeImportedBibliography(workingDraft.bibliography || [], material.bibliography || []),
+            knowledgeBase: null,
+          };
+          setDraft(cloneCourse(workingDraft));
+          setValidation(null);
+          try {
+            localStorage.setItem(storageKey, JSON.stringify({
+              version: courseMeta?.updatedAt || "",
+              draft: workingDraft,
+            }));
+          } catch {}
+
+          if (pendingId) {
+            await deletePendingPdf(pendingId);
+            setPendingPdfs(await listPendingPdfs(course.id));
+          }
+          setUploadProgress({
+            fileName: file.name,
+            phase: "complete",
+            processed: useVision ? extracted.aiPages.length : 1,
+            total: useVision ? extracted.aiPages.length : 1,
+            model: prepared.aiAnalysis?.model || "",
+            message: useVision
+              ? "Documento incorporado al corpus con análisis visual y semántico de IA."
+              : "Documento incorporado al corpus.",
+            error: "",
+            pendingId: "",
+          });
+        } catch (error) {
+          failedCount += 1;
+          setUploadProgress({
+            fileName: file.name,
+            phase: pendingId ? "paused" : "error",
+            processed: lastProgress.processed,
+            total: lastProgress.total,
+            message: pendingId
+              ? "El análisis se pausó. AULIA conservó el PDF y las páginas ya analizadas en este navegador."
+              : "No se pudo completar la carga de este archivo.",
+            error: error?.message || "Error desconocido durante la carga.",
+            pendingId,
+          });
+          if (pendingId) {
+            try { setPendingPdfs(await listPendingPdfs(course.id)); } catch {}
+          }
+          setStatus(pendingId
+            ? "Análisis pausado para " + file.name + ". Usá «Reanudar análisis»; no hace falta seleccionar el archivo otra vez."
+            : (error?.message || "No se pudo cargar el material."));
+        }
       }
 
-      mutate((current) => ({
-        ...current,
-        corpus: [...(current.corpus || []), ...collected],
-        documents: mergeImportedDocuments(current.documents || [], documents),
-        bibliography: mergeImportedBibliography(current.bibliography || [], bibliography),
-      }), collected.length + " fragmentos de recuperación incorporados desde " +
-        files.length + " documento" + (files.length === 1 ? "" : "s") + "." +
-        (pages ? " · " + pages + " páginas." : "") +
-        (multimodalDocuments ? " · " + multimodalDocuments + " PDF(s) analizados visual y semánticamente con IA." : "") +
-        (conventionalDocuments ? " · " + conventionalDocuments + " archivo(s) procesados por extracción convencional." : "") +
-        (warnings ? " · " + warnings + " aviso(s) para revisar." : ""));
-    } catch (err) {
-      setStatus(err?.message || "No se pudo cargar el material.");
+      if (!failedCount) {
+        setStatus(
+          "Carga completada." +
+          (multimodalDocuments ? " " + multimodalDocuments + " PDF(s) analizados con IA multimodal (" + processedPages + " páginas)." : "") +
+          (conventionalDocuments ? " " + conventionalDocuments + " archivo(s) procesados por extracción local." : "") +
+          " Revisá las secciones y generá la base conceptual antes de publicar."
+        );
+      } else if (files.length > 1) {
+        setStatus(failedCount + " archivo(s) quedaron pendientes. Podés reanudarlos sin volver a seleccionarlos.");
+      }
+    } catch (error) {
+      setStatus(error?.message || "No se pudo cargar el material.");
     } finally {
       setBusy(false);
+      try { setPendingPdfs(await listPendingPdfs(course.id)); } catch {}
     }
   }
+
+  async function importMaterial(e) {
+    const files = Array.from(e.target.files || []);
+    e.target.value = "";
+    await processMaterialFiles(files);
+  }
+
+  async function resumePendingPdf(pending) {
+    if (!studioApiKey) {
+      setIngestionProvider("groq");
+      setShowStudioKey(true);
+      setStatus("El PDF está guardado. Configurá tu clave personal de Groq para reanudarlo; no hace falta volver a cargarlo.");
+      return;
+    }
+    setIngestionProvider("groq");
+    setBusy(true);
+    try {
+      const file = await getPendingPdf(pending.id);
+      if (!file) throw new Error("No se encontró el PDF guardado. Si el almacenamiento del navegador fue borrado, será necesario seleccionar el archivo otra vez.");
+      await processMaterialFiles([file], { forceVision: true });
+    } catch (error) {
+      setStatus(error?.message || "No se pudo recuperar el PDF pendiente.");
+    } finally {
+      setBusy(false);
+      try { setPendingPdfs(await listPendingPdfs(course.id)); } catch {}
+    }
+  }
+
+  async function discardPendingPdf(pending) {
+    try {
+      await deletePendingPdf(pending.id);
+      setPendingPdfs(await listPendingPdfs(course.id));
+      setStatus("Se descartó el archivo pendiente " + pending.fileName + ".");
+      if (uploadProgress?.pendingId === pending.id) setUploadProgress(null);
+    } catch (error) {
+      setStatus(error?.message || "No se pudo descartar el archivo pendiente.");
+    }
+  }
+
   function addBibliography() {
     mutate((c) => ({ ...c, bibliography: [...(c.bibliography || []), {
       id: uniqueId("bibliografia", c.bibliography), title: "Nueva referencia", author: "", publisher: "", year: "", role: "complementaria"
@@ -897,6 +1077,7 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
     }
     saveStudioApiKey(course.id, trimmed);
     setStudioApiKey(trimmed);
+    setIngestionProvider("groq");
     setStudioKeyInput("");
     setShowStudioKey(false);
     setStatus("IA docente configurada en esta sesión del navegador.");
@@ -929,6 +1110,222 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
     } catch {
       setShowExternalPrompt(true);
       setStatus("No se pudo copiar automáticamente. Seleccioná el texto de instrucciones que aparece abajo y copialo manualmente.");
+    }
+  }
+
+  async function discardExternalAnalysis(batch) {
+    try {
+      await deleteExternalAnalysisBatch(batch.id);
+      const remaining = await listExternalAnalysisBatches(course.id);
+      setExternalAnalysisBatches(remaining);
+      const partial = remaining.find(item => item.processed < item.totalPages);
+      setExternalDocumentProgress(partial ? {
+        status: "partial",
+        sourceName: partial.sourceName,
+        processed: partial.processed,
+        total: partial.totalPages,
+        message: "Importá las tandas restantes del documento para continuar.",
+      } : null);
+      setStatus("Se descartaron las tandas guardadas de " + batch.sourceName + ".");
+    } catch (error) {
+      setStatus(error?.message || "No se pudieron descartar las tandas externas.");
+    }
+  }
+
+  function downloadExternalDocumentPrompt() {
+    downloadTextFile(
+      createExternalDocumentAnalysisPrompt(),
+      "instrucciones-aulia-analisis-documental-multimodal.txt"
+    );
+    setStatus("Instrucciones descargadas. Adjuntá ese TXT y el PDF original en la IA externa; luego importá el JSON resultante aquí.");
+  }
+
+  async function importExternalDocumentAnalysis(e) {
+    const files = Array.from(e.target.files || []);
+    e.target.value = "";
+    if (!files.length) return;
+
+    setBusy(true);
+    setExternalDocumentProgress({ status: "importing", message: "Validando resultados de la IA externa…" });
+    let workingDraft = cloneCourse(draft);
+    let completedDocuments = 0;
+    const failures = [];
+
+    try {
+      for (const file of files) {
+        try {
+          const raw = await file.text();
+          let parsed;
+          try {
+            parsed = JSON.parse(raw.replace(/^\uFEFF/, "").trim()
+              .replace(/^\x60{3}(?:json)?\s*/i, "")
+              .replace(/\s*\x60{3}$/, "").trim());
+          } catch {
+            throw new Error("El archivo no contiene JSON válido. Guardá la respuesta de la IA como .json sin texto adicional.");
+          }
+
+          if (parsed?.format !== EXTERNAL_DOCUMENT_ANALYSIS_FORMAT ||
+              Number(parsed?.version) !== EXTERNAL_DOCUMENT_ANALYSIS_VERSION) {
+            throw new Error("Este JSON no corresponde al análisis documental multimodal de AULIA. Descargá las instrucciones de Studio y usalas con el PDF original.");
+          }
+          const sourceName = String(parsed?.sourceName || "").trim();
+          const totalPages = Number(parsed?.totalPages);
+          const pages = Array.isArray(parsed?.pages) ? parsed.pages : [];
+          const declared = Array.isArray(parsed?.processedPageNumbers) ? parsed.processedPageNumbers.map(Number) : [];
+          if (!sourceName || !Number.isInteger(totalPages) || totalPages < 1 || totalPages > 20000) {
+            throw new Error("El JSON debe incluir sourceName y totalPages válidos.");
+          }
+          if (!pages.length || !declared.length) {
+            throw new Error("El JSON no declara páginas procesadas. Volvé a pedirle a la IA el formato exacto que indican las instrucciones.");
+          }
+
+          const seen = new Set();
+          const normalizedPages = pages.map(page => {
+            const pageNumber = Number(page?.pageNumber);
+            if (!Number.isInteger(pageNumber) || pageNumber < 1 || pageNumber > totalPages || seen.has(pageNumber)) {
+              throw new Error("El resultado contiene páginas duplicadas o números fuera del rango del PDF.");
+            }
+            seen.add(pageNumber);
+            return {
+              pageNumber,
+              originalText: String(page?.originalText || "").trim(),
+              sectionTitle: String(page?.sectionTitle || "").trim(),
+              sectionPath: Array.isArray(page?.sectionPath)
+                ? page.sectionPath.map(value => String(value || "").trim()).filter(Boolean).slice(0, 8)
+                : [],
+              transcription: String(page?.transcription || "").trim(),
+              visualElements: (Array.isArray(page?.visualElements) ? page.visualElements : []).slice(0, 12).map(item => ({
+                kind: String(item?.kind || "other"),
+                title: String(item?.title || ""),
+                description: String(item?.description || ""),
+                tableMarkdown: String(item?.tableMarkdown || ""),
+                transcribedText: String(item?.transcribedText || ""),
+              })),
+              confidence: Math.max(0, Math.min(1, Number(page?.confidence ?? 0.5) || 0)),
+              needsReview: Boolean(page?.needsReview),
+              reviewNotes: String(page?.reviewNotes || ""),
+            };
+          });
+          const uniqueDeclared = Array.from(new Set(declared));
+          if (uniqueDeclared.length !== declared.length ||
+              uniqueDeclared.length !== normalizedPages.length ||
+              normalizedPages.some(page => !uniqueDeclared.includes(page.pageNumber))) {
+            throw new Error("processedPageNumbers debe coincidir exactamente con las páginas incluidas en este JSON.");
+          }
+
+          const batchInfo = await saveExternalAnalysisBatch(course.id, sourceName, {
+            totalPages,
+            pages: normalizedPages,
+          });
+          const updatedBatches = await listExternalAnalysisBatches(course.id);
+          setExternalAnalysisBatches(updatedBatches);
+
+          if (batchInfo.processed < totalPages) {
+            setExternalDocumentProgress({
+              status: "partial",
+              sourceName,
+              processed: batchInfo.processed,
+              total: totalPages,
+              message: "Tanda importada. Faltan " + (totalPages - batchInfo.processed) + " páginas. Importá el siguiente JSON de este mismo PDF.",
+            });
+            continue;
+          }
+
+          const stored = await getExternalAnalysisBatch(batchInfo.id);
+          const allPages = Object.values(stored?.pages || {}).sort((a, b) => Number(a.pageNumber) - Number(b.pageNumber));
+          const complete = allPages.length === totalPages &&
+            allPages.every((page, index) => Number(page.pageNumber) === index + 1);
+          if (!complete) {
+            setExternalDocumentProgress({
+              status: "partial",
+              sourceName,
+              processed: allPages.length,
+              total: totalPages,
+              message: "AULIA detectó páginas faltantes o fuera de orden. Revisá los JSON antes de continuar.",
+            });
+            continue;
+          }
+
+          const documentId = "doc-" + slug(sourceName);
+          const importedMaterial = {
+            sourceName,
+            pages: totalPages,
+            document: {
+              id: documentId,
+              title: sourceName.replace(/\.[^.]+$/, ""),
+              sourceName,
+              format: "external-ai-multimodal",
+              pages: totalPages,
+              sections: [],
+              sectionCount: 0,
+            },
+            analysis: {
+              version: 3,
+              method: "external-ai-multimodal",
+              documentType: "documento analizado por IA externa",
+              pageCount: totalPages,
+              model: "IA externa",
+              aiAnalyzedPages: totalPages,
+              confidence: allPages.reduce((sum, page) => sum + Number(page.confidence || 0), 0) / totalPages,
+              warnings: allPages.filter(page => page.needsReview).map(page =>
+                "Página " + page.pageNumber + (page.reviewNotes ? ": " + page.reviewNotes : ": requiere revisión.")
+              ),
+              sectionCount: 0,
+              lowConfidenceSections: allPages.filter(page => page.needsReview || Number(page.confidence || 0) < 0.62).length,
+            },
+            aiPages: allPages.map(page => ({
+              pageNumber: page.pageNumber,
+              extractedText: page.originalText || "",
+              imageDataUrl: "external-ai-analysis",
+            })),
+          };
+          const prepared = applyAIMultimodalAnalysis(importedMaterial, allPages, "IA externa", "IA externa");
+          prepared.document.pages = totalPages;
+          prepared.document.analysis = { ...(prepared.document.analysis || {}), pageCount: totalPages, model: "IA externa" };
+          const portable = materialToCorpus(prepared, workingDraft.corpus || []);
+          workingDraft = {
+            ...workingDraft,
+            corpus: [...(workingDraft.corpus || []), ...portable.corpus],
+            documents: mergeImportedDocuments(workingDraft.documents || [], portable.document ? [portable.document] : []),
+            knowledgeBase: null,
+          };
+          setDraft(cloneCourse(workingDraft));
+          setValidation(null);
+          try {
+            localStorage.setItem(storageKey, JSON.stringify({
+              version: courseMeta?.updatedAt || "",
+              draft: workingDraft,
+            }));
+          } catch {}
+          await deleteExternalAnalysisBatch(batchInfo.id);
+          completedDocuments += 1;
+          setExternalDocumentProgress({
+            status: "complete",
+            sourceName,
+            processed: totalPages,
+            total: totalPages,
+            message: "Análisis externo completo: " + totalPages + " páginas incorporadas al corpus. Ahora podés generar la base conceptual desde Studio.",
+          });
+          setExternalAnalysisBatches(await listExternalAnalysisBatches(course.id));
+        } catch (error) {
+          failures.push(file.name + ": " + (error?.message || "No se pudo importar el resultado."));
+        }
+      }
+
+      if (failures.length) {
+        setStatus("No se pudieron importar " + failures.length + " archivo(s): " + failures.slice(0, 2).join(" · "));
+        setExternalDocumentProgress(current => ({
+          ...(current || {}),
+          status: "error",
+          error: failures.slice(0, 3).join("\n"),
+        }));
+      } else if (completedDocuments) {
+        setStatus("Se incorporó el análisis multimodal de " + completedDocuments + " documento(s) generado(s) por IA externa.");
+      } else {
+        setStatus("Resultados parciales guardados. Podés importar las siguientes tandas sin perder las anteriores.");
+      }
+    } finally {
+      setBusy(false);
     }
   }
 
@@ -1454,36 +1851,113 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
           </div></Row>)}</div> : <Empty title="Todavía no cargaste fuentes." text="Podés agregarlas manualmente o incorporarlas desde un JSON." action={<button className="ghost" type="button" onClick={addBibliography}>Agregar primera fuente</button>}/>}
           </Panel>
         </details>
-        {!materialSections.length && <Panel
+        <Panel
           eyebrow="IA PARA LA CARGA"
-          title="Analizá los PDF desde la primera lectura"
-          description="Con una clave personal de Groq, AULIA renderiza las páginas y usa IA multimodal para reconocer la estructura semántica, leer tablas y gráficos, y recuperar texto de escaneos. La lectura visual se integra al corpus antes de construir la base conceptual."
+          title="Elegí cómo analizar el documento"
+          description="Podés analizar los PDF con Groq desde AULIA o utilizar una IA externa. El progreso queda visible y los análisis interrumpidos se pueden reanudar sin seleccionar el PDF otra vez."
         >
-          {studioApiKey
-            ? <div className="studio-wf-ai-ready"><span>● IA multimodal lista para la carga</span><small>La clave permanece en esta sesión del navegador. El análisis por páginas se guarda localmente y puede reanudarse si Groq alcanza un límite temporal.</small><button className="ghost" type="button" onClick={() => setShowStudioKey(true)} disabled={busy}>Cambiar clave</button></div>
-            : <div className="studio-wf-ai-setup">
-                <div><strong>Clave personal de Groq</strong><span>Configurala antes de subir el PDF para analizar imágenes y texto durante la carga. Sin clave, AULIA conservará la extracción convencional disponible.</span></div>
-                <div className="studio-wf-ai-key-row">
-                  <input type="password" value={studioKeyInput} placeholder="gsk_…" autoComplete="off" onChange={(event) => setStudioKeyInput(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") saveTeacherKey(); }}/>
-                  <button className="ghost" type="button" onClick={saveTeacherKey} disabled={!studioKeyInput.trim() || !canEdit || busy}>Guardar clave</button>
-                </div>
-              </div>}
-          <p className="studio-wf-security-note">En esta primera versión, la lectura visual multimodal se aplica a PDF. DOCX, TXT y Markdown conservan su extracción actual; el análisis conceptual posterior sigue disponible para esos formatos.</p>
-          {showStudioKey && studioApiKey && <div className="studio-wf-ai-setup">
-            <div><strong>Cambiar clave de Groq</strong><span>Ingresá una nueva clave o quitá la actual.</span></div>
-            <div className="studio-wf-ai-key-row">
-              <input type="password" value={studioKeyInput} placeholder="gsk_…" autoComplete="off" onChange={(event) => setStudioKeyInput(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") saveTeacherKey(); }}/>
-              <button className="ghost" type="button" onClick={saveTeacherKey} disabled={!studioKeyInput.trim() || !canEdit || busy}>Guardar clave</button>
-              <button className="ghost" type="button" onClick={() => { forgetTeacherKey(); setShowStudioKey(false); }} disabled={busy}>Quitar</button>
+          <div className="studio-wf-knowledge-provider">
+            <button type="button" className={ingestionProvider === "groq" ? "active" : ""} onClick={() => setIngestionProvider("groq")} disabled={!canEdit || busy} aria-pressed={ingestionProvider === "groq"}>
+              <strong>IA interna · Groq</strong><span>Leer páginas, tablas y gráficos durante la carga</span>
+            </button>
+            <button type="button" className={ingestionProvider === "external" ? "active" : ""} onClick={() => setIngestionProvider("external")} disabled={!canEdit || busy} aria-pressed={ingestionProvider === "external"}>
+              <strong>IA externa</strong><span>Usar ChatGPT, Claude, Gemini u otro servicio</span>
+            </button>
+            <button type="button" className={ingestionProvider === "local" ? "active" : ""} onClick={() => setIngestionProvider("local")} disabled={!canEdit || busy} aria-pressed={ingestionProvider === "local"}>
+              <strong>Extracción local</strong><span>Sin IA en la etapa de carga</span>
+            </button>
+          </div>
+
+          {ingestionProvider === "groq" && <>
+            {studioApiKey
+              ? <div className="studio-wf-ai-ready"><span>● IA multimodal lista</span><small>Se analizarán texto e imágenes del PDF. El archivo se guarda en este navegador para reanudar si Groq alcanza un límite.</small><button className="ghost" type="button" onClick={() => setShowStudioKey(true)} disabled={busy}>Cambiar clave</button></div>
+              : <div className="studio-wf-ai-setup">
+                  <div><strong>Clave personal de Groq</strong><span>Ingresala para activar el análisis multimodal durante la carga. Sin clave, AULIA no puede ejecutar este paso.</span></div>
+                  <div className="studio-wf-ai-key-row">
+                    <input type="password" value={studioKeyInput} placeholder="gsk_…" autoComplete="off" onChange={(event) => setStudioKeyInput(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") saveTeacherKey(); }}/>
+                    <button className="ghost" type="button" onClick={saveTeacherKey} disabled={!studioKeyInput.trim() || !canEdit || busy}>Guardar clave</button>
+                  </div>
+                </div>}
+            {showStudioKey && studioApiKey && <div className="studio-wf-ai-setup">
+              <div><strong>Cambiar clave de Groq</strong><span>Ingresá una nueva clave o quitá la actual.</span></div>
+              <div className="studio-wf-ai-key-row">
+                <input type="password" value={studioKeyInput} placeholder="gsk_…" autoComplete="off" onChange={(event) => setStudioKeyInput(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") saveTeacherKey(); }}/>
+                <button className="ghost" type="button" onClick={saveTeacherKey} disabled={!studioKeyInput.trim() || !canEdit || busy}>Guardar clave</button>
+                <button className="ghost" type="button" onClick={() => { forgetTeacherKey(); setIngestionProvider("external"); }} disabled={busy}>Quitar</button>
+              </div>
+            </div>}
+            <p className="studio-wf-security-note">Aplicable a PDF. DOCX, TXT y Markdown conservan la extracción local y luego pueden indexarse con Groq o una IA externa.</p>
+          </>}
+
+          {ingestionProvider === "external" && <div className="studio-wf-external-help">
+            <h3>Análisis del PDF con una IA externa</h3>
+            <p>En este recorrido, la IA externa lee directamente el PDF original. No necesitás subirlo primero a AULIA ni configurar una clave de Groq.</p>
+            <ol>
+              <li><strong>Descargá las instrucciones.</strong> El archivo explica cómo leer el documento y qué JSON debe producir la IA.</li>
+              <li><strong>Adjuntá dos archivos en ChatGPT, Claude, Gemini u otro servicio.</strong> El PDF original de la bibliografía y el TXT de instrucciones. Pedile que analice el documento con esas reglas.</li>
+              <li><strong>Si el documento es largo, trabajá por tandas.</strong> La IA debe conservar el mismo nombre del PDF y total de páginas en todos los JSON. Guardá cada tanda como un archivo .json independiente.</li>
+              <li><strong>Importá los resultados aquí.</strong> Podés seleccionar varias tandas juntas o importar una tanda ahora y continuar después. AULIA guarda la cobertura localmente y no incorpora el documento hasta que todas las páginas estén cubiertas.</li>
+            </ol>
+            <div className="studio-wf-tool-row">
+              <button className="primary" type="button" onClick={downloadExternalDocumentPrompt} disabled={!canEdit || busy}>1. Descargar instrucciones (.txt)</button>
+              <label className={"ghost studio-file" + (!canEdit || busy ? " disabled" : "")}>2. Importar análisis (.json)<input type="file" accept="application/json,.json,text/plain,.txt" multiple onChange={importExternalDocumentAnalysis} disabled={!canEdit || busy}/></label>
             </div>
+            <small className="studio-wf-external-note">Los resultados parciales se almacenan en este navegador. Para completar el análisis, importá las tandas restantes del mismo PDF sin cambiar el nombre de origen ni el total de páginas.</small>
+            {externalDocumentProgress && <div className={"studio-wf-ai-report " + (externalDocumentProgress.status === "complete" ? "ok" : externalDocumentProgress.status === "error" ? "error" : "")}>
+              <strong>{externalDocumentProgress.status === "complete" ? "✓ Análisis externo completo" : externalDocumentProgress.status === "partial" ? "Análisis externo parcial" : externalDocumentProgress.status === "error" ? "No se pudo completar la importación" : "Importando análisis externo…"}</strong>
+              {externalDocumentProgress.sourceName && <span>{externalDocumentProgress.sourceName}</span>}
+              {Number(externalDocumentProgress.total) > 0 && <>
+                <span>{externalDocumentProgress.processed || 0} de {externalDocumentProgress.total} páginas recibidas</span>
+                <progress className="studio-wf-progress" max={externalDocumentProgress.total} value={Math.min(externalDocumentProgress.processed || 0, externalDocumentProgress.total)}/>
+              </>}
+              {externalDocumentProgress.message && <small>{externalDocumentProgress.message}</small>}
+              {externalDocumentProgress.error && <small>{externalDocumentProgress.error}</small>}
+            </div>}
+            {externalAnalysisBatches.length > 0 && <div className="studio-wf-stack">
+              <strong>Documentos externos guardados para continuar</strong>
+              {externalAnalysisBatches.map(batch => <div className="studio-wf-ai-ready" key={batch.id}>
+                <span>{batch.sourceName}</span>
+                <small>{batch.processed}/{batch.totalPages} páginas acumuladas</small>
+                <button className="ghost" type="button" onClick={() => discardExternalAnalysis(batch)} disabled={busy}>Descartar tandas</button>
+              </div>)}
+            </div>}
           </div>}
-        </Panel>}
+
+          {ingestionProvider === "local" && <div className="studio-wf-security-note">
+            La extracción local no utiliza IA para interpretar la estructura ni los elementos visuales. Elegí este modo solo si querés cargar material sin análisis multimodal y construir la base conceptual después.
+          </div>}
+
+          {uploadProgress && <div className={"studio-wf-ai-report " + (uploadProgress.phase === "complete" ? "ok" : uploadProgress.phase === "paused" || uploadProgress.phase === "error" ? "error" : "")}>
+            <strong>{uploadProgress.phase === "complete" ? "✓ Carga completada" : uploadProgress.phase === "paused" ? "Análisis pausado; el archivo está guardado" : uploadProgress.phase === "error" ? "No se pudo completar la carga" : uploadProgress.phase === "processing" || uploadProgress.phase === "processing-batch" ? "IA analizando el documento…" : uploadProgress.phase === "rendering" ? "Preparando imágenes de las páginas…" : "Preparando documento…"}</strong>
+            {uploadProgress.fileName && <span>{uploadProgress.fileName}</span>}
+            {Number(uploadProgress.total) > 0 && <>
+              <span>{uploadProgress.processed || 0} de {uploadProgress.total} {uploadProgress.phase === "rendering" ? "páginas preparadas" : uploadProgress.phase === "extracting" ? "páginas leídas" : "páginas analizadas"}{uploadProgress.activePages?.length ? " · analizando ahora: " + uploadProgress.activePages.join(", ") : ""}</span>
+              <progress className="studio-wf-progress" max={uploadProgress.total} value={Math.min(uploadProgress.processed || 0, uploadProgress.total)}/>
+            </>}
+            {uploadProgress.message && <small>{uploadProgress.message}</small>}
+            {uploadProgress.model && <small>Modelo: {uploadProgress.model}</small>}
+            {uploadProgress.error && <small>{uploadProgress.error}</small>}
+            {uploadProgress.phase === "paused" && uploadProgress.pendingId && <button className="primary" type="button" onClick={() => resumePendingPdf({ id: uploadProgress.pendingId, fileName: uploadProgress.fileName })} disabled={!canEdit || busy}>Reanudar análisis guardado</button>}
+          </div>}
+
+          {pendingPdfs.length > 0 && <div className="studio-wf-stack">
+            <strong>PDF guardados para reanudar</strong>
+            {pendingPdfs.map(pending => <div className="studio-wf-ai-ready" key={pending.id}>
+              <span>{pending.fileName}</span>
+              <small>Archivo guardado en este navegador. No necesitás volver a seleccionarlo.</small>
+              <div className="studio-wf-panel-actions">
+                <button className="primary" type="button" onClick={() => resumePendingPdf(pending)} disabled={!canEdit || busy}>Reanudar análisis</button>
+                <button className="ghost" type="button" onClick={() => discardPendingPdf(pending)} disabled={busy}>Descartar</button>
+              </div>
+            </div>)}
+          </div>}
+        </Panel>
 
         <Panel
           eyebrow="MATERIAL"
           title="Bibliografía y corpus de la cátedra"
           description="Si configuraste Groq, los PDF se analizan visual y semánticamente durante la carga. La IA identifica secciones, reconstruye tablas y describe gráficos; luego podés revisar las secciones, su alcance y prioridad."
-          actions={<label className="primary studio-wf-file-btn">{busy ? "Procesando…" : "Cargar material"}<input type="file" accept=".txt,.md,.markdown,.json,.pdf,.docx,text/plain,text/markdown,application/json,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document" multiple onChange={importMaterial} disabled={busy}/></label>}
+          actions={ingestionProvider === "external" ? <span className="studio-wf-security-note">En modo externo, importá arriba el JSON que generó la otra IA.</span> : <label className={"primary studio-wf-file-btn" + (busy || (ingestionProvider === "groq" && !studioApiKey) ? " disabled" : "")}>{busy ? "Procesando…" : ingestionProvider === "groq" ? (studioApiKey ? "Cargar PDF y analizar con IA" : "Configurá Groq para continuar") : "Cargar material (extracción local)"}<input type="file" accept={ingestionProvider === "groq" ? ".pdf,application/pdf" : ".txt,.md,.markdown,.json,.pdf,.docx,text/plain,text/markdown,application/json,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document"} multiple onChange={importMaterial} disabled={busy || (ingestionProvider === "groq" && !studioApiKey)}/></label>}
         >
           {materialSections.length ? <>
             <div className="studio-wf-stats">

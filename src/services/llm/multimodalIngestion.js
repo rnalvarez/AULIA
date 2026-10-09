@@ -1,3 +1,5 @@
+import { readStudioRecord, writeStudioRecord } from "../../core/studioPersistence.js";
+
 const DEFAULT_MODELS = ["qwen/qwen3.8-27b"];
 const ENDPOINT = "https://api.groq.com/openai/v1/chat/completions";
 const CACHE_PREFIX = "aulia:multimodal-ingestion:v1:";
@@ -46,28 +48,44 @@ function normalisePage(page, expectedNumber) {
   };
 }
 
-function readCache(key, signature) {
+async function readCache(key, signature) {
   try {
-    const raw = localStorage.getItem(key);
-    if (!raw) return {};
-    const parsed = JSON.parse(raw);
-    if (parsed?.version !== 1 || parsed?.signature !== signature || !parsed?.pages) return {};
-    return parsed.pages;
-  } catch {
-    return {};
-  }
+    const parsed = await readStudioRecord(key);
+    if (parsed?.version === 1 && parsed?.signature === signature && parsed?.pages) {
+      return parsed.pages;
+    }
+  } catch {}
+
+  // Migrate page results created by the previous version, which stored progress in localStorage.
+  try {
+    const legacy = JSON.parse(localStorage.getItem(key) || "null");
+    if (legacy?.version === 1 && legacy?.signature === signature && legacy?.pages) {
+      await writeStudioRecord({
+        id: key,
+        kind: "multimodal-page-cache",
+        version: 1,
+        signature,
+        updatedAt: legacy.updatedAt || new Date().toISOString(),
+        pages: legacy.pages,
+      });
+      return legacy.pages;
+    }
+  } catch {}
+  return {};
 }
 
-function saveCache(key, signature, pages) {
+async function saveCache(key, signature, pages) {
   try {
-    localStorage.setItem(key, JSON.stringify({
+    await writeStudioRecord({
+      id: key,
+      kind: "multimodal-page-cache",
       version: 1,
       signature,
       updatedAt: new Date().toISOString(),
       pages,
-    }));
+    });
   } catch {
-    // Analysis must continue even when the browser's local storage quota is full.
+    // The pending PDF itself is stored separately so the user can resume even if cache persistence fails.
   }
 }
 
@@ -151,9 +169,9 @@ async function requestBatch({ apiKey, courseTitle, pages, batchNumber, signal })
       error.status = response.status;
       error.retryAfter = response.headers.get("retry-after") || "";
       if (response.status === 401) error.message = "La API key de Groq no es válida. Revisá la clave docente en Studio.";
-      if (response.status === 413) error.message = "La tanda de imágenes supera el tamaño admitido por Groq. Volvé a cargar el archivo para reintentar con el avance conservado.";
+      if (response.status === 413) error.message = "La tanda de imágenes supera el tamaño admitido por Groq. El archivo queda guardado; usá «Reanudar análisis» para continuar.";
       if (response.status === 429) {
-        error.message = "Groq alcanzó un límite temporal o de cuota durante el análisis multimodal. Se conservó el avance de las páginas terminadas; volvé a cargar el mismo PDF para reanudar cuando se restablezca el límite.";
+        error.message = "Groq alcanzó un límite temporal o de cuota durante el análisis multimodal. Se conservó el avance de las páginas terminadas; usá «Reanudar análisis» cuando se restablezca el límite.";
       }
       throw error;
     }
@@ -162,7 +180,7 @@ async function requestBatch({ apiKey, courseTitle, pages, batchNumber, signal })
     const raw = String(choice?.message?.content || "").trim();
     if (!raw) throw new Error("Groq devolvió una respuesta vacía para las páginas " + pages.map(page => page.pageNumber).join(", ") + ".");
     if (choice?.finish_reason === "length") {
-      const error = new Error("La respuesta visual quedó truncada. El avance de las tandas anteriores se conservó; volvé a cargar el PDF para continuar.");
+      const error = new Error("La respuesta visual quedó truncada. El avance de las tandas anteriores se conservó; usá «Reanudar análisis» para continuar.");
       error.code = "AULIA_OUTPUT_TRUNCATED";
       throw error;
     }
@@ -189,7 +207,7 @@ async function requestBatch({ apiKey, courseTitle, pages, batchNumber, signal })
       normalized.push(normalisePage(page, number));
     }
     if (received.size !== expected.size) {
-      throw new Error("La IA no analizó todas las páginas de la tanda. No se marcó el lote como completado; volvé a cargar el PDF para reintentar.");
+      throw new Error("La IA no analizó todas las páginas de la tanda. No se marcó el lote como completado; usá «Reanudar análisis» para reintentar esa tanda.");
     }
     return { pages: normalized, model: data?.model || model };
   }
@@ -216,7 +234,7 @@ export async function analyzePdfWithVision(material, {
     hashString(page.imageDataUrl || ""),
   ].join("|")).join("::"));
   const cacheKey = CACHE_PREFIX + String(material?.document?.id || material?.sourceName || "pdf") + ":" + signature;
-  const pageResults = readCache(cacheKey, signature);
+  const pageResults = await readCache(cacheKey, signature);
   let model = "qwen/qwen3.8-27b";
   const total = sourcePages.length;
 
@@ -232,6 +250,14 @@ export async function analyzePdfWithVision(material, {
         batch.push(next);
       }
     }
+
+    onProgress({
+      processed: Object.keys(pageResults).length,
+      total,
+      model,
+      phase: "processing-batch",
+      activePageNumbers: batch.map(page => page.pageNumber),
+    });
 
     let result;
     try {
@@ -255,7 +281,7 @@ export async function analyzePdfWithVision(material, {
         });
         model = singleResult.model || model;
         for (const page of singleResult.pages) pageResults[String(page.pageNumber)] = page;
-        saveCache(cacheKey, signature, pageResults);
+        await saveCache(cacheKey, signature, pageResults);
         onProgress({
           processed: Object.keys(pageResults).length,
           total,
@@ -267,11 +293,12 @@ export async function analyzePdfWithVision(material, {
     }
     model = result.model || model;
     for (const page of result.pages) pageResults[String(page.pageNumber)] = page;
-    saveCache(cacheKey, signature, pageResults);
+    await saveCache(cacheKey, signature, pageResults);
     onProgress({
       processed: Object.keys(pageResults).length,
       total,
       model,
+      phase: "processing",
       pageNumbers: batch.map(page => page.pageNumber),
     });
   }

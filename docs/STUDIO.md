@@ -120,7 +120,13 @@ Cuando se configura una clave personal de Groq antes de cargar un PDF, AULIA ren
 
 El resultado pasa a ser el texto consultable y la organización del corpus de ese PDF. Si la IA ofrece una transcripción alternativa, Studio conserva también el texto extraído original para comparación. Las referencias de página se mantienen; no se incluye la imagen de la página ni la API key en el course pack. Las salidas visuales pueden contener errores, por lo que las secciones marcadas para revisar deben cotejarse con el documento antes de publicar.
 
-El modelo procesa hasta dos páginas digitales por petición y una página escaneada por petición para reservar más capacidad de salida para OCR. La cuota gratuita de Groq puede detener el análisis a mitad del archivo. Los resultados de las páginas terminadas se guardan en el almacenamiento local del navegador. Para reanudar, el docente debe volver a seleccionar el mismo PDF en el mismo navegador y sesión de Studio; AULIA identifica las páginas que ya fueron procesadas. No se garantiza que todas las páginas de un libro extenso puedan completarse en un mismo día.
+El modelo procesa hasta dos páginas digitales por petición y una página escaneada por petición para reservar más capacidad de salida para OCR. La cuota gratuita de Groq puede detener el análisis a mitad del archivo. Studio muestra el progreso por página y guarda el PDF pendiente en IndexedDB, junto con los resultados de páginas completadas. Si se interrumpe, aparece la acción «Reanudar análisis guardado»: el docente no necesita seleccionar el PDF otra vez. El archivo solo podrá recuperarse en el mismo navegador/perfil y mientras no se borre el almacenamiento del sitio. No se garantiza que un libro extenso pueda completarse en un mismo día.
+
+### Análisis del PDF con una IA externa
+
+También se puede analizar el documento original sin configurar Groq. En **IA para la carga → IA externa**, descargá el TXT de instrucciones y adjuntalo junto con el PDF original en ChatGPT, Claude, Gemini u otro servicio. La IA debe devolver JSON con formato `aulia-multimodal-document-analysis`, numeración exacta de página y el nombre del PDF. Para libros extensos puede devolver tandas consecutivas. Importá cada JSON en Studio; AULIA acumula las páginas importadas en IndexedDB y solo incorpora el documento al corpus cuando confirma la cobertura completa de páginas. Los resultados parciales no se pierden al cambiar de etapa o recargar Studio.
+
+Este recorrido analiza el PDF original. Es distinto de la opción de IA externa que aparece más abajo en **Base de conocimiento bibliográfica**, que genera el índice conceptual a partir del corpus ya incorporado.
 
 ### Flujo según el material
 
