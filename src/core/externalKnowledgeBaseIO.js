@@ -8,7 +8,7 @@ export function createExternalKnowledgePrompt({ courseTitle = "", sourceSignatur
     "Actuá como documentalista académico y analista conceptual. Tu tarea es construir una base de conocimiento fiel a la bibliografía adjunta para un chatbot universitario.",
     "",
     "ARCHIVO DE ENTRADA",
-    "Adjunto un JSON de AULIA con formato \"" + EXTERNAL_KNOWLEDGE_INPUT_FORMAT + "\". Usá únicamente los textos de su arreglo \"passages\". No agregues conocimiento externo ni atribuyas al autor afirmaciones que no estén respaldadas por el material.",
+    "Adjunto un JSON de AULIA con formato \"" + EXTERNAL_KNOWLEDGE_INPUT_FORMAT + "\". Usá únicamente los textos de su arreglo \"passages\". Analizá TODOS los pasajes del archivo, incluso los que traigan scope \"excluded\": el docente decidirá después cuáles podrán utilizarse en el chatbot. No agregues conocimiento externo ni atribuyas al autor afirmaciones que no estén respaldadas por el material.",
     "",
     "CÁTEDRA: " + (courseTitle || "No especificada"),
     "FIRMA DE LA BIBLIOGRAFÍA (copiar exactamente): " + sourceSignature,
@@ -64,7 +64,7 @@ export function createExternalKnowledgePackage({ course, passages = [] }) {
     sourceSignature,
     totalPassages: safePassages.length,
     recommendedPassagesPerResponse: 20,
-    instructions: "Subí este archivo a un servicio de IA y pegá las instrucciones de AULIA que te proporciona Studio. Trabajá en tandas consecutivas; cada respuesta debe ser un JSON independiente. Importá luego todos los archivos de salida en Studio.",
+    instructions: "Este paquete contiene todos los pasajes de la bibliografía cargada para construir una propuesta inicial de conocimiento. No filtres los pasajes por scope: el docente definirá Incluido, Referencial o Excluir después del análisis. Subí este archivo a un servicio de IA y pegá las instrucciones de AULIA que te proporciona Studio. Trabajá en tandas consecutivas; cada respuesta debe ser un JSON independiente. Importá luego todos los archivos de salida en Studio.",
     passages: safePassages.map(passage => ({
       passageId: passage.passageId,
       sourceId: passage.sourceId,
