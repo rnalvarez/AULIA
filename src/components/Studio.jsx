@@ -1202,8 +1202,10 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
       return;
     }
     if (!studioApiKey) {
+      setKnowledgeProvider("groq");
       setShowStudioKey(true);
-      setStatus("Configurá tu clave de Groq para generar una propuesta semántica.");
+      setStep("material");
+      setStatus("Configurá tu clave de IA docente en Bibliografía o elegí una IA externa.");
       return;
     }
 
@@ -1422,6 +1424,78 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
               La IA analiza primero <strong>toda la bibliografía cargada</strong>. Después podés cambiar el alcance y la prioridad sin repetir el análisis: esas decisiones se aplican al recuperar información para el chatbot. Todo comienza como Incluido, con prioridad Complementario.
             </div>
 
+            <section className="studio-wf-knowledge-setup">
+              <div className="studio-wf-knowledge-setup-head">
+                <div className="eyebrow">BASE DE CONOCIMIENTO · PASO 1</div>
+                <h3>Analizá toda la bibliografía</h3>
+                <p>Este análisis identifica conceptos y sus referencias antes de que decidas qué secciones podrá utilizar el chatbot. Se analiza todo el material cargado; el alcance y la prioridad que selecciones abajo se aplicarán después, durante la consulta.</p>
+              </div>
+
+              <div className="studio-wf-knowledge-provider">
+                <button type="button" className={knowledgeProvider === "groq" ? "active" : ""} onClick={() => setKnowledgeProvider("groq")} disabled={!canEdit || busy} aria-pressed={knowledgeProvider === "groq"}>
+                  <strong>IA interna · Groq</strong><span>Analizar desde AULIA con tu clave personal</span>
+                </button>
+                <button type="button" className={knowledgeProvider === "external" ? "active" : ""} onClick={() => setKnowledgeProvider("external")} disabled={!canEdit || busy} aria-pressed={knowledgeProvider === "external"}>
+                  <strong>IA externa</strong><span>Usar ChatGPT, Claude, Gemini u otro servicio</span>
+                </button>
+              </div>
+
+              {knowledgeProvider === "groq" ? <>
+                <p className="studio-wf-knowledge-explainer">AULIA procesa los pasajes en tandas, conserva el progreso y reintenta los límites temporales. La clave es personal: no se publica ni se incluye en el archivo de la cátedra.</p>
+                {(showStudioKey || !studioApiKey) && <div className="studio-wf-ai-setup">
+                  <div><strong>Clave de IA docente</strong><span>Ingresá tu API key de Groq. Si no tenés una, podés elegir la opción de IA externa.</span></div>
+                  <div className="studio-wf-ai-key-row">
+                    <input type="password" value={studioKeyInput} placeholder="gsk_…" autoComplete="off" onChange={(e) => setStudioKeyInput(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") saveTeacherKey(); }}/>
+                    <button className="ghost" type="button" onClick={saveTeacherKey} disabled={!studioKeyInput.trim() || !canEdit}>Guardar clave</button>
+                    {studioApiKey && <button className="ghost" type="button" onClick={forgetTeacherKey}>Quitar</button>}
+                  </div>
+                </div>}
+                {studioApiKey && !showStudioKey && <div className="studio-wf-ai-ready"><span>● IA docente lista</span><small>La clave está en este navegador y no se exporta.</small><button className="ghost" type="button" onClick={() => setShowStudioKey(true)}>Cambiar clave</button></div>}
+                <div className="studio-wf-tool-row">
+                  <button className="primary" type="button" onClick={buildFullKnowledgeBase} disabled={!canEdit || !draft.corpus?.length || busy || knowledgeBaseCurrent}>
+                    {busy ? "Analizando bibliografía…" : knowledgeBaseCurrent ? "Base conceptual completa" : knowledgeBaseResumable ? "Continuar análisis" : "Analizar bibliografía con Groq"}
+                  </button>
+                </div>
+              </> : <>
+                <p className="studio-wf-knowledge-explainer">AULIA prepara el texto segmentado con identificadores y referencias. La IA externa crea el índice y podés importar sus resultados por tandas, sin configurar una API key.</p>
+                <details className="studio-wf-external-help">
+                  <summary>Ver instrucciones paso a paso</summary>
+                  <ol>
+                    <li><strong>Descargá el paquete.</strong> Incluye los pasajes de todos los documentos, sus IDs, páginas y secciones. El archivo no decide qué se excluye: esa decisión se toma después en Studio.</li>
+                    <li><strong>Adjuntalo a una IA.</strong> Abrí el servicio que prefieras, adjuntá el JSON y pulsá «Copiar instrucciones». Pegá las instrucciones en ese mismo chat.</li>
+                    <li><strong>Procesá por tandas.</strong> Si la IA no termina en una respuesta, escribí «CONTINUAR». Guardá cada resultado como archivo .json independiente. Si solo muestra texto, copiá el JSON al Bloc de notas y guardalo como <code>resultado-01.json</code> seleccionando «Todos los archivos» y UTF-8.</li>
+                    <li><strong>Importá los resultados.</strong> Podés seleccionar varios JSON a la vez. AULIA verifica la firma, los IDs y las citas, y suma la cobertura de cada archivo.</li>
+                    <li><strong>Revisá las decisiones.</strong> Cuando todos los pasajes estén cubiertos, elegí Incluido, Referencial o Excluir y ajustá la prioridad en la lista de secciones que sigue.</li>
+                  </ol>
+                  <div className="studio-wf-tool-row">
+                    <button className="primary" type="button" onClick={downloadExternalKnowledgeSource} disabled={!canEdit || !externalPassages.length || busy}>1. Descargar paquete (.json)</button>
+                    <button className="ghost" type="button" onClick={copyExternalPrompt} disabled={!canEdit || !externalPassages.length || busy}>2. Copiar instrucciones</button>
+                    <label className={"ghost studio-file" + (!canEdit || busy ? " disabled" : "")}>3. Importar resultado(s)<input type="file" accept="application/json,.json,text/plain,.txt" multiple onChange={importExternalKnowledge} disabled={!canEdit || busy}/></label>
+                  </div>
+                  <small className="studio-wf-external-note">El análisis se realiza en el servicio que elijas y queda sujeto a sus límites y políticas. No compartas material que no estés autorizado a subir a ese proveedor.</small>
+                  {showExternalPrompt && <label className="studio-wf-external-prompt"><span>Instrucciones para copiar manualmente</span><textarea value={externalPrompt} readOnly onFocus={event => event.target.select()} rows={11}/></label>}
+                </details>
+              </>}
+
+              <div className={"studio-wf-ai-report " + (knowledgeBaseCurrent ? "ok" : knowledgeBaseReport?.status === "partial" ? "error" : "")}>
+                <strong>
+                  {knowledgeBaseCurrent
+                    ? "✓ Análisis conceptual completo"
+                    : knowledgeBaseReport?.status === "processing"
+                      ? "Analizando toda la bibliografía…"
+                      : knowledgeBaseReport?.status === "partial" || draft.knowledgeBase?.status === "partial"
+                        ? "Análisis parcial; se puede continuar"
+                        : "Todavía no hay un análisis completo"}
+                </strong>
+                <span>{knowledgeBaseReport?.processed ?? knowledgeBaseStats.processedPassages}/{knowledgeBaseReport?.total ?? knowledgeBaseStats.totalPassages} pasajes analizados · {knowledgeBaseReport?.entries ?? knowledgeBaseStats.entries} entradas conceptuales</span>
+                {knowledgeBaseReport?.status === "processing" && (knowledgeBaseReport.total || 0) > 0 && <progress className="studio-wf-progress" max={knowledgeBaseReport.total} value={Math.min(knowledgeBaseReport.processed || 0, knowledgeBaseReport.total)}/>}
+                {(knowledgeBaseReport?.model || draft.knowledgeBase?.model) && <small>Método: {knowledgeBaseReport?.model || draft.knowledgeBase?.model}</small>}
+                {knowledgeBaseReport?.error && <small>{knowledgeBaseReport.error}</small>}
+                {knowledgeBaseCurrent && <small>La base corresponde al texto actual. Las decisiones de alcance y prioridad que hagas debajo se aplican sin volver a analizar la bibliografía.</small>}
+                {!knowledgeBaseCurrent && <small>Antes de publicar, completá el análisis de todos los pasajes para que las respuestas puedan rastrearse hasta la bibliografía.</small>}
+              </div>
+            </section>
+
             <div className="studio-wf-material-documents">
               {materialDocumentGroups.map((documentGroup, documentIndex) => (
                 <section className="studio-wf-material-document" key={documentGroup.id || documentIndex}>
@@ -1543,106 +1617,11 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
       {step === "proposal" && <>
         <div className="studio-wf-hero"><div className="eyebrow">PASO 03 · DISEÑO PEDAGÓGICO</div><h1>Diseñá la experiencia de aprendizaje.</h1><p>La base de conocimiento y su alcance se preparan en Bibliografía. Esta etapa es opcional y reúne la propuesta pedagógica y el mapa curricular; no hace falta completarla para organizar el material.</p></div>
 
-        <Panel
-          eyebrow="BASE DE CONOCIMIENTO"
-          title="Análisis conceptual de toda la bibliografía"
-          description="AULIA recorre cada pasaje activo, extrae conceptos y relaciones, y conserva referencias a fuente, sección y páginas. Se procesa por lotes con tu propia clave de Groq; si la cuota se agota, el avance queda guardado y se puede continuar."
-          actions={<button className="primary" type="button" onClick={buildFullKnowledgeBase} disabled={!canEdit || !draft.corpus?.length || busy || knowledgeBaseCurrent}>
-            {busy ? "Indexando bibliografía…" : knowledgeBaseCurrent ? "Base completa y actualizada" : knowledgeBaseResumable ? "Continuar análisis completo" : "Analizar bibliografía completa"}
-          </button>}
-        >
-          <div className={"studio-wf-ai-report " + (knowledgeBaseCurrent ? "ok" : knowledgeBaseReport?.status === "partial" ? "error" : "")}>
-            <strong>
-              {knowledgeBaseCurrent
-                ? "✓ Base conceptual completa"
-                : knowledgeBaseReport?.status === "processing"
-                  ? "Analizando toda la bibliografía…"
-                  : knowledgeBaseReport?.status === "partial" || draft.knowledgeBase?.status === "partial"
-                    ? "⚠ Análisis parcial; se puede reanudar"
-                    : draft.knowledgeBase && draft.knowledgeBase.sourceSignature !== undefined
-                      ? "La bibliografía cambió: el índice debe actualizarse"
-                      : "Todavía no hay una base conceptual completa"}
-            </strong>
-            <span>
-              {knowledgeBaseReport?.processed ?? knowledgeBaseStats.processedPassages}/
-              {knowledgeBaseReport?.total ?? knowledgeBaseStats.totalPassages} pasajes procesados ·
-              {" "}{knowledgeBaseReport?.entries ?? knowledgeBaseStats.entries} entradas conceptuales
-              {(knowledgeBaseReport?.model || draft.knowledgeBase?.model) === "Análisis externo"
-                ? " · análisis externo"
-                : " · " + (knowledgeBaseReport?.requests ?? draft.knowledgeBase?.requestCount ?? 0) + " consultas a Groq"}
-            </span>
-            {knowledgeBaseReport?.status === "processing" && (knowledgeBaseReport.total || 0) > 0 &&
-              <progress className="studio-wf-progress" max={knowledgeBaseReport.total} value={Math.min(knowledgeBaseReport.processed || 0, knowledgeBaseReport.total)} />}
-            {knowledgeBaseReport?.model && <small>Modelo: {knowledgeBaseReport.model}</small>}
-            {knowledgeBaseReport?.error && <small>{knowledgeBaseReport.error}</small>}
-            {knowledgeBaseCurrent && <small>El índice corresponde a la bibliografía actual. Si editás o reemplazás material, habrá que actualizarlo. Guardá la cátedra para conservarlo en el backend.</small>}
-            {!knowledgeBaseCurrent && <small>La publicación requiere este análisis completo para que el chatbot utilice el índice. Las secciones marcadas como Excluir no se indexan; Incluido y Referencial sí.</small>}
-          </div>
-        </Panel>
-        <Panel
-          eyebrow="ALTERNATIVA SIN GROQ"
-          title="Analizar la bibliografía con otra IA"
-          description="Si preferís ChatGPT, Claude, Gemini u otro servicio, podés preparar un archivo con los pasajes y llevarlo a esa herramienta. No necesitás una API key ni saber programar."
-        >
-          <div className="studio-wf-external-intro">
-            <strong>Un asistente guiado para hacer el proceso por fuera de AULIA</strong>
-            <p>Studio prepara el material y las instrucciones. La IA externa genera uno o varios archivos JSON; al importarlos, AULIA verifica sus referencias y acumula el avance hasta cubrir toda la bibliografía activa.</p>
-          </div>
-          <details className="studio-wf-external-help">
-            <summary>Ver guía paso a paso</summary>
-            <ol>
-              <li><strong>Descargá el paquete de análisis.</strong> Contiene los pasajes con sus IDs y referencias. Solo incluye las secciones Incluido y Referencial; las excluidas no se envían.</li>
-              <li><strong>Abrí el servicio de IA que uses.</strong> Adjuntá el JSON descargado y pulsá «Copiar instrucciones». Pegá ese texto en el chat para explicarle a la IA qué debe hacer y en qué formato.</li>
-              <li><strong>Pedí que trabaje por tandas.</strong> Si no entra todo en una respuesta, escribí «CONTINUAR». Guardá cada resultado como un archivo .json independiente. Algunas herramientas pueden crear el archivo; si la respuesta aparece como texto, copiá el JSON completo (sin las marcas de bloque ```) en el Bloc de notas de Windows. Elegí «Guardar como», escribí un nombre como <code>resultado-01.json</code>, seleccioná «Todos los archivos» y codificación UTF-8. No uses Word.</li>
-              <li><strong>Importá los resultados.</strong> Podés seleccionar varios JSON a la vez. AULIA combinará sus conceptos y referencias, y mostrará cuántos pasajes quedan cubiertos.</li>
-              <li><strong>Guardá y publicá.</strong> La publicación se habilita cuando la base acumulada cubre todos los pasajes activos. Revisá los resultados de la IA antes de publicar.</li>
-            </ol>
-            <div className="studio-wf-tool-row">
-              <button className="primary" type="button" onClick={downloadExternalKnowledgeSource} disabled={!canEdit || !externalPassages.length || busy}>
-                1. Descargar paquete de bibliografía (.json)
-              </button>
-              <button className="ghost" type="button" onClick={copyExternalPrompt} disabled={!canEdit || !externalPassages.length || busy}>
-                2. Copiar instrucciones para la IA
-              </button>
-              <label className={"ghost studio-file" + (!canEdit || busy ? " disabled" : "")}>
-                3. Importar resultado(s) JSON
-                <input type="file" accept="application/json,.json,text/plain,.txt" multiple onChange={importExternalKnowledge} disabled={!canEdit || busy}/>
-              </label>
-            </div>
-            <small className="studio-wf-external-note">
-              El análisis externo se realiza en el servicio que elijas y queda sujeto a sus límites y políticas. No subas materiales que no estés autorizado a compartir con ese proveedor.
-            </small>
-            {showExternalPrompt && <label className="studio-wf-external-prompt">
-              <span>Instrucciones para copiar manualmente</span>
-              <textarea value={externalPrompt} readOnly onFocus={event => event.target.select()} rows={11}/>
-            </label>}
-          </details>
-          <div className={"studio-wf-ai-report " + (knowledgeBaseCurrent ? "ok" : knowledgeBaseReport?.status === "partial" ? "error" : "")}>
-            <strong>
-              {knowledgeBaseCurrent
-                ? "✓ Base conceptual completa"
-                : draft.knowledgeBase?.status === "partial"
-                  ? "Análisis externo o automático parcial; puede continuarse"
-                  : "Estado de la importación externa"}
-            </strong>
-            <span>{knowledgeBaseStats.processedPassages}/{knowledgeBaseStats.totalPassages} pasajes cubiertos · {knowledgeBaseStats.entries} entradas conceptuales</span>
-            {!knowledgeBaseCurrent && <small>Se acumula el progreso de los archivos que importes. Todos deben corresponder a esta versión de la bibliografía.</small>}
-          </div>
-        </Panel>
-
-        <Panel eyebrow="ORGANIZACIÓN PEDAGÓGICA" title="Revisión automática opcional" description="Esta revisión no reemplaza la selección docente. Sirve para experimentar con una organización posible después de haber marcado prioridades, temas, conceptos y límites en Material." actions={<>
-          <button className="primary" type="button" onClick={analyzeWithAI} disabled={!canEdit || !draft.corpus?.length || busy}>{busy ? "IA ocupada…" : "Revisar propuesta automática · 1 consulta"}</button>
-          <button className="ghost" type="button" onClick={() => setShowStudioKey((value) => !value)} disabled={!canEdit}>{studioApiKey ? "Cambiar clave IA" : "Configurar IA docente"}</button>
+        <Panel eyebrow="ORGANIZACIÓN PEDAGÓGICA" title="Revisión automática opcional" description="Esta revisión no reemplaza la selección docente. Sirve para experimentar con una organización posible después de haber preparado la base de conocimiento y marcado prioridades, temas y límites en Bibliografía." actions={<>
+          <button className="primary" type="button" onClick={analyzeWithAI} disabled={!canEdit || !draft.corpus?.length || busy}>{busy ? "IA ocupada…" : "Revisar propuesta pedagógica"}</button>
+          <button className="ghost" type="button" onClick={() => { setStep("material"); setKnowledgeProvider("groq"); setShowStudioKey(true); }} disabled={!canEdit || busy}>{studioApiKey ? "Cambiar clave IA" : "Configurar IA docente"}</button>
         </>}>
-          {(showStudioKey || !studioApiKey) && <div className="studio-wf-ai-setup">
-            <div><strong>IA docente</strong><span>Usá una API key propia de Groq. Se mantiene en la sesión de este navegador y nunca entra al course pack.</span></div>
-            <div className="studio-wf-ai-key-row">
-              <input type="password" value={studioKeyInput} placeholder="gsk_…" autoComplete="off" onChange={(e) => setStudioKeyInput(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") saveTeacherKey(); }}/>
-              <button className="ghost" type="button" onClick={saveTeacherKey} disabled={!studioKeyInput.trim()}>Guardar clave</button>
-              {studioApiKey && <button className="ghost" type="button" onClick={forgetTeacherKey}>Quitar</button>}
-            </div>
-          </div>}
-          {studioApiKey && !showStudioKey && <div className="studio-wf-ai-ready"><span>● IA docente lista</span><small>La clave está solo en esta sesión.</small></div>}
+          {studioApiKey && <div className="studio-wf-ai-ready"><span>● IA docente lista</span><small>La clave se configura en Bibliografía.</small></div>}
 
           {analysisReport && (
             <div className={"studio-wf-ai-report " + (analysisReport.ok ? "ok" : "error")}>
