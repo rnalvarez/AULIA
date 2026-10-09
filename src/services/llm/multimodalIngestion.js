@@ -1,3 +1,5 @@
+import { readStudioRecord, writeStudioRecord } from "../../core/studioPersistence.js";
+
 const DEFAULT_MODELS = ["qwen/qwen3.8-27b"];
 const ENDPOINT = "https://api.groq.com/openai/v1/chat/completions";
 const CACHE_PREFIX = "aulia:multimodal-ingestion:v1:";
@@ -46,11 +48,9 @@ function normalisePage(page, expectedNumber) {
   };
 }
 
-function readCache(key, signature) {
+async function readCache(key, signature) {
   try {
-    const raw = localStorage.getItem(key);
-    if (!raw) return {};
-    const parsed = JSON.parse(raw);
+    const parsed = await readStudioRecord(key);
     if (parsed?.version !== 1 || parsed?.signature !== signature || !parsed?.pages) return {};
     return parsed.pages;
   } catch {
@@ -58,16 +58,18 @@ function readCache(key, signature) {
   }
 }
 
-function saveCache(key, signature, pages) {
+async function saveCache(key, signature, pages) {
   try {
-    localStorage.setItem(key, JSON.stringify({
+    await writeStudioRecord({
+      id: key,
+      kind: "multimodal-page-cache",
       version: 1,
       signature,
       updatedAt: new Date().toISOString(),
       pages,
-    }));
+    });
   } catch {
-    // Analysis must continue even when the browser's local storage quota is full.
+    // The pending PDF itself is stored separately so the user can resume even if cache persistence fails.
   }
 }
 
@@ -216,7 +218,7 @@ export async function analyzePdfWithVision(material, {
     hashString(page.imageDataUrl || ""),
   ].join("|")).join("::"));
   const cacheKey = CACHE_PREFIX + String(material?.document?.id || material?.sourceName || "pdf") + ":" + signature;
-  const pageResults = readCache(cacheKey, signature);
+  const pageResults = await readCache(cacheKey, signature);
   let model = "qwen/qwen3.8-27b";
   const total = sourcePages.length;
 
@@ -255,7 +257,7 @@ export async function analyzePdfWithVision(material, {
         });
         model = singleResult.model || model;
         for (const page of singleResult.pages) pageResults[String(page.pageNumber)] = page;
-        saveCache(cacheKey, signature, pageResults);
+        await saveCache(cacheKey, signature, pageResults);
         onProgress({
           processed: Object.keys(pageResults).length,
           total,
