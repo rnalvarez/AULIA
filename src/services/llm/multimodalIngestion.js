@@ -51,11 +51,27 @@ function normalisePage(page, expectedNumber) {
 async function readCache(key, signature) {
   try {
     const parsed = await readStudioRecord(key);
-    if (parsed?.version !== 1 || parsed?.signature !== signature || !parsed?.pages) return {};
-    return parsed.pages;
-  } catch {
-    return {};
-  }
+    if (parsed?.version === 1 && parsed?.signature === signature && parsed?.pages) {
+      return parsed.pages;
+    }
+  } catch {}
+
+  // Migrate page results created by the previous version, which stored progress in localStorage.
+  try {
+    const legacy = JSON.parse(localStorage.getItem(key) || "null");
+    if (legacy?.version === 1 && legacy?.signature === signature && legacy?.pages) {
+      await writeStudioRecord({
+        id: key,
+        kind: "multimodal-page-cache",
+        version: 1,
+        signature,
+        updatedAt: legacy.updatedAt || new Date().toISOString(),
+        pages: legacy.pages,
+      });
+      return legacy.pages;
+    }
+  } catch {}
+  return {};
 }
 
 async function saveCache(key, signature, pages) {
