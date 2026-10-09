@@ -138,6 +138,65 @@ function buildCorpusStats(items, question) {
   return { idf };
 }
 
+function splitIntoPassages(item, maxChars = 1100, overlap = 170) {
+  const text = String(item?.content || item?.explanation || item?.summary || "");
+  if (text.length <= maxChars) return [{ ...item, content: text, _passageIndex: 0 }];
+
+  const passages = [];
+  let start = 0;
+  let index = 0;
+
+  while (start < text.length) {
+    let end = Math.min(start + maxChars, text.length);
+    if (end < text.length) {
+      // Prefer a natural boundary in the final third of the window.
+      const minEnd = start + Math.floor(maxChars * 0.68);
+      const paraBoundary = text.lastIndexOf("\n", end);
+      const sentenceBoundary = Math.max(
+        text.lastIndexOf(". ", end),
+        text.lastIndexOf("? ", end),
+        text.lastIndexOf("! ", end),
+        text.lastIndexOf("; ", end)
+      );
+      const naturalBoundary = Math.max(paraBoundary, sentenceBoundary);
+      if (naturalBoundary >= minEnd) end = naturalBoundary + 1;
+      else {
+        const wordBoundary = text.lastIndexOf(" ", end);
+        if (wordBoundary > minEnd) end = wordBoundary;
+      }
+    }
+
+    const passage = text.slice(start, end).trim();
+    if (passage) passages.push({ ...item, content: passage, _passageIndex: index++ });
+    if (end >= text.length) break;
+
+    const nextStart = Math.max(start + 1, end - overlap);
+    start = nextStart;
+  }
+
+  return passages.length ? passages : [{ ...item, content: text.slice(0, maxChars), _passageIndex: 0 }];
+}
+
+function rankCorpusPassages(items, question, includeReference, limit) {
+  const passages = [];
+  for (const item of items || []) {
+    const scope = item.scope || "included";
+    if (scope === "excluded") continue;
+    if (scope === "reference" && !includeReference) continue;
+    const text = String(item?.content || item?.explanation || item?.summary || "");
+    if (!text.trim()) continue;
+    passages.push(...splitIntoPassages(item));
+  }
+
+  const ranked = rank(passages, question, includeReference);
+  const bestBySource = new Map();
+  for (const item of ranked) {
+    const key = String(item.id || item.title || "");
+    if (!bestBySource.has(key)) bestBySource.set(key, item);
+  }
+  return Array.from(bestBySource.values()).slice(0, limit);
+}
+
 function rank(items, question, optionsIncludeReference = false) {
   const available = (items || []).filter(item => {
     const scope = item.scope || "included";
@@ -169,7 +228,10 @@ export function retrieveFromCourse(course, question, options = {}) {
   // on every request or overrunning the student's Groq token budget.
   const includeReference = options.includeReference === true;
   const concepts = rank(course.concepts || [], question, includeReference).slice(0, conceptLimit);
-  const corpus = rank(course.corpus || [], question, includeReference).slice(0, corpusLimit);
+  // Rank overlapping passages, not whole chapters. This prevents a concept
+  // mentioned halfway through a long section from being lost when the prompt
+  // later trims the text to fit the student's Groq budget.
+  const corpus = rankCorpusPassages(course.corpus || [], question, includeReference, corpusLimit);
 
   const seen = new Set();
   return concepts.concat(corpus).filter(item => {
