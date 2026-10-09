@@ -4,7 +4,7 @@ import { downloadCoursePack, readCoursePackFile } from "../core/coursePackIO.js"
 import { readMaterialFile, materialToCorpus, mergeImportedBibliography, mergeImportedDocuments } from "../core/materialIO.js";
 import { requestTeacherProposal } from "../services/llm/teacherProposal.js";
 import { buildKnowledgeBase } from "../services/llm/knowledgeBase.js";
-import { isKnowledgeBaseCurrent, summarizeKnowledgeBase } from "../core/knowledgeBase.js";
+import { isKnowledgeBaseCurrent, summarizeKnowledgeBase, knowledgeCorpusSignature } from "../core/knowledgeBase.js";
 import { clearStudioApiKey, isGroqApiKey, loadStudioApiKey, saveStudioApiKey } from "../utils/studioStorage.js";
 import LegalNotice from "./LegalNotice.jsx";
 
@@ -1065,6 +1065,10 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
 
   const knowledgeBaseCurrent = isKnowledgeBaseCurrent(draft);
   const knowledgeBaseStats = summarizeKnowledgeBase(draft.knowledgeBase);
+  const knowledgeBaseResumable = Boolean(
+    draft.knowledgeBase?.sourceSignature === knowledgeCorpusSignature(draft.corpus || []) &&
+    (draft.knowledgeBase?.processedPassageIds || []).length > 0
+  );
   const materialSections = useMemo(() => buildMaterialStructure(draft), [draft.documents, draft.corpus]);
   const materialDocumentGroups = useMemo(() => {
     const documents = Array.isArray(draft.documents) ? draft.documents : [];
@@ -1327,7 +1331,7 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
           title="Análisis conceptual de toda la bibliografía"
           description="AULIA recorre cada pasaje activo, extrae conceptos y relaciones, y conserva referencias a fuente, sección y páginas. Se procesa por lotes con tu propia clave de Groq; si la cuota se agota, el avance queda guardado y se puede continuar."
           actions={<button className="primary" type="button" onClick={buildFullKnowledgeBase} disabled={!canEdit || !draft.corpus?.length || busy || knowledgeBaseCurrent}>
-            {busy ? "Indexando bibliografía…" : knowledgeBaseCurrent ? "Base completa y actualizada" : knowledgeBaseStats.processedPassages > 0 ? "Continuar análisis completo" : "Analizar bibliografía completa"}
+            {busy ? "Indexando bibliografía…" : knowledgeBaseCurrent ? "Base completa y actualizada" : knowledgeBaseResumable ? "Continuar análisis completo" : "Analizar bibliografía completa"}
           </button>}
         >
           <div className={"studio-wf-ai-report " + (knowledgeBaseCurrent ? "ok" : knowledgeBaseReport?.status === "partial" ? "error" : "")}>
@@ -1357,7 +1361,7 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
           </div>
         </Panel>
         <Panel eyebrow="ORGANIZACIÓN PEDAGÓGICA" title="Revisión automática opcional" description="Esta revisión no reemplaza la selección docente. Sirve para experimentar con una organización posible después de haber marcado prioridades, temas, conceptos y límites en Material." actions={<>
-          <button className="primary" type="button" onClick={analyzeWithAI} disabled={!canEdit || !draft.corpus?.length || busy}>{busy ? "Analizando organización…" : "Revisar propuesta automática · 1 consulta"}</button>
+          <button className="primary" type="button" onClick={analyzeWithAI} disabled={!canEdit || !draft.corpus?.length || busy}>{busy ? "IA ocupada…" : "Revisar propuesta automática · 1 consulta"}</button>
           <button className="ghost" type="button" onClick={() => setShowStudioKey((value) => !value)} disabled={!canEdit}>{studioApiKey ? "Cambiar clave IA" : "Configurar IA docente"}</button>
         </>}>
           {(showStudioKey || !studioApiKey) && <div className="studio-wf-ai-setup">
