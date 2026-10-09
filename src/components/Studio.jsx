@@ -2,10 +2,12 @@ import { useEffect, useMemo, useState } from "react";
 import { cloneCourse, validateCourse } from "../core/courseContract.js";
 import { downloadCoursePack, readCoursePackFile } from "../core/coursePackIO.js";
 import { readMaterialFile, materialToCorpus, mergeImportedBibliography, mergeImportedDocuments, applyAIMultimodalAnalysis } from "../core/materialIO.js";
+import { savePendingPdf, getPendingPdf, listPendingPdfs, deletePendingPdf, saveExternalAnalysisBatch, listExternalAnalysisBatches, getExternalAnalysisBatch, deleteExternalAnalysisBatch } from "../core/studioPersistence.js";
+import { createExternalDocumentAnalysisPrompt, EXTERNAL_DOCUMENT_ANALYSIS_FORMAT, EXTERNAL_DOCUMENT_ANALYSIS_VERSION } from "../core/externalDocumentAnalysis.js";
 import { analyzePdfWithVision } from "../services/llm/multimodalIngestion.js";
 import { requestTeacherProposal } from "../services/llm/teacherProposal.js";
 import { buildKnowledgeBase, buildKnowledgePassages, isSupportedKnowledgeExcerpt, normalizeExternalKnowledgeEntries, mergeKnowledgeBaseEntries } from "../services/llm/knowledgeBase.js";
-import { createExternalKnowledgePackage, createExternalKnowledgePrompt, downloadJsonFile, EXTERNAL_KNOWLEDGE_OUTPUT_FORMAT } from "../core/externalKnowledgeBaseIO.js";
+import { createExternalKnowledgePackage, createExternalKnowledgePrompt, downloadJsonFile, downloadTextFile, EXTERNAL_KNOWLEDGE_OUTPUT_FORMAT } from "../core/externalKnowledgeBaseIO.js";
 import { KNOWLEDGE_BASE_VERSION, isKnowledgeBaseCurrent, summarizeKnowledgeBase, knowledgeCorpusSignature, legacyKnowledgeCorpusSignature } from "../core/knowledgeBase.js";
 import { clearStudioApiKey, isGroqApiKey, loadStudioApiKey, saveStudioApiKey } from "../utils/studioStorage.js";
 import LegalNotice from "./LegalNotice.jsx";
@@ -441,6 +443,11 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
   const [knowledgeBaseReport, setKnowledgeBaseReport] = useState(null);
   const [showExternalPrompt, setShowExternalPrompt] = useState(false);
   const [knowledgeProvider, setKnowledgeProvider] = useState("groq");
+  const [ingestionProvider, setIngestionProvider] = useState(() => loadStudioApiKey(course.id) ? "groq" : "external");
+  const [uploadProgress, setUploadProgress] = useState(null);
+  const [pendingPdfs, setPendingPdfs] = useState([]);
+  const [externalAnalysisBatches, setExternalAnalysisBatches] = useState([]);
+  const [externalDocumentProgress, setExternalDocumentProgress] = useState(null);
 
   useEffect(() => {
     const saved = localStorage.getItem(storageKey);
@@ -488,6 +495,30 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
     setAnalysisReport(null);
     setKnowledgeBaseReport(null);
     setShowExternalPrompt(false);
+  }, [course.id]);
+
+  useEffect(() => {
+    let active = true;
+    Promise.all([
+      listPendingPdfs(course.id),
+      listExternalAnalysisBatches(course.id),
+    ]).then(([pending, external]) => {
+      if (!active) return;
+      setPendingPdfs(pending);
+      setExternalAnalysisBatches(external);
+      const partial = external.find(item => item.processed < item.totalPages);
+      if (partial) {
+        setExternalDocumentProgress({
+          sourceName: partial.sourceName,
+          processed: partial.processed,
+          total: partial.totalPages,
+          status: "partial",
+        });
+      }
+    }).catch(() => {
+      if (active) setStatus("No se pudo consultar el trabajo guardado en este navegador. Verificá que el almacenamiento del sitio esté habilitado.");
+    });
+    return () => { active = false; };
   }, [course.id]);
 
   function mutate(updater, message = "Cambios pendientes de guardar.") {
