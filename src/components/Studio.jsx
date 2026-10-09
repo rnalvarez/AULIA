@@ -918,8 +918,8 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
           let parsed;
           try {
             const cleanedJson = rawText.replace(/^\uFEFF/, "").trim()
-              .replace(/^\x60{3}(?:json)?\\s*/i, "")
-              .replace(/\\s*\x60{3}$/, "")
+              .replace(/^\x60{3}(?:json)?\s*/i, "")
+              .replace(/\s*\x60{3}$/, "")
               .trim();
             parsed = JSON.parse(cleanedJson);
           } catch {
@@ -1021,7 +1021,7 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
       }
 
       if (!importedFiles || !nextIndex) {
-        throw new Error(failures.join("\\n") || "No se pudo importar ningún archivo.");
+        throw new Error(failures.join("\n") || "No se pudo importar ningún archivo.");
       }
 
       const nextDraft = { ...cloneCourse(draft), knowledgeBase: nextIndex };
