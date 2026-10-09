@@ -27,6 +27,7 @@ export function courseToPack(course) {
     commissions: cloneCourse(course.commissions || []),
     tracking: cloneCourse(course.tracking || {}),
     corpus: cloneCourse(course.corpus || []),
+    knowledgeBase: cloneCourse(course.knowledgeBase || null),
     llm: cloneCourse(course.llm || null),
   };
 }
@@ -50,6 +51,7 @@ export function packToCourse(pack) {
     commissions: pack.commissions || pack.course?.commissions || [],
     tracking: pack.tracking || {},
     corpus: pack.corpus || [],
+    knowledgeBase: pack.knowledgeBase || null,
     llm: pack.llm || null,
   };
 
