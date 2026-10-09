@@ -3,6 +3,8 @@ import { cloneCourse, validateCourse } from "../core/courseContract.js";
 import { downloadCoursePack, readCoursePackFile } from "../core/coursePackIO.js";
 import { readMaterialFile, materialToCorpus, mergeImportedBibliography, mergeImportedDocuments } from "../core/materialIO.js";
 import { requestTeacherProposal } from "../services/llm/teacherProposal.js";
+import { buildKnowledgeBase } from "../services/llm/knowledgeBase.js";
+import { isKnowledgeBaseCurrent, summarizeKnowledgeBase } from "../core/knowledgeBase.js";
 import { clearStudioApiKey, isGroqApiKey, loadStudioApiKey, saveStudioApiKey } from "../utils/studioStorage.js";
 import LegalNotice from "./LegalNotice.jsx";
 
@@ -427,6 +429,7 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
   const [showStudioKey, setShowStudioKey] = useState(false);
   const [legalAccepted, setLegalAccepted] = useState(false);
   const [analysisReport, setAnalysisReport] = useState(null);
+  const [knowledgeBaseReport, setKnowledgeBaseReport] = useState(null);
 
   useEffect(() => {
     const saved = localStorage.getItem(storageKey);
@@ -472,6 +475,7 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
     setShowStudioKey(false);
     setLegalAccepted(false);
     setAnalysisReport(null);
+    setKnowledgeBaseReport(null);
   }, [course.id]);
 
   function mutate(updater, message = "Cambios pendientes de guardar.") {
@@ -510,6 +514,15 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
   }
   async function publish() {
     if (!canEdit || busy) return;
+
+    const hasActiveMaterial = (draft.corpus || []).some((item) =>
+      (item?.scope || "included") !== "excluded" && String(item?.content || item?.explanation || item?.summary || "").trim()
+    );
+    if (hasActiveMaterial && !isKnowledgeBaseCurrent(draft)) {
+      setStep("proposal");
+      setStatus("Antes de publicar, completá la base conceptual automática de toda la bibliografía. Si el análisis quedó parcial por los límites de Groq, podés continuarlo desde el último lote.");
+      return;
+    }
 
     if (!legalAccepted) {
       setStatus("Antes de publicar, confirmá que tenés los derechos, permisos o autorizaciones necesarios sobre los materiales incorporados.");
@@ -856,6 +869,131 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
     setStatus("Se eliminó la clave de IA docente de esta sesión.");
   }
 
+  async function buildFullKnowledgeBase() {
+    if (!draft.corpus?.length) {
+      setStep("material");
+      setStatus("Primero cargá bibliografía.");
+      return;
+    }
+    if (!studioApiKey) {
+      setShowStudioKey(true);
+      setStatus("Configurá tu clave propia de Groq para construir el índice de toda la bibliografía.");
+      return;
+    }
+
+    const activeFragments = (draft.corpus || []).filter((item) =>
+      (item?.scope || "included") !== "excluded" &&
+      String(item?.content || item?.explanation || item?.summary || "").trim()
+    );
+    if (!activeFragments.length) {
+      setStatus("No hay fragmentos activos para indexar. Cambiá el alcance de al menos una sección a Incluido o Referencial.");
+      return;
+    }
+
+    const courseSnapshot = cloneCourse(draft);
+    let latestIndex = courseSnapshot.knowledgeBase || null;
+    setBusy(true);
+    setKnowledgeBaseReport({
+      status: "processing",
+      processed: latestIndex?.processedPassageIds?.length || 0,
+      total: latestIndex?.totalPassages || 0,
+      entries: latestIndex?.entries?.length || 0,
+      requests: latestIndex?.requestCount || 0,
+      error: "",
+    });
+    setStatus("Preparando el análisis de toda la bibliografía. El proceso se realiza por lotes y se puede reanudar si Groq limita el uso.");
+
+    const persistProgress = (index) => {
+      latestIndex = index;
+      const next = { ...courseSnapshot, knowledgeBase: index };
+      setDraft(next);
+      try {
+        localStorage.setItem(storageKey, JSON.stringify({
+          version: courseMeta?.updatedAt || "",
+          draft: next,
+        }));
+      } catch {}
+    };
+
+    try {
+      const result = await buildKnowledgeBase({
+        apiKey: studioApiKey,
+        course: courseSnapshot,
+        corpus: courseSnapshot.corpus || [],
+        endpoint: courseSnapshot.llm?.endpoint,
+        models: courseSnapshot.llm?.models,
+        existingIndex: courseSnapshot.knowledgeBase,
+        onProgress: (progress) => {
+          persistProgress(progress.index);
+          const complete = Boolean(progress.complete);
+          setKnowledgeBaseReport({
+            status: complete ? "complete" : progress.error ? "partial" : "processing",
+            processed: progress.processed || 0,
+            total: progress.total || 0,
+            entries: progress.entries || 0,
+            requests: progress.requests || 0,
+            model: progress.model || "",
+            error: progress.error || "",
+          });
+          if (complete) {
+            setStatus("Base conceptual completa. Guardá la cátedra para conservar el índice en el backend antes de publicarla.");
+          } else if (progress.error) {
+            setStatus(progress.error);
+          } else {
+            setStatus("Analizando bibliografía: " + (progress.processed || 0) + "/" + (progress.total || 0) +
+              " pasajes · " + (progress.entries || 0) + " entradas conceptuales.");
+          }
+        },
+      });
+
+      const next = { ...courseSnapshot, knowledgeBase: result };
+      latestIndex = result;
+      setDraft(next);
+      setValidation(null);
+      try {
+        localStorage.setItem(storageKey, JSON.stringify({
+          version: courseMeta?.updatedAt || "",
+          draft: next,
+        }));
+      } catch {}
+      setKnowledgeBaseReport({
+        status: "complete",
+        processed: result.processedPassageIds?.length || 0,
+        total: result.totalPassages || 0,
+        entries: result.entries?.length || 0,
+        requests: result.requestCount || 0,
+        model: result.model || "",
+        error: "",
+      });
+      setStatus("Base conceptual completa: " + (result.entries?.length || 0) +
+        " entradas con referencias a la bibliografía. Guardá la cátedra y después publicá la versión actualizada.");
+    } catch (err) {
+      if (latestIndex) {
+        const next = { ...courseSnapshot, knowledgeBase: latestIndex };
+        setDraft(next);
+        try {
+          localStorage.setItem(storageKey, JSON.stringify({
+            version: courseMeta?.updatedAt || "",
+            draft: next,
+          }));
+        } catch {}
+      }
+      setKnowledgeBaseReport({
+        status: "partial",
+        processed: latestIndex?.processedPassageIds?.length || 0,
+        total: latestIndex?.totalPassages || 0,
+        entries: latestIndex?.entries?.length || 0,
+        requests: latestIndex?.requestCount || 0,
+        model: latestIndex?.model || "",
+        error: err?.message || "No se pudo completar el índice conceptual.",
+      });
+      setStatus((err?.message || "No se pudo completar el índice conceptual.") +
+        " El avance se conservó en el borrador local; corregí el límite o esperá a que se restablezca Groq y volvé a ejecutar para continuar.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function analyzeWithAI() {
     if (!draft.corpus?.length) {
       setStep("material");
@@ -925,6 +1063,8 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
     }
   }
 
+  const knowledgeBaseCurrent = isKnowledgeBaseCurrent(draft);
+  const knowledgeBaseStats = summarizeKnowledgeBase(draft.knowledgeBase);
   const materialSections = useMemo(() => buildMaterialStructure(draft), [draft.documents, draft.corpus]);
   const materialDocumentGroups = useMemo(() => {
     const documents = Array.isArray(draft.documents) ? draft.documents : [];
@@ -1180,7 +1320,42 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
       </>}
 
       {step === "proposal" && <>
-        <div className="studio-wf-hero"><div className="eyebrow">PASO 03 · PROPUESTA</div><h1>La organización pedagógica empieza con las decisiones del docente.</h1><p>AULIA primero conserva y delimita la bibliografía según tus decisiones. La propuesta automática con IA queda como herramienta experimental y opcional; no es necesaria para definir qué contenido trabajará la cátedra.</p></div>
+        <div className="studio-wf-hero"><div className="eyebrow">PASO 03 · PROPUESTA</div><h1>La organización pedagógica empieza con las decisiones del docente.</h1><p>AULIA conserva la bibliografía original y construye un índice conceptual automático para ayudar al chatbot a encontrar definiciones, sinónimos, distinciones y relaciones entre ideas. La propuesta pedagógica y la base de conocimiento son procesos distintos.</p></div>
+
+        <Panel
+          eyebrow="BASE DE CONOCIMIENTO"
+          title="Análisis conceptual de toda la bibliografía"
+          description="AULIA recorre cada pasaje activo, extrae conceptos y relaciones, y conserva referencias a fuente, sección y páginas. Se procesa por lotes con tu propia clave de Groq; si la cuota se agota, el avance queda guardado y se puede continuar."
+          actions={<button className="primary" type="button" onClick={buildFullKnowledgeBase} disabled={!canEdit || !draft.corpus?.length || busy || knowledgeBaseCurrent}>
+            {busy ? "Indexando bibliografía…" : knowledgeBaseCurrent ? "Base completa y actualizada" : knowledgeBaseStats.processedPassages > 0 ? "Continuar análisis completo" : "Analizar bibliografía completa"}
+          </button>}
+        >
+          <div className={"studio-wf-ai-report " + (knowledgeBaseCurrent ? "ok" : knowledgeBaseReport?.status === "partial" ? "error" : "")}>
+            <strong>
+              {knowledgeBaseCurrent
+                ? "✓ Base conceptual completa"
+                : knowledgeBaseReport?.status === "processing"
+                  ? "Analizando toda la bibliografía…"
+                  : knowledgeBaseReport?.status === "partial" || draft.knowledgeBase?.status === "partial"
+                    ? "⚠ Análisis parcial; se puede reanudar"
+                    : draft.knowledgeBase && draft.knowledgeBase.sourceSignature !== undefined
+                      ? "La bibliografía cambió: el índice debe actualizarse"
+                      : "Todavía no hay una base conceptual completa"}
+            </strong>
+            <span>
+              {knowledgeBaseReport?.processed ?? knowledgeBaseStats.processedPassages}/
+              {knowledgeBaseReport?.total ?? knowledgeBaseStats.totalPassages} pasajes procesados ·
+              {" "}{knowledgeBaseReport?.entries ?? knowledgeBaseStats.entries} entradas conceptuales ·
+              {" "}{knowledgeBaseReport?.requests ?? draft.knowledgeBase?.requestCount ?? 0} consultas a Groq
+            </span>
+            {knowledgeBaseReport?.status === "processing" && (knowledgeBaseReport.total || 0) > 0 &&
+              <progress className="studio-wf-progress" max={knowledgeBaseReport.total} value={Math.min(knowledgeBaseReport.processed || 0, knowledgeBaseReport.total)} />}
+            {knowledgeBaseReport?.model && <small>Modelo: {knowledgeBaseReport.model}</small>}
+            {knowledgeBaseReport?.error && <small>{knowledgeBaseReport.error}</small>}
+            {knowledgeBaseCurrent && <small>El índice corresponde a la bibliografía actual. Si editás o reemplazás material, habrá que actualizarlo. Guardá la cátedra para conservarlo en el backend.</small>}
+            {!knowledgeBaseCurrent && <small>La publicación requiere este análisis completo para que el chatbot utilice el índice. Las secciones marcadas como Excluir no se indexan; Incluido y Referencial sí.</small>}
+          </div>
+        </Panel>
         <Panel eyebrow="ORGANIZACIÓN PEDAGÓGICA" title="Revisión automática opcional" description="Esta revisión no reemplaza la selección docente. Sirve para experimentar con una organización posible después de haber marcado prioridades, temas, conceptos y límites en Material." actions={<>
           <button className="primary" type="button" onClick={analyzeWithAI} disabled={!canEdit || !draft.corpus?.length || busy}>{busy ? "Analizando organización…" : "Revisar propuesta automática · 1 consulta"}</button>
           <button className="ghost" type="button" onClick={() => setShowStudioKey((value) => !value)} disabled={!canEdit}>{studioApiKey ? "Cambiar clave IA" : "Configurar IA docente"}</button>
