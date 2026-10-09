@@ -636,7 +636,7 @@ function handleStudioPrepareDeleteCourse(body) {
     JSON.stringify({
       email: normalizeStudioEmail(session.teacher.email),
       courseId: course.courseId,
-      title: String(course.title || ""),
+      title: String(course.title || "Sin título").trim(),
       status: String(course.status || "draft"),
       updatedAt: String(course.updatedAt || ""),
       fileId: String(course.fileId || ""),
@@ -651,13 +651,13 @@ function handleStudioPrepareDeleteCourse(body) {
     "prepare-delete-course",
     courseId,
     "confirmación inicial",
-    String(course.title || "") + " · " + (published ? "publicada" : "borrador")
+    String(course.title || "Sin título").trim() + " · " + (published ? "publicada" : "borrador")
   );
 
   return {
     success: true,
     confirmationToken,
-    title: String(course.title || "Sin título"),
+    title: String(course.title || "Sin título").trim(),
     status: String(course.status || "draft"),
     published,
     studentSheetPreserved: Boolean(course.studentSheetId),
@@ -691,7 +691,7 @@ function handleStudioDeleteCourse(body) {
   }
 
   const course = access.course;
-  const title = String(course.title || "");
+  const title = String(course.title || "Sin título").trim();
   const published = course.status !== "draft" || Boolean(course.publishedFileId);
 
   if (String(proof.email || "") !== normalizeStudioEmail(session.teacher.email) ||
