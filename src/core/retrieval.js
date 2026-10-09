@@ -233,10 +233,33 @@ export function retrieveFromCourse(course, question, options = {}) {
   // A generated concept index gives paraphrases and related terminology a second
   // retrieval path, while every indexed item carries page/section evidence.
   const indexIsCurrent = isKnowledgeBaseCurrent(course);
+  const corpusById = new Map((course.corpus || []).map(item => [String(item?.id || ""), item]));
   const knowledgeItems = indexIsCurrent
     ? rank((course.knowledgeBase.entries || []).map(entry => {
         const evidence = Array.isArray(entry.evidence) ? entry.evidence : [];
+        if (!evidence.length) return null;
+
+        // Scope and priority are teacher controls applied after indexing.
+        // Never retrieve an entry if any of its supporting passages is now
+        // excluded, or if reference material is disabled for this query.
+        const sourceChunks = evidence.map(ref => corpusById.get(String(ref.sourceId || "")));
+        if (sourceChunks.some(chunk => !chunk)) return null;
+        if (sourceChunks.some(chunk => (chunk.scope || "included") === "excluded")) return null;
+        if (!includeReference && sourceChunks.some(chunk => (chunk.scope || "included") === "reference")) return null;
+
         const first = evidence[0] || {};
+        const scopes = sourceChunks.map(chunk => chunk.scope || "included");
+        const priorities = sourceChunks.map(chunk => chunk.priority || "normal");
+        const scope = scopes.every(value => value === "reference") ? "reference" : "included";
+        const priority = priorities.includes("central")
+          ? "central"
+          : priorities.includes("normal")
+            ? "normal"
+            : "context";
+        const activeEvidence = evidence.filter((ref, index) =>
+          (sourceChunks[index].scope || "included") !== "excluded"
+        );
+
         return {
           id: entry.id,
           title: entry.term,
@@ -255,17 +278,17 @@ export function retrieveFromCourse(course, question, options = {}) {
             ...(entry.relatedTerms || []),
             ...(entry.examples || []),
           ].filter(Boolean).join(" "),
-          priority: "central",
-          scope: "included",
+          priority,
+          scope,
           _retrievalKind: "knowledge",
-          knowledgeEntry: entry,
+          knowledgeEntry: { ...entry, evidence: activeEvidence },
           source: first.sourceName || "",
           sectionPath: Array.isArray(first.sectionPath) ? first.sectionPath : [],
           sourcePageStart: first.pageStart || first.printedPageStart || null,
           sourcePageEnd: first.pageEnd || first.printedPageEnd || null,
-          sourceIds: Array.from(new Set(evidence.map(item => item.sourceId).filter(Boolean))),
+          sourceIds: Array.from(new Set(activeEvidence.map(item => item.sourceId).filter(Boolean))),
         };
-      }), question, true).slice(0, options.knowledgeLimit ?? 4)
+      }).filter(Boolean), question, includeReference).slice(0, options.knowledgeLimit ?? 4)
     : [];
   // Rank overlapping passages, not whole chapters. This prevents a concept
   // mentioned halfway through a long section from being lost when the prompt
