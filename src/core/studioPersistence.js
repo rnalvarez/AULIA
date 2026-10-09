@@ -133,3 +133,12 @@ export async function getExternalAnalysisBatch(id) {
 export async function deleteExternalAnalysisBatch(id) {
   await withStore("readwrite", store => store.delete(id));
 }
+
+
+export async function readStudioRecord(id) {
+  return withStore("readonly", store => store.get(id));
+}
+
+export async function writeStudioRecord(record) {
+  return withStore("readwrite", store => store.put(record));
+}
