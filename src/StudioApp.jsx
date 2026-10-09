@@ -12,6 +12,7 @@ import {
   saveTeacherCourse,
   publishTeacherCourse,
   deleteTeacherCourse,
+  prepareTeacherCourseDeletion,
 } from "./services/auth/studioAccess.js";
 import StudioLogin from "./components/StudioLogin.jsx";
 import Studio from "./components/Studio.jsx";
@@ -101,6 +102,7 @@ export default function StudioApp() {
   const [loadingCourse, setLoadingCourse] = useState(false);
   const [deletingCourseId, setDeletingCourseId] = useState("");
   const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
 
   async function loadCourses(activeSession, preferredCourseId = "") {
     if (!activeSession?.token) {
