@@ -151,7 +151,9 @@ export default function ChatInterface({ course, student, apiKey, onLogoutApiKey,
           sessionId: undefined,
           question: text,
           response: reply,
-          retrievedIds: retrieved.map(item => item.id),
+          retrievedIds: Array.from(new Set(retrieved.flatMap(item => item?._retrievalKind === "knowledge"
+            ? (item.knowledgeEntry?.evidence || []).map(evidence => evidence.sourceId).filter(Boolean)
+            : [item.id]).filter(Boolean))),
           conceptIds: result.analytics?.conceptIds || [],
           confusionLevel: result.analytics?.confusionLevel || 0,
           studentId: student?.dni || null,
