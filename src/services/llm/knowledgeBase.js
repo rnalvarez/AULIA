@@ -546,6 +546,20 @@ function mergeEntries(existing, incoming) {
   return entries;
 }
 
+export function isSupportedKnowledgeExcerpt(passageText, candidate) {
+  const quote = normalizeText(candidate);
+  if (quote.length < 15) return false;
+  return normalizeText(passageText).includes(quote);
+}
+
+export function normalizeExternalKnowledgeEntries(rawEntries, passages) {
+  return validateEntries(rawEntries, passages);
+}
+
+export function mergeKnowledgeBaseEntries(existing, incoming) {
+  return mergeEntries(existing, incoming);
+}
+
 function makeIndex({ sourceSignature, totalPassages, processedPassageIds, entries, status, requestCount }) {
   return {
     version: KNOWLEDGE_BASE_VERSION,
