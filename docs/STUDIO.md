@@ -57,6 +57,16 @@ El backend de Teacher Studio utiliza:
 
 Esto evita almacenar grandes corpus dentro de celdas de la Sheet y mantiene separados contenido y control administrativo.
 
+## Base de conocimiento bibliográfica
+
+La propuesta pedagógica automática no es lo mismo que el índice de conocimiento del chatbot. Para que cada cátedra pueda recuperar conceptos expresados con sinónimos, paráfrasis y relaciones entre ideas, Studio permite construir una **base de conocimiento conceptual** desde todos los pasajes activos de la bibliografía.
+
+En el paso **Propuesta**, la acción **Analizar bibliografía completa** recorre el corpus en lotes con la API key propia del docente. Cada entrada del índice contiene término, variantes, definición, desarrollo, distinciones, conceptos relacionados, ejemplos y referencias a los fragmentos fuente, con sección y páginas cuando están disponibles. El índice es parte del course pack y se publica junto con el material.
+
+El trabajo es incremental: Studio guarda el avance en el borrador local tras cada lote y puede continuar si Groq limita el uso. La clave permanece en la sesión del docente; no se guarda en el course pack ni se envía a Google Sheets. Las secciones **Excluir** no se indexan; las secciones **Incluido** y **Referencial** sí. Si cambia el corpus o el alcance de una sección, la firma del índice deja de coincidir y debe regenerarse antes de publicar.
+
+La publicación de una cátedra con material activo requiere que el índice corresponda a la versión actual del corpus. Después de completarlo, el docente debe guardar la cátedra en el backend y publicar la versión actualizada. En las respuestas estudiantiles, AULIA usa el índice conceptual junto con la recuperación de pasajes originales; el índice no sustituye el texto de la bibliografía y la precisión debe verificarse con pruebas sobre cada corpus.
+
 ## Eliminación segura de cátedras
 
 Solo el responsable (owner) puede borrar una cátedra. Studio solicita una primera confirmación y luego exige escribir el título exacto como segunda autorización. El backend emite un permiso temporal de un solo uso, ligado a la sesión docente, la cátedra y su versión; si la cátedra cambia o el permiso vence, hay que iniciar de nuevo.
