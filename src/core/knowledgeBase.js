@@ -1,4 +1,4 @@
-export const KNOWLEDGE_BASE_VERSION = 1;
+export const KNOWLEDGE_BASE_VERSION = 2;
 
 function hashString(value) {
   let hash = 2166136261;
@@ -15,6 +15,24 @@ export function knowledgeCorpusSignature(corpus = []) {
     .filter((item) => (item?.scope || "included") !== "excluded")
     .map((item) => [
       item?.id,
+      item?.title,
+      item?.source,
+      item?.documentId,
+      item?.sourcePageStart,
+      item?.sourcePageEnd,
+      item?.sectionPath,
+      item?.content,
+      item?.summary,
+      item?.explanation,
+    ]);
+  return "kb" + KNOWLEDGE_BASE_VERSION + "-" + hashString(JSON.stringify(active));
+}
+
+export function legacyKnowledgeCorpusSignature(corpus = []) {
+  const active = (Array.isArray(corpus) ? corpus : [])
+    .filter((item) => (item?.scope || "included") !== "excluded")
+    .map((item) => [
+      item?.id,
       item?.scope || "included",
       item?.priority || "normal",
       item?.title,
@@ -27,7 +45,7 @@ export function knowledgeCorpusSignature(corpus = []) {
       item?.summary,
       item?.explanation,
     ]);
-  return "kb" + KNOWLEDGE_BASE_VERSION + "-" + hashString(JSON.stringify(active));
+  return "kb1-" + hashString(JSON.stringify(active));
 }
 
 export function isKnowledgeBaseCurrent(course) {
