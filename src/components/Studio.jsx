@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { cloneCourse, validateCourse } from "../core/courseContract.js";
 import { downloadCoursePack, readCoursePackFile } from "../core/coursePackIO.js";
-import { readMaterialFile, materialToCorpus, mergeImportedBibliography, mergeImportedDocuments } from "../core/materialIO.js";
+import { readMaterialFile, materialToCorpus, mergeImportedBibliography, mergeImportedDocuments, applyAIMultimodalAnalysis } from "../core/materialIO.js";
+import { analyzePdfWithVision } from "../services/llm/multimodalIngestion.js";
 import { requestTeacherProposal } from "../services/llm/teacherProposal.js";
 import { buildKnowledgeBase, buildKnowledgePassages, isSupportedKnowledgeExcerpt, normalizeExternalKnowledgeEntries, mergeKnowledgeBaseEntries } from "../services/llm/knowledgeBase.js";
 import { createExternalKnowledgePackage, createExternalKnowledgePrompt, downloadJsonFile, EXTERNAL_KNOWLEDGE_OUTPUT_FORMAT } from "../core/externalKnowledgeBaseIO.js";
@@ -287,6 +288,7 @@ function materialSegmentationLabel(value) {
     case "pdf-outline": return "Marcadores internos del PDF";
     case "pdf-hybrid-heuristic": return "Tipografía + geometría + consistencia";
     case "pdf-conservative": return "Segmentación conservadora";
+    case "ai-multimodal": return "IA multimodal · lectura visual y segmentación semántica";
     default: return "Estructura detectada localmente";
   }
 }
@@ -642,10 +644,36 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
       const documents = [];
       let warnings = 0;
       let pages = 0;
+      let multimodalDocuments = 0;
+      let conventionalDocuments = 0;
 
       for (const file of files) {
-        const extracted = await readMaterialFile(file);
-        const material = materialToCorpus(extracted, [...baseIds, ...collected]);
+        setStatus("Preparando " + file.name + "…");
+        const extracted = await readMaterialFile(file, { includePageImages: Boolean(studioApiKey) });
+        let prepared = extracted;
+
+        if (studioApiKey && Array.isArray(extracted.aiPages) && extracted.aiPages.length) {
+          const result = await analyzePdfWithVision(extracted, {
+            apiKey: studioApiKey,
+            courseTitle: draft.title,
+            onProgress: (progress) => setStatus(
+              "IA multimodal · " + file.name + " · " + progress.processed + "/" + progress.total +
+              " páginas analizadas con " + (progress.model || "Groq") + ". El avance se conserva para reanudar."
+            ),
+          });
+          prepared = applyAIMultimodalAnalysis(extracted, result.pages, result.model);
+          multimodalDocuments += 1;
+        } else {
+          conventionalDocuments += 1;
+        }
+
+        if (!prepared.corpus?.length) {
+          throw new Error(
+            "No se pudo recuperar texto de " + file.name + ". Para analizar un PDF escaneado, guardá tu clave de Groq antes de cargarlo y volvé a seleccionar el archivo."
+          );
+        }
+
+        const material = materialToCorpus(prepared, [...baseIds, ...collected]);
         collected.push(...material.corpus);
         bibliography.push(...(material.bibliography || []));
         if (material.document) documents.push(material.document);
@@ -658,11 +686,14 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
         corpus: [...(current.corpus || []), ...collected],
         documents: mergeImportedDocuments(current.documents || [], documents),
         bibliography: mergeImportedBibliography(current.bibliography || [], bibliography),
-      }), `${collected.length} fragmentos de recuperación incorporados desde ${files.length} documento${files.length === 1 ? "" : "s"}.` +
-        (pages ? ` · ${pages} páginas.` : "") +
-        (warnings ? ` · ${warnings} aviso(s) de relevamiento o conversión.` : ""));
+      }), collected.length + " fragmentos de recuperación incorporados desde " +
+        files.length + " documento" + (files.length === 1 ? "" : "s") + "." +
+        (pages ? " · " + pages + " páginas." : "") +
+        (multimodalDocuments ? " · " + multimodalDocuments + " PDF(s) analizados visual y semánticamente con IA." : "") +
+        (conventionalDocuments ? " · " + conventionalDocuments + " archivo(s) procesados por extracción convencional." : "") +
+        (warnings ? " · " + warnings + " aviso(s) para revisar." : ""));
     } catch (err) {
-      setStatus(err.message);
+      setStatus(err?.message || "No se pudo cargar el material.");
     } finally {
       setBusy(false);
     }
@@ -1419,10 +1450,35 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
           </div></Row>)}</div> : <Empty title="Todavía no cargaste fuentes." text="Podés agregarlas manualmente o incorporarlas desde un JSON." action={<button className="ghost" type="button" onClick={addBibliography}>Agregar primera fuente</button>}/>}
           </Panel>
         </details>
+        {!materialSections.length && <Panel
+          eyebrow="IA PARA LA CARGA"
+          title="Analizá los PDF desde la primera lectura"
+          description="Con una clave personal de Groq, AULIA renderiza las páginas y usa IA multimodal para reconocer la estructura semántica, leer tablas y gráficos, y recuperar texto de escaneos. La lectura visual se integra al corpus antes de construir la base conceptual."
+        >
+          {studioApiKey
+            ? <div className="studio-wf-ai-ready"><span>● IA multimodal lista para la carga</span><small>La clave permanece en esta sesión del navegador. El análisis por páginas se guarda localmente y puede reanudarse si Groq alcanza un límite temporal.</small><button className="ghost" type="button" onClick={() => setShowStudioKey(true)} disabled={busy}>Cambiar clave</button></div>
+            : <div className="studio-wf-ai-setup">
+                <div><strong>Clave personal de Groq</strong><span>Configurala antes de subir el PDF para analizar imágenes y texto durante la carga. Sin clave, AULIA conservará la extracción convencional disponible.</span></div>
+                <div className="studio-wf-ai-key-row">
+                  <input type="password" value={studioKeyInput} placeholder="gsk_…" autoComplete="off" onChange={(event) => setStudioKeyInput(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") saveTeacherKey(); }}/>
+                  <button className="ghost" type="button" onClick={saveTeacherKey} disabled={!studioKeyInput.trim() || !canEdit || busy}>Guardar clave</button>
+                </div>
+              </div>}
+          <p className="studio-wf-security-note">En esta primera versión, la lectura visual multimodal se aplica a PDF. DOCX, TXT y Markdown conservan su extracción actual; el análisis conceptual posterior sigue disponible para esos formatos.</p>
+          {showStudioKey && studioApiKey && <div className="studio-wf-ai-setup">
+            <div><strong>Cambiar clave de Groq</strong><span>Ingresá una nueva clave o quitá la actual.</span></div>
+            <div className="studio-wf-ai-key-row">
+              <input type="password" value={studioKeyInput} placeholder="gsk_…" autoComplete="off" onChange={(event) => setStudioKeyInput(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") saveTeacherKey(); }}/>
+              <button className="ghost" type="button" onClick={saveTeacherKey} disabled={!studioKeyInput.trim() || !canEdit || busy}>Guardar clave</button>
+              <button className="ghost" type="button" onClick={() => { forgetTeacherKey(); setShowStudioKey(false); }} disabled={busy}>Quitar</button>
+            </div>
+          </div>}
+        </Panel>}
+
         <Panel
           eyebrow="MATERIAL"
           title="Bibliografía y corpus de la cátedra"
-          description="AULIA extrae el texto y propone una segmentación inicial. Luego la IA construye la base conceptual y vos revisás el alcance y la prioridad de cada sección."
+          description="Si configuraste Groq, los PDF se analizan visual y semánticamente durante la carga. La IA identifica secciones, reconstruye tablas y describe gráficos; luego podés revisar las secciones, su alcance y prioridad."
           actions={<label className="primary studio-wf-file-btn">{busy ? "Procesando…" : "Cargar material"}<input type="file" accept=".txt,.md,.markdown,.json,.pdf,.docx,text/plain,text/markdown,application/json,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document" multiple onChange={importMaterial} disabled={busy}/></label>}
         >
           {materialSections.length ? <>
