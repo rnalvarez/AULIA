@@ -220,22 +220,39 @@ async function wait(milliseconds) {
 
 function parseRateLimitDuration(value) {
   const text = String(value || "");
-  const minutes = Number(text.match(/([0-9]+(?:\\.[0-9]+)?)m/i)?.[1] || 0);
-  const seconds = Number(text.match(/([0-9]+(?:\\.[0-9]+)?)s/i)?.[1] || 0);
-  const milliseconds = Number(text.match(/([0-9]+(?:\\.[0-9]+)?)ms/i)?.[1] || 0);
+  const milliseconds = Number(text.match(/([0-9]+(?:\.[0-9]+)?)\s*ms/i)?.[1] || 0);
+  const minutes = Number(text.match(/([0-9]+(?:\.[0-9]+)?)\s*m/i)?.[1] || 0);
+  const seconds = Number(text.match(/([0-9]+(?:\.[0-9]+)?)\s*s/i)?.[1] || 0);
   return minutes * 60000 + seconds * 1000 + milliseconds;
 }
 
-function estimateRequestTokens(prompt, recentUsage) {
-  const recentOutputs = recentUsage
-    .slice(-5)
-    .map(item => Number(item.completionTokens || 0))
-    .filter(value => value > 0);
-  const averageOutput = recentOutputs.length
-    ? recentOutputs.reduce((sum, value) => sum + value, 0) / recentOutputs.length
-    : FALLBACK_OUTPUT_TOKEN_ESTIMATE;
+function parseRetryDelay(response, message) {
+  const retryAfter = String(response?.headers?.get("retry-after") || "").trim();
+  if (retryAfter) {
+    const seconds = Number(retryAfter);
+    if (Number.isFinite(seconds) && seconds >= 0) return seconds * 1000;
+    const date = Date.parse(retryAfter);
+    if (Number.isFinite(date)) return Math.max(0, date - Date.now());
+  }
+
+  const resetDelay = parseRateLimitDuration(response?.headers?.get("x-ratelimit-reset-tokens"));
+  if (resetDelay > 0) return resetDelay;
+
+  const match = String(message || "").match(/(?:try again in|retry after)\s*([0-9]+(?:\.[0-9]+)?)\s*(ms|s|m)/i);
+  if (match) {
+    const amount = Number(match[1]);
+    const unit = match[2].toLowerCase();
+    return amount * (unit === "m" ? 60000 : unit === "ms" ? 1 : 1000);
+  }
+  return 6000;
+}
+
+function estimateRequestTokens(prompt) {
+  // Groq's TPM admission control reserves max_completion_tokens, not just the
+  // completion tokens the model happened to use on the previous request.
+  // Estimate prompt tokens conservatively and include that full reservation.
   return Math.ceil(String(prompt || "").length / TOKEN_ESTIMATE_CHARS_PER_TOKEN) +
-    Math.ceil(Math.min(MAX_OUTPUT_TOKENS, Math.max(300, averageOutput * 1.2))) + 150;
+    MAX_OUTPUT_TOKENS + 180;
 }
 
 async function waitForRateLimit({ estimatedTokens, rateLimit, recentUsage, fallbackLimit }) {
@@ -245,7 +262,8 @@ async function waitForRateLimit({ estimatedTokens, rateLimit, recentUsage, fallb
     const resetMs = Number(rateLimit.resetTokensMs || 0);
     if (resetMs > 0) {
       await wait(resetMs + RATE_LIMIT_SAFETY_MS);
-      return;
+      // Recheck our rolling estimate too; response headers may be stale or
+      // exposed only partially by the browser.
     }
     // If reset timing is unavailable, fall through to the local rolling-window guard.
   }
@@ -307,7 +325,31 @@ async function requestIndexBatch({ apiKey, endpoint, models, course, batch, batc
       };
     };
 
-    let { response, data, rateLimit } = await sendRequest(requestBody);
+    const sendWithRateLimitRetry = async body => {
+      const maxRetries = 8;
+      for (let attempt = 0; ; attempt += 1) {
+        const result = await sendRequest(body);
+        const message = result.data?.error?.message || result.data?.message || "";
+        if (result.response.status !== 429 || attempt >= maxRetries) {
+          if (result.response.status === 429) {
+            const error = new Error(
+              "Groq mantuvo el límite TPM después de " + (maxRetries + 1) +
+              " intentos automáticos. El avance queda guardado; podés reanudar sin perder los pasajes procesados. Detalle: " + message
+            );
+            error.status = 429;
+            throw error;
+          }
+          return result;
+        }
+
+        // Respect the provider's retry hint rather than failing the entire
+        // index run for a short rolling-window TPM collision.
+        const delay = parseRetryDelay(result.response, message);
+        await wait(Math.min(60000, Math.max(500, delay + RATE_LIMIT_SAFETY_MS)));
+      }
+    };
+
+    let { response, data, rateLimit } = await sendWithRateLimitRetry(requestBody);
     let responseMessage = data?.error?.message || data?.message || "";
     // Some Groq models occasionally violate a strict JSON-schema string limit
     // even when the result is otherwise usable. Retry that batch in JSON mode;
@@ -317,7 +359,7 @@ async function requestIndexBatch({ apiKey, endpoint, models, course, batch, batc
       response.status === 400 &&
       /Generated JSON does not match the expected schema|jsonschema:/i.test(responseMessage)
     ) {
-      ({ response, data, rateLimit } = await sendRequest({
+      ({ response, data, rateLimit } = await sendWithRateLimitRetry({
         ...requestBody,
         response_format: { type: "json_object" },
       }));
@@ -335,7 +377,7 @@ async function requestIndexBatch({ apiKey, endpoint, models, course, batch, batc
       error.retryAfter = response.headers.get("retry-after") || "";
       if (response.status === 401) error.message = "La API key de Groq no es válida. Revisá la clave docente en Studio.";
       if (response.status === 429 || response.status === 413) {
-        error.message = "Groq limitó el análisis por volumen o frecuencia de tokens. El avance ya quedó guardado en el borrador; esperá a que se restablezca el límite y volvé a ejecutar para continuar desde el último lote. Detalle: " + message;
+        error.message = "Groq limitó el análisis por volumen o frecuencia de tokens. El avance ya quedó guardado en el borrador. Detalle: " + message;
       }
       throw error;
     }
@@ -572,7 +614,7 @@ export async function buildKnowledgeBase({
     // blanket 30-second delay. This preserves a safety margin on the free tier
     // while letting small responses and low-usage windows proceed sooner.
     const prompt = buildIndexPrompt(course, batch, i + 1, batches.length);
-    const estimatedTokens = estimateRequestTokens(prompt, recentUsage);
+    const estimatedTokens = estimateRequestTokens(prompt);
     await waitForRateLimit({
       estimatedTokens,
       rateLimit: liveRateLimit,
@@ -598,10 +640,12 @@ export async function buildKnowledgeBase({
       batch.forEach(passage => processed.add(passage.passageId));
       const promptTokens = Number(result.usage?.prompt_tokens || 0);
       const completionTokens = Number(result.usage?.completion_tokens || 0);
-      const totalTokens = Number(result.usage?.total_tokens || 0) || estimatedTokens;
+      const totalTokens = Number(result.usage?.total_tokens || 0) || 0;
       recentUsage.push({
         at: Date.now(),
-        tokens: totalTokens,
+        // Count the estimate (including reserved completion tokens) as the
+        // TPM budget cost; this is deliberately safer than actual output usage.
+        tokens: Math.max(estimatedTokens, totalTokens, promptTokens + completionTokens),
         completionTokens: completionTokens || Math.max(0, totalTokens - promptTokens),
       });
       liveRateLimit = result.rateLimit || null;
