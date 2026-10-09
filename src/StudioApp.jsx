@@ -17,6 +17,47 @@ import StudioLogin from "./components/StudioLogin.jsx";
 import Studio from "./components/Studio.jsx";
 import LegalNotice from "./components/LegalNotice.jsx";
 
+function courseCacheKey(email) {
+  const normalized = String(email || "").trim().toLowerCase();
+  return normalized ? "aulia:studio:courses:" + encodeURIComponent(normalized) : "";
+}
+
+function readCachedCourses(email) {
+  const key = courseCacheKey(email);
+  if (!key) return [];
+  try {
+    const value = JSON.parse(localStorage.getItem(key) || "[]");
+    return Array.isArray(value)
+      ? value.filter((item) => item && item.courseId).map((item) => ({
+          courseId: String(item.courseId),
+          title: String(item.title || "Sin título"),
+          status: String(item.status || "draft"),
+          role: String(item.role || "viewer"),
+          publicSlug: String(item.publicSlug || ""),
+          updatedAt: String(item.updatedAt || ""),
+        }))
+      : [];
+  } catch {
+    return [];
+  }
+}
+
+function writeCachedCourses(email, courses) {
+  const key = courseCacheKey(email);
+  if (!key) return;
+  try {
+    const summaries = (courses || []).filter((item) => item?.courseId).map((item) => ({
+      courseId: String(item.courseId),
+      title: String(item.title || "Sin título"),
+      status: String(item.status || "draft"),
+      role: String(item.role || "viewer"),
+      publicSlug: String(item.publicSlug || ""),
+      updatedAt: String(item.updatedAt || ""),
+    }));
+    localStorage.setItem(key, JSON.stringify(summaries));
+  } catch {}
+}
+
 function BackendUnavailable() {
   return (
     <>
@@ -66,6 +107,7 @@ export default function StudioApp() {
       setCourses([]);
       setCourse(null);
       setCourseMeta(null);
+      setLoadingCourses(false);
       return [];
     }
 
@@ -74,13 +116,16 @@ export default function StudioApp() {
       const result = await listTeacherCourses(activeSession.token);
       const available = result.courses || [];
       setCourses(available);
+      writeCachedCourses(activeSession.teacher?.email, available);
 
       const params = new URLSearchParams(window.location.search);
       const requested = preferredCourseId || params.get("course") || "";
       const selected = available.find((item) => item.courseId === requested) || available[0];
 
       if (selected) {
-        await selectCourse(selected.courseId, activeSession, available);
+        // Start fetching the selected course in the background. Do not block
+        // the sidebar on a separate and potentially slower get-course request.
+        void selectCourse(selected.courseId, activeSession, available);
       } else {
         setCourse(null);
         setCourseMeta(null);
@@ -128,10 +173,14 @@ export default function StudioApp() {
           return;
         }
         setSession(restored);
-        // Do not render the Studio shell until the authorized course list and
-        // initial course are ready. This avoids the empty-shell -> loading-screen
-        // transition that made the interface look broken.
-        await loadCourses(restored);
+
+        // The previous list contains only course labels/statuses, not course
+        // content or credentials. Show it immediately while refreshing remote
+        // permissions and metadata for this validated teacher session.
+        setCourses(readCachedCourses(restored.teacher?.email));
+        const refresh = loadCourses(restored);
+        setLoading(false);
+        await refresh;
       } catch (err) {
         if (mounted) {
           setError(err.message || "No se pudo recuperar la sesión.");
@@ -147,11 +196,14 @@ export default function StudioApp() {
   async function handleLogin(email, password) {
     const next = await loginTeacher(email, password);
     setSession(next);
+    setCourses(readCachedCourses(next.teacher?.email || email));
     setError("");
-    // Keep the login transition atomic: the Studio appears only after the
-    // authorized course list and its initial selection are ready.
-    await loadCourses(next);
+
+    // Render the cached list immediately. The remote list refreshes it, while
+    // the selected course content loads independently in the main panel.
+    const refresh = loadCourses(next);
     setLoading(false);
+    await refresh;
   }
 
   async function handleCreateCourse() {
@@ -174,10 +226,11 @@ export default function StudioApp() {
 
       // Reflect creation immediately; a background refresh reconciles the
       // sidebar with the backend without making the interaction feel stale.
-      setCourses((current) => [
-        createdSummary,
-        ...current.filter((item) => item.courseId !== createdSummary.courseId),
-      ]);
+      setCourses((current) => {
+        const next = [createdSummary, ...current.filter((item) => item.courseId !== createdSummary.courseId)];
+        writeCachedCourses(session.teacher?.email, next);
+        return next;
+      });
 
       const url = new URL(window.location.href);
       url.searchParams.set("course", result.meta.courseId);
@@ -203,8 +256,8 @@ export default function StudioApp() {
     );
     setCourse(result.course);
     setCourseMeta(result.meta);
-    setCourses((current) =>
-      current.map((item) =>
+    setCourses((current) => {
+      const next = current.map((item) =>
         item.courseId === result.meta.courseId
           ? {
               ...item,
@@ -214,8 +267,10 @@ export default function StudioApp() {
               updatedAt: result.meta.updatedAt,
             }
           : item
-      )
-    );
+      );
+      writeCachedCourses(session.teacher?.email, next);
+      return next;
+    });
     return result;
   }
 
@@ -266,7 +321,11 @@ export default function StudioApp() {
     const previousCourseMeta = courseMeta;
 
     // Optimistic UI: the draft disappears from the sidebar immediately.
-    setCourses((current) => current.filter((item) => item.courseId !== courseId));
+    setCourses((current) => {
+      const next = current.filter((item) => item.courseId !== courseId);
+      writeCachedCourses(session.teacher?.email, next);
+      return next;
+    });
     if (wasSelected) {
       setCourse(null);
       setCourseMeta(null);
@@ -324,13 +383,6 @@ export default function StudioApp() {
     </>
   );
 
-  if (loadingCourse && !course) return (
-    <>
-      <LoadingScreen text="Cargando la cátedra…" />
-      <div className="aulia-global-legal"><LegalNotice compact /></div>
-    </>
-  );
-
   return (
     <>
     <div className="studio-root">
@@ -349,39 +401,44 @@ export default function StudioApp() {
         <div className="studio-coursebar-section">
           <div className="studio-sidebar-label">MIS CÁTEDRAS</div>
           <div className="studio-course-list">
-            {loadingCourses ? (
-              <div className="studio-course-empty">Cargando cátedras…</div>
-            ) : courses.length ? courses.map((item) => (
-              <div
-                className={"studio-course-item" + (courseMeta?.courseId === item.courseId ? " active" : "")}
-                key={item.courseId}
-              >
-                <button
-                  type="button"
-                  className="studio-course-select"
-                  onClick={() => selectCourse(item.courseId)}
-                  disabled={loadingCourse || deletingCourseId === item.courseId}
-                >
-                  <strong>{item.title || "Sin título"}</strong>
-                  <span>{item.role === "owner" ? "Responsable" : item.role === "editor" ? "Editor" : "Solo lectura"} · {item.status === "published" ? "Publicada" : item.status === "changes-pending" ? "Cambios pendientes" : "Borrador"}</span>
-                </button>
-                {item.status === "draft" && item.role === "owner" && (
-                  <button
-                    type="button"
-                    className="studio-course-delete"
-                    title="Eliminar cátedra"
-                    aria-label={'Eliminar cátedra ' + (item.title || "sin título")}
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      handleDeleteCourse(item.courseId, item.title);
-                    }}
-                    disabled={deletingCourseId === item.courseId}
+            {courses.length ? (
+              <>
+                {loadingCourses && <div className="studio-course-empty">Actualizando cátedras…</div>}
+                {courses.map((item) => (
+                  <div
+                    className={"studio-course-item" + (courseMeta?.courseId === item.courseId ? " active" : "")}
+                    key={item.courseId}
                   >
-                    {deletingCourseId === item.courseId ? "…" : "×"}
-                  </button>
-                )}
-              </div>
-            )) : (
+                    <button
+                      type="button"
+                      className="studio-course-select"
+                      onClick={() => selectCourse(item.courseId)}
+                      disabled={loadingCourse || deletingCourseId === item.courseId}
+                    >
+                      <strong>{item.title || "Sin título"}</strong>
+                      <span>{item.role === "owner" ? "Responsable" : item.role === "editor" ? "Editor" : "Solo lectura"} · {item.status === "published" ? "Publicada" : item.status === "changes-pending" ? "Cambios pendientes" : "Borrador"}</span>
+                    </button>
+                    {item.status === "draft" && item.role === "owner" && (
+                      <button
+                        type="button"
+                        className="studio-course-delete"
+                        title="Eliminar cátedra"
+                        aria-label={'Eliminar cátedra ' + (item.title || "sin título")}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          handleDeleteCourse(item.courseId, item.title);
+                        }}
+                        disabled={deletingCourseId === item.courseId}
+                      >
+                        {deletingCourseId === item.courseId ? "…" : "×"}
+                      </button>
+                    )}
+                  </div>
+                ))}
+              </>
+            ) : loadingCourses ? (
+              <div className="studio-course-empty">Cargando cátedras guardadas…</div>
+            ) : (
               <div className="studio-course-empty">Todavía no tenés cátedras asignadas.</div>
             )}
           </div>
@@ -410,6 +467,18 @@ export default function StudioApp() {
             onDeleteCourse={handleDeleteCourse}
             onReloadCourse={() => selectCourse(courseMeta.courseId)}
           />
+        ) : loadingCourse ? (
+          <div className="studio-no-course">
+            <div className="eyebrow">AULIA · STUDIO</div>
+            <h1>Cargando cátedra…</h1>
+            <p>Tu lista de cátedras está disponible a la izquierda. Estamos recuperando el contenido de la selección inicial.</p>
+          </div>
+        ) : loadingCourses ? (
+          <div className="studio-no-course">
+            <div className="eyebrow">AULIA · STUDIO</div>
+            <h1>Actualizando tus cátedras…</h1>
+            <p>Estamos verificando las cátedras autorizadas de tu cuenta.</p>
+          </div>
         ) : (
           <div className="studio-no-course">
             <div className="eyebrow">AULIA · STUDIO</div>
