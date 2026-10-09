@@ -129,7 +129,7 @@ export default function ChatInterface({ course, student, apiKey, onLogoutApiKey,
     setServiceStatus("");
     abortRef.current = false;
 
-    const retrieved = retrieveFromCourse(course, text, { modeId: activeMode.id });
+    const retrieved = retrieveFromCourse(course, text, { modeId: activeMode.id, includeReference: true });
     const history = updated.slice(1).slice(-6);
 
     try {
