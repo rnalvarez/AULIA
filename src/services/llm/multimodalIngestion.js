@@ -269,7 +269,7 @@ export async function analyzePdfWithVision(material, {
     }
     model = result.model || model;
     for (const page of result.pages) pageResults[String(page.pageNumber)] = page;
-    saveCache(cacheKey, signature, pageResults);
+    await saveCache(cacheKey, signature, pageResults);
     onProgress({
       processed: Object.keys(pageResults).length,
       total,
