@@ -15,6 +15,10 @@ const MAX_CORPUS_EXCERPT_CHARS = 1400;
 const MAX_CONVERSATION_CHARS = 3600;
 const MAX_LATEST_MESSAGE_CHARS = 1800;
 
+function normalizePromptValue(value) {
+  return String(value || "").toLowerCase().normalize("NFD").replace(/[\\u0300-\\u036f]/g, "").replace(/\\s+/g, " ").trim();
+}
+
 function promptText(value, maxChars) {
   const clean = String(value ?? "").replace(/\s+/g, " ").trim();
   if (clean.length <= maxChars) return clean;
@@ -94,7 +98,11 @@ function buildSystemPrompt({ course, assistant, mode, retrieved }) {
       entry.aliases?.length ? "OTROS NOMBRES: " + entry.aliases.slice(0, 6).map(value => promptText(value, 80)).join(" | ") : "",
       entry.category ? "TIPO: " + promptText(entry.category, 70) : "",
       entry.definition ? "DEFINICIÓN: " + promptText(entry.definition, 480) : "",
+      (entry.definitionVariants || []).filter(value => normalizePromptValue(value) !== normalizePromptValue(entry.definition)).slice(0, 2).length
+        ? "OTRAS FORMULACIONES EN EL TEXTO: " + (entry.definitionVariants || []).filter(value => normalizePromptValue(value) !== normalizePromptValue(entry.definition)).slice(0, 2).map(value => promptText(value, 240)).join(" | ") : "",
       entry.explanation ? "DESARROLLO: " + promptText(entry.explanation, 420) : "",
+      (entry.explanationVariants || []).filter(value => normalizePromptValue(value) !== normalizePromptValue(entry.explanation)).slice(0, 2).length
+        ? "OTROS DESARROLLOS: " + (entry.explanationVariants || []).filter(value => normalizePromptValue(value) !== normalizePromptValue(entry.explanation)).slice(0, 2).map(value => promptText(value, 220)).join(" | ") : "",
       entry.distinctions?.length ? "DISTINCIONES: " + entry.distinctions.slice(0, 2).map(value => promptText(value, 150)).join(" | ") : "",
       entry.relatedTerms?.length ? "RELACIONES: " + entry.relatedTerms.slice(0, 5).map(value => promptText(value, 70)).join(" | ") : "",
       entry.examples?.length ? "EJEMPLOS: " + entry.examples.slice(0, 2).map(value => promptText(value, 140)).join(" | ") : "",
