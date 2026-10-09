@@ -7,105 +7,163 @@ function saveModel(courseId, model) {
   try { if (model) sessionStorage.setItem(MODEL_KEY_PREFIX + courseId, model); } catch {}
 }
 
+const MAX_RESPONSE_TOKENS = 800;
+const MAX_ASSISTANT_INSTRUCTIONS_CHARS = 1000;
+const MAX_MODE_INSTRUCTIONS_CHARS = 650;
+const MAX_CONCEPT_SUMMARY_CHARS = 420;
+const MAX_CORPUS_EXCERPT_CHARS = 1900;
+const MAX_CONVERSATION_CHARS = 3600;
+const MAX_LATEST_MESSAGE_CHARS = 1800;
+
+function promptText(value, maxChars) {
+  const clean = String(value ?? "").replace(/\\s+/g, " ").trim();
+  if (clean.length <= maxChars) return clean;
+  return clean.slice(0, Math.max(0, maxChars - 1)).trimEnd() + "…";
+}
+
+function compactConversation(messages) {
+  const recent = (Array.isArray(messages) ? messages : []).slice(-6);
+  const selected = [];
+  let remaining = MAX_CONVERSATION_CHARS;
+
+  for (let index = recent.length - 1; index >= 0 && remaining > 0; index -= 1) {
+    const message = recent[index] || {};
+    const limit = Math.min(
+      index === recent.length - 1 ? MAX_LATEST_MESSAGE_CHARS : 650,
+      remaining
+    );
+    const content = promptText(message.content, limit);
+    if (!content) continue;
+    selected.push({
+      role: message.role === "assistant" ? "assistant" : "user",
+      content,
+    });
+    remaining -= content.length;
+  }
+
+  return selected.reverse();
+}
+
 function buildSystemPrompt({ course, assistant, mode, retrieved }) {
   const bibliography = new Map((course?.bibliography || []).map(item => [String(item?.id || ""), item]));
   const pedagogicalUnits = new Map((course?.pedagogicalUnits || []).map(unit => [String(unit?.id || ""), unit]));
   const curriculumSequence = Array.isArray(course?.curriculumMap?.sequence)
-    ? course.curriculumMap.sequence.filter((id) => pedagogicalUnits.has(String(id)))
+    ? course.curriculumMap.sequence.filter(id => pedagogicalUnits.has(String(id)))
     : [];
   const curriculumOrder = new Map(curriculumSequence.map((id, index) => [String(id), index + 1]));
   const unitsForCorpus = new Map();
+
   for (const unit of pedagogicalUnits.values()) {
     for (const sourceId of unit?.sourceCorpusIds || []) {
       if (!unitsForCorpus.has(String(sourceId))) unitsForCorpus.set(String(sourceId), []);
       unitsForCorpus.get(String(sourceId)).push(unit);
     }
   }
-  const unitLabel = (unit) => {
+
+  const unitLabel = unit => {
     if (!unit) return "";
     const order = curriculumOrder.get(String(unit.id));
     const prefix = order ? "UNIDAD CURRICULAR " + order : "UNIDAD PEDAGÓGICA";
     const prerequisites = (unit?.prerequisiteUnitIds || [])
-      .map((id) => pedagogicalUnits.get(String(id)))
+      .slice(0, 2)
+      .map(id => pedagogicalUnits.get(String(id)))
       .filter(Boolean)
-      .map((item) => item.title)
+      .map(item => promptText(item.title, 80))
       .filter(Boolean);
-    return [
-      prefix + ": " + String(unit.title || ""),
-      unit.phase ? "ETAPA: " + unit.phase : "",
+    return promptText([
+      prefix + ": " + promptText(unit.title, 100),
+      unit.phase ? "ETAPA: " + promptText(unit.phase, 60) : "",
       prerequisites.length ? "PRERREQUISITOS: " + prerequisites.join(" | ") : "",
-    ].filter(Boolean).join(" · ");
+    ].filter(Boolean).join(" · "), 220);
   };
-  const conceptItems = (retrieved || [])
-    .filter(item => (course?.concepts || []).some(concept => concept?.id === item?.id))
-    .map(item => {
-      const sourceIds = Array.isArray(item?.sourceBibliographyIds) ? item.sourceBibliographyIds : [];
-      const sources = sourceIds
-        .map(id => bibliography.get(String(id)))
-        .filter(Boolean)
-        .map(ref => [ref?.title, ref?.author, ref?.year].filter(Boolean).join(" · "));
-      const relatedUnits = (item?.pedagogicalUnitIds || [])
-        .map((id) => pedagogicalUnits.get(String(id)))
-        .filter(Boolean)
-        .map(unitLabel);
-      return [
-        "ID: " + String(item?.id || ""),
-        "CONCEPTO: " + String(item?.title || ""),
-        relatedUnits.length ? relatedUnits.join("\n") : "",
-        "DEFINICIÓN/RESUMEN: " + String(item?.explanation || item?.summary || ""),
-        sources.length ? "BIBLIOGRAFÍA: " + sources.join(" | ") : "",
-        Array.isArray(item?.confusionCriteria) && item.confusionCriteria.length
-          ? "CRITERIOS DE POSIBLE CONFUSIÓN: " + item.confusionCriteria.join(" | ")
-          : "",
-      ].filter(Boolean).join("\n");
-    }).join("\n\n");
 
-  const context = (retrieved || []).map(item => {
-    const title = String(item?.title || item?.id || "Unidad");
+  const conceptIds = new Set((course?.concepts || []).map(concept => String(concept?.id || "")));
+  const retrievedConcepts = (retrieved || [])
+    .filter(item => conceptIds.has(String(item?.id || "")))
+    .slice(0, 3);
+
+  const conceptItems = retrievedConcepts.map(item => {
+    const sourceIds = Array.isArray(item?.sourceBibliographyIds) ? item.sourceBibliographyIds : [];
+    const sources = sourceIds
+      .slice(0, 2)
+      .map(id => bibliography.get(String(id)))
+      .filter(Boolean)
+      .map(ref => promptText([ref?.title, ref?.author, ref?.year].filter(Boolean).join(" · "), 130));
+
+    const relatedUnits = (item?.pedagogicalUnitIds || [])
+      .slice(0, 1)
+      .map(id => pedagogicalUnits.get(String(id)))
+      .filter(Boolean)
+      .map(unitLabel);
+
+    const confusionCriteria = (Array.isArray(item?.confusionCriteria) ? item.confusionCriteria : [])
+      .slice(0, 2)
+      .map(value => promptText(value, 110));
+
+    return [
+      "ID: " + promptText(item?.id, 80),
+      "CONCEPTO: " + promptText(item?.title, 120),
+      relatedUnits.length ? relatedUnits.join("\\n") : "",
+      "DEFINICIÓN/RESUMEN: " + promptText(item?.explanation || item?.summary || "", MAX_CONCEPT_SUMMARY_CHARS),
+      sources.length ? "BIBLIOGRAFÍA: " + sources.join(" | ") : "",
+      confusionCriteria.length ? "CRITERIOS DE POSIBLE CONFUSIÓN: " + confusionCriteria.join(" | ") : "",
+    ].filter(Boolean).join("\\n");
+  }).join("\\n\\n");
+
+  // Conceptos ya se incluyen arriba, con un formato específico y compacto.
+  // No volver a incluirlos dentro del corpus: duplicaba tokens sin sumar evidencia.
+  const retrievedCorpus = (retrieved || [])
+    .filter(item => !conceptIds.has(String(item?.id || "")))
+    .slice(0, 2);
+
+  const context = retrievedCorpus.map(item => {
+    const title = promptText(item?.title || item?.id || "Unidad", 140);
     const section = Array.isArray(item?.sectionPath) && item.sectionPath.length
-      ? "SECCIÓN: " + item.sectionPath.join(" › ")
-      : (item?.chapter ? "SECCIÓN: " + item.chapter : "");
+      ? "SECCIÓN: " + promptText(item.sectionPath.join(" › "), 180)
+      : (item?.chapter ? "SECCIÓN: " + promptText(item.chapter, 180) : "");
     const pages = item?.sourcePageStart
       ? "PÁGINAS: " + item.sourcePageStart + (item?.sourcePageEnd && item.sourcePageEnd !== item.sourcePageStart ? "-" + item.sourcePageEnd : "")
       : "";
-    const source = item?.source ? "FUENTE: " + item.source : "";
+    const source = item?.source ? "FUENTE: " + promptText(item.source, 150) : "";
     const linkedUnits = unitsForCorpus.get(String(item?.id || "")) || [];
     const curricularUnits = linkedUnits.length
-      ? linkedUnits.map(unitLabel)
+      ? linkedUnits.slice(0, 1).map(unitLabel)
       : (item?.pedagogicalUnitIds || [])
-          .map((id) => pedagogicalUnits.get(String(id)))
+          .slice(0, 1)
+          .map(id => pedagogicalUnits.get(String(id)))
           .filter(Boolean)
           .map(unitLabel);
-    const text = String(item?.explanation || item?.summary || item?.content || "");
+    const text = promptText(item?.explanation || item?.summary || item?.content || "", MAX_CORPUS_EXCERPT_CHARS);
+
     return [
       title,
-      curricularUnits.length ? curricularUnits.join("\n") : "",
+      curricularUnits.length ? curricularUnits.join("\\n") : "",
       section,
       pages,
       source,
       text,
-    ].filter(Boolean).join("\n");
-  }).join("\n\n");
+    ].filter(Boolean).join("\\n");
+  }).join("\\n\\n");
 
   const curriculumContext = curriculumSequence.length
-    ? "MAPA CURRICULAR DE LA CÁTEDRA:\n" +
-      curriculumSequence.map((id, index) => {
+    ? "MAPA CURRICULAR DE LA CÁTEDRA:\\n" +
+      curriculumSequence.slice(0, 12).map((id, index) => {
         const unit = pedagogicalUnits.get(String(id));
-        return (index + 1) + ". " + String(unit?.title || "");
-      }).join("\n")
+        return (index + 1) + ". " + promptText(unit?.title, 90);
+      }).join("\\n") +
+      (curriculumSequence.length > 12 ? "\\n… y " + (curriculumSequence.length - 12) + " unidades más." : "")
     : "";
 
   return [
-    String(assistant?.instructions || "Sos un asistente pedagógico. Respondé en español y trabajá con el corpus autorizado."),
-    "Curso: " + String(course?.title || course?.id || ""),
-    "Modo: " + String(mode?.title || ""),
-    "Objetivo: " + String(mode?.pedagogicalGoal || ""),
+    promptText(assistant?.instructions || "Sos un asistente pedagógico. Respondé en español y trabajá con el corpus autorizado.", MAX_ASSISTANT_INSTRUCTIONS_CHARS),
+    "Curso: " + promptText(course?.title || course?.id || "", 160),
+    "Modo: " + promptText(mode?.title || "", 120),
+    "Objetivo: " + promptText(mode?.pedagogicalGoal || "", 400),
     curriculumContext,
     "El mapa curricular es una guía pedagógica de la cátedra, no una fuente factual adicional. Usalo para orientar la progresión y los prerrequisitos, pero basá las respuestas sobre contenidos únicamente en el corpus y las fuentes autorizadas.",
-
-    "Instrucciones: " + String(mode?.instructions || ""),
+    "Instrucciones: " + promptText(mode?.instructions || "", MAX_MODE_INSTRUCTIONS_CHARS),
     conceptItems
-      ? "CONCEPTOS AUTORIZADOS PARA EL ANÁLISIS DE ESTA INTERACCIÓN:\n" + conceptItems
+      ? "CONCEPTOS AUTORIZADOS PARA EL ANÁLISIS DE ESTA INTERACCIÓN:\\n" + conceptItems
       : "No hay conceptos recuperados para clasificar esta interacción.",
     "Corpus recuperado:",
     context || "Sin fragmentos específicos recuperados.",
@@ -117,19 +175,19 @@ function buildSystemPrompt({ course, assistant, mode, retrieved }) {
     "conceptIds debe incluir únicamente IDs de los conceptos autorizados arriba que realmente fueron tratados en la pregunta o respuesta. Si ninguno, usá [].",
     "confusionLevel debe ser 0, 1 o 2. 0 = no hay indicio de confusión; 1 = posible dificultad, comprensión incompleta o pedido de aclaración; 2 = confusión clara o reiterada respecto de un concepto.",
     "La clasificación de conceptos y confusión debe basarse exclusivamente en las definiciones, criterios y bibliografía de la cátedra proporcionados arriba. No diagnostiques al estudiante ni inventes conceptos.",
-  ].join("\n");
+  ].filter(Boolean).join("\\n");
 }
 
 function modeGeneration(mode, generation) {
   const base = {
     temperature: Number(generation.temperature ?? 0.4),
-    max_tokens: Number(generation.max_tokens ?? 800),
+    max_tokens: Math.max(1, Math.min(Number(generation.max_tokens ?? MAX_RESPONSE_TOKENS) || MAX_RESPONSE_TOKENS, MAX_RESPONSE_TOKENS)),
     top_p: Number(generation.top_p ?? 0.9),
   };
   const overrides = generation.modeOverrides?.[mode?.id] || {};
   return {
     temperature: Number(overrides.temperature ?? base.temperature),
-    max_tokens: Number(overrides.max_tokens ?? base.max_tokens),
+    max_tokens: Math.max(1, Math.min(Number(overrides.max_tokens ?? base.max_tokens) || base.max_tokens, MAX_RESPONSE_TOKENS)),
     top_p: Number(overrides.top_p ?? base.top_p),
   };
 }
@@ -145,7 +203,7 @@ export function createLLMClient({ courseId, apiKey, endpoint, models = [], gener
     const limits = modeGeneration(mode, generation);
     const requestMessages = [
       { role: "system", content: buildSystemPrompt({ course, assistant, mode, retrieved }) },
-      ...messages.slice(-6),
+      ...compactConversation(messages),
     ];
 
     let lastModelError = null;
@@ -195,6 +253,9 @@ export function createLLMClient({ courseId, apiKey, endpoint, models = [], gener
         const providerMessage = data?.error?.message || data?.message || "";
         if (response.status === 401) throw new Error("API key inválida. Usá el botón 🔑 para cambiarla.");
         if (response.status === 429) throw new Error("Se alcanzó el límite de uso de tu cuenta. Esperá y probá nuevamente.");
+        if (response.status === 413 && /tokens per minute|request too large|requested \\d+/i.test(providerMessage)) {
+          throw new Error("La consulta superó el límite de tokens por minuto de Groq. AULIA ya reduce el material y el historial enviados; esperá un momento y probá de nuevo. Si continúa, revisá la cantidad de consultas simultáneas en la cuenta.");
+        }
         throw new Error("Error " + response.status + (providerMessage ? ": " + providerMessage : "."));
       }
 
