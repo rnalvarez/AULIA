@@ -367,6 +367,7 @@ function buildMaterialStructure(course) {
         teacherLimit: section.teacherLimit || "",
         fragmentCount: ordered.length,
         preview: preview.slice(0, 180),
+        fullText: preview,
         analysis: document.analysis || null,
       });
     }
@@ -412,7 +413,8 @@ function buildMaterialStructure(course) {
       teacherConcepts: Array.isArray(first.teacherConcepts) ? first.teacherConcepts : [],
       teacherLimit: first.teacherLimit || "",
       fragmentCount: ordered.length,
-      preview: String(first.content || "").slice(0, 180),
+      preview: ordered.map((item) => String(item?.content || "")).join("\n\n").trim().slice(0, 180),
+      fullText: ordered.map((item) => String(item?.content || "")).join("\n\n").trim(),
       analysis: null,
     };
   });
@@ -1409,11 +1411,14 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
 
       {step === "material" && <>
         <div className="studio-wf-hero"><div className="eyebrow">PASO 02 · BIBLIOGRAFÍA</div><h1>Una sola carga para preparar la base de conocimiento.</h1><p>Primero cargá los documentos y analizá toda la bibliografía con Groq o una IA externa. Después revisá las secciones detectadas y decidí qué podrá consultar el chatbot y con qué prioridad pedagógica.</p></div>
-        <Panel eyebrow="BIBLIOGRAFÍA" title="Fuentes de la cátedra" description="Libros, apuntes o materiales principales." actions={<button className="ghost" type="button" onClick={addBibliography} disabled={!canEdit}>+ Agregar fuente</button>}>
+        <details className="studio-wf-source-details">
+          <summary>Datos bibliográficos opcionales <span>· título, autor, editorial y año</span></summary>
+          <Panel eyebrow="BIBLIOGRAFÍA" title="Referencias de la cátedra" description="Estos datos ayudan a identificar las fuentes, pero no hace falta completarlos para empezar a cargar y analizar los documentos." actions={<button className="ghost" type="button" onClick={addBibliography} disabled={!canEdit}>+ Agregar fuente</button>}>
           {draft.bibliography?.length ? <div className="studio-wf-stack">{draft.bibliography.map((x, i) => <Row key={x.id || i} title={x.title} meta={[x.author, x.year].filter(Boolean).join(" · ")} onRemove={() => remove("bibliography", i)}><div className="studio-wf-grid">
             <Field label="Título" value={x.title} onChange={(v) => edit("bibliography", i, { title: v })}/><Field label="Autor" value={x.author} onChange={(v) => edit("bibliography", i, { author: v })}/><Field label="Editorial" value={x.publisher} onChange={(v) => edit("bibliography", i, { publisher: v })}/><Field label="Año" value={x.year} onChange={(v) => edit("bibliography", i, { year: v })}/><Field label="Rol" value={x.role} onChange={(v) => edit("bibliography", i, { role: v })}/>
           </div></Row>)}</div> : <Empty title="Todavía no cargaste fuentes." text="Podés agregarlas manualmente o incorporarlas desde un JSON." action={<button className="ghost" type="button" onClick={addBibliography}>Agregar primera fuente</button>}/>}
-        </Panel>
+          </Panel>
+        </details>
         <Panel
           eyebrow="MATERIAL"
           title="Bibliografía y corpus de la cátedra"
@@ -1582,6 +1587,10 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
                         </div>
 
                         <p>{section.preview || "Sin vista previa disponible."}{section.preview?.length >= 180 ? "…" : ""}</p>
+                        {section.fullText && <details className="studio-wf-extracted-text">
+                          <summary>Revisar texto extraído ({section.fullText.length.toLocaleString("es-AR")} caracteres)</summary>
+                          <pre>{section.fullText}</pre>
+                        </details>}
 
                         <div className="studio-wf-material-meta">
                           <small>
