@@ -609,35 +609,150 @@ function handleStudioGetCourse(body) {
   };
 }
 
-function handleStudioDeleteCourse(body) {
+function studioDeleteConfirmationKey(token) {
+  return "aulia:studio:delete-confirm:" + String(token || "");
+}
+
+function handleStudioPrepareDeleteCourse(body) {
   const session = requireTeacherSession(body);
   const courseId = String(body.courseId || "").trim();
   if (!courseId) throw new Error("Falta identificar la cátedra.");
+  if (body.acknowledgeDelete !== true) {
+    throw new Error("La primera confirmación de borrado es obligatoria.");
+  }
 
   const access = studioRequireCourseAccess(session.teacher.email, courseId, false);
-
   if (access.role !== "owner") {
     throw new Error("Solo el responsable de la cátedra puede eliminarla.");
   }
 
-  // Por seguridad, desde Studio solo se pueden eliminar cátedras
-  // que todavía no fueron publicadas y no tienen una versión publicada.
-  if (access.course.status !== "draft" || access.course.publishedFileId) {
-    throw new Error("Solo se pueden eliminar cátedras en borrador que todavía no fueron publicadas.");
+  const course = access.course;
+  const published = course.status !== "draft" || Boolean(course.publishedFileId);
+  const confirmationToken = Utilities.getUuid() + "-" + Utilities.getUuid();
+
+  // Token ligado a docente + cátedra + versión, de un solo uso y con caducidad.
+  CacheService.getScriptCache().put(
+    studioDeleteConfirmationKey(confirmationToken),
+    JSON.stringify({
+      email: normalizeStudioEmail(session.teacher.email),
+      courseId: course.courseId,
+      title: String(course.title || ""),
+      status: String(course.status || "draft"),
+      updatedAt: String(course.updatedAt || ""),
+      fileId: String(course.fileId || ""),
+      publishedFileId: String(course.publishedFileId || ""),
+      published,
+    }),
+    300
+  );
+
+  studioAudit(
+    session.teacher.email,
+    "prepare-delete-course",
+    courseId,
+    "confirmación inicial",
+    String(course.title || "") + " · " + (published ? "publicada" : "borrador")
+  );
+
+  return {
+    success: true,
+    confirmationToken,
+    title: String(course.title || "Sin título"),
+    status: String(course.status || "draft"),
+    published,
+    studentSheetPreserved: Boolean(course.studentSheetId),
+    expiresIn: 300,
+  };
+}
+
+function handleStudioDeleteCourse(body) {
+  const session = requireTeacherSession(body);
+  const courseId = String(body.courseId || "").trim();
+  const confirmationToken = String(body.confirmationToken || "").trim();
+  const confirmedTitle = String(body.confirmationTitle || "");
+
+  if (!courseId) throw new Error("Falta identificar la cátedra.");
+  if (!confirmationToken) throw new Error("Falta la autorización temporal de borrado.");
+
+  const cache = CacheService.getScriptCache();
+  const tokenKey = studioDeleteConfirmationKey(confirmationToken);
+  const rawProof = cache.get(tokenKey);
+  if (!rawProof) {
+    throw new Error("La autorización de borrado venció o ya fue utilizada. Iniciá nuevamente las dos confirmaciones.");
   }
 
-  // Una cátedra recién creada no debería tener Student Sheet.
-  // Si existe por una intervención externa, evitamos eliminarla silenciosamente.
-  if (access.course.studentSheetId) {
-    throw new Error("La cátedra tiene una Sheet de alumnos asociada y no puede eliminarse desde Studio.");
+  let proof;
+  try { proof = JSON.parse(rawProof); }
+  catch (err) { throw new Error("La autorización temporal de borrado no es válida."); }
+
+  const access = studioRequireCourseAccess(session.teacher.email, courseId, false);
+  if (access.role !== "owner") {
+    throw new Error("Solo el responsable de la cátedra puede eliminarla.");
   }
 
-  if (access.course.fileId) {
-    try {
-      DriveApp.getFileById(access.course.fileId).setTrashed(true);
-    } catch (err) {
-      console.error("No se pudo enviar a la papelera el Course Pack: " + err);
-    }
+  const course = access.course;
+  const title = String(course.title || "");
+  const published = course.status !== "draft" || Boolean(course.publishedFileId);
+
+  if (String(proof.email || "") !== normalizeStudioEmail(session.teacher.email) ||
+      String(proof.courseId || "") !== courseId) {
+    throw new Error("La autorización temporal no corresponde a esta cátedra o docente.");
+  }
+
+  if (String(proof.title || "") !== title ||
+      String(proof.status || "draft") !== String(course.status || "draft") ||
+      String(proof.updatedAt || "") !== String(course.updatedAt || "") ||
+      String(proof.fileId || "") !== String(course.fileId || "") ||
+      String(proof.publishedFileId || "") !== String(course.publishedFileId || "")) {
+    cache.remove(tokenKey);
+    throw new Error("La cátedra cambió desde la primera confirmación. Volvé a iniciar el borrado para revisar su estado actualizado.");
+  }
+
+  // Segunda autorización: el responsable debe volver a escribir el título exacto.
+  if (!confirmedTitle.trim() || confirmedTitle.trim() !== title) {
+    studioAudit(session.teacher.email, "delete-course", courseId, "denegado", "el título de confirmación no coincide");
+    throw new Error("El nombre escrito no coincide exactamente con el título de la cátedra. No se eliminó.");
+  }
+
+  if (published && body.confirmPublished !== true) {
+    throw new Error("La segunda confirmación para una cátedra publicada es obligatoria.");
+  }
+
+  // Token de un solo uso: se consume después de validar ambas autorizaciones.
+  cache.remove(tokenKey);
+
+  // Retirar ambas versiones del Course Pack. La planilla de alumnos no se borra:
+  // puede contener padrón, interacciones y datos que deben conservarse.
+  const fileIds = Array.from(new Set([
+    String(course.fileId || ""),
+    String(course.publishedFileId || ""),
+  ].filter(Boolean)));
+  const fileStates = [];
+
+  try {
+    fileIds.forEach(function(fileId) {
+      const file = DriveApp.getFileById(fileId);
+      const wasTrashed = file.isTrashed();
+      fileStates.push({ id: fileId, wasTrashed: wasTrashed });
+      if (!wasTrashed) file.setTrashed(true);
+    });
+  } catch (err) {
+    fileStates.slice().reverse().forEach(function(state) {
+      if (state.wasTrashed) return;
+      try { DriveApp.getFileById(state.id).setTrashed(false); } catch (restoreErr) {}
+    });
+    studioAudit(session.teacher.email, "delete-course", courseId, "error", "no se pudo retirar el Course Pack: " + String(err && err.message || err));
+    throw new Error("No se pudo enviar las versiones de la cátedra a la papelera. No se eliminó el registro. " + String(err && err.message || err));
+  }
+
+  try {
+    course.sheet.deleteRow(course.rowIndex);
+  } catch (err) {
+    fileStates.slice().reverse().forEach(function(state) {
+      if (state.wasTrashed) return;
+      try { DriveApp.getFileById(state.id).setTrashed(false); } catch (restoreErr) {}
+    });
+    throw new Error("No se pudo quitar la cátedra del registro. Las versiones de Drive se restauraron cuando fue posible. " + String(err && err.message || err));
   }
 
   // Limpiar permisos asociados para no dejar referencias huérfanas.
@@ -658,14 +773,23 @@ function handleStudioDeleteCourse(body) {
     console.error("No se pudieron limpiar permisos de la cátedra eliminada: " + err);
   }
 
-  const title = access.course.title;
-  access.course.sheet.deleteRow(access.course.rowIndex);
-  studioAudit(session.teacher.email, "delete-course", courseId, "ok", title);
+  const preservedStudentSheetUrl = String(course.studentSheetUrl || "");
+  studioAudit(
+    session.teacher.email,
+    "delete-course",
+    courseId,
+    "ok",
+    title + " · estado anterior: " + String(course.status || "draft") +
+      (course.studentSheetId ? " · planilla de alumnos conservada" : "")
+  );
 
   return {
     success: true,
     courseId,
     title,
+    previousStatus: String(course.status || "draft"),
+    studentSheetPreserved: Boolean(course.studentSheetId),
+    studentSheetUrl: preservedStudentSheetUrl,
   };
 }
 
