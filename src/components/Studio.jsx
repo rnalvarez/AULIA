@@ -361,6 +361,10 @@ function buildMaterialStructure(course) {
         evidence: Array.isArray(section.evidence)
           ? section.evidence
           : (Array.isArray(first.structureEvidence) ? first.structureEvidence : []),
+        needsReview: Boolean(section.needsReview || first.needsReview),
+        reviewNotes: String(section.reviewNotes || first.reviewNotes || ""),
+        sourceTextOriginal: String(section.sourceTextOriginal || ""),
+        visualElementCount: Number(section.visualElementCount || first.visualElementCount || 0),
         childrenCount: Number(section.childrenCount || 0),
         scope: section.scope || "included",
         priority: section.priority || "normal",
@@ -1622,6 +1626,7 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
                         <div className="studio-wf-material-section-head">
                           <div>
                             <strong>{section.title || "Sección"}</strong>
+                            {section.needsReview && <small className="studio-wf-security-note">⚠ Revisión docente recomendada{section.reviewNotes ? ": " + section.reviewNotes : ""}</small>}
                             <span>
                               {section.path?.length ? section.path.join(" › ") : "Sin jerarquía detectada"}
                               {section.printedPageStart ? " · libro pp. " + section.printedPageStart + (section.printedPageEnd && section.printedPageEnd !== section.printedPageStart ? "–" + section.printedPageEnd : "") : section.sourcePageStart ? " · PDF pp. " + section.sourcePageStart + (section.sourcePageEnd && section.sourcePageEnd !== section.sourcePageStart ? "–" + section.sourcePageEnd : "") : ""}
@@ -1644,9 +1649,14 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
 
                         <p>{section.preview || "Sin vista previa disponible."}{section.preview?.length >= 180 ? "…" : ""}</p>
                         {section.fullText && <details className="studio-wf-extracted-text">
-                          <summary>Revisar texto extraído ({section.fullText.length.toLocaleString("es-AR")} caracteres)</summary>
+                          <summary>Revisar texto que usará el chatbot ({section.fullText.length.toLocaleString("es-AR")} caracteres)</summary>
                           <pre>{section.fullText}</pre>
                         </details>}
+                        {section.sourceTextOriginal && <details className="studio-wf-extracted-text">
+                          <summary>Comparar con el texto original extraído automáticamente</summary>
+                          <pre>{section.sourceTextOriginal}</pre>
+                        </details>}
+                        {section.visualElementCount > 0 && <small className="studio-wf-security-note">{section.visualElementCount} elemento(s) visual(es) interpretado(s) por IA; verificá tablas y valores antes de publicar.</small>}
 
                         <div className="studio-wf-material-meta">
                           <small>
