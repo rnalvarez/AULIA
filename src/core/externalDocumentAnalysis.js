@@ -7,7 +7,7 @@ export function createExternalDocumentAnalysisPrompt() {
     version: EXTERNAL_DOCUMENT_ANALYSIS_VERSION,
     sourceName: "NOMBRE-EXACTO-DEL-PDF.pdf",
     totalPages: 120,
-    processedPageNumbers: [1, 2],
+    processedPageNumbers: [1],
     pages: [{
       pageNumber: 1,
       originalText: "Transcripción fiel del texto legible de esta página, conservando títulos, párrafos, listas y fórmulas.",
@@ -18,7 +18,7 @@ export function createExternalDocumentAnalysisPrompt() {
         kind: "table",
         title: "Título breve de la tabla",
         description: "Qué presenta y cómo interpretar sus datos, sin agregar información externa.",
-        tableMarkdown: "| Variable | Valor |\\n|---|---|\\n| A | 12 |",
+        tableMarkdown: "| Variable | Valor |\n|---|---|\n| A | 12 |",
         transcribedText: "Unidades o etiquetas visibles que no estén en la tabla."
       }],
       confidence: 0.9,
