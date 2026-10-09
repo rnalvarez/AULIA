@@ -16,7 +16,7 @@ const MAX_CONVERSATION_CHARS = 3600;
 const MAX_LATEST_MESSAGE_CHARS = 1800;
 
 function promptText(value, maxChars) {
-  const clean = String(value ?? "").replace(/\\s+/g, " ").trim();
+  const clean = String(value ?? "").replace(/\s+/g, " ").trim();
   if (clean.length <= maxChars) return clean;
   return clean.slice(0, Math.max(0, maxChars - 1)).trimEnd() + "…";
 }
