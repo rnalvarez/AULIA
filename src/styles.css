@@ -1439,6 +1439,29 @@ button { border: 0; }
   cursor: pointer;
 }
 
+.studio-course-item .studio-course-delete.published-delete {
+  width: 32px;
+  min-width: 32px;
+  color: #c47d70;
+  border-color: #49302d;
+  background: #1d1312;
+}
+.studio-course-item .studio-course-delete.published-delete:hover {
+  border-color: #8a4138;
+  color: #ffd0c8;
+  background: #321614;
+}
+.studio-global-notice {
+  margin: 12px auto 0;
+  width: min(980px, calc(100% - 48px));
+  padding: 9px 12px;
+  border: 1px solid #29402f;
+  border-radius: 9px;
+  color: #a9c5ad;
+  background: #101812;
+  font-size: 10px;
+  line-height: 1.5;
+}
 .studio-course-item .studio-course-delete:hover {
   border-color: #6f3d36;
   color: #efaba0;
