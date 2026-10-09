@@ -9,13 +9,14 @@ const STRICT_MODELS = new Set(DEFAULT_MODELS);
 const MAX_PASSAGE_CHARS = 1700;
 const PASSAGE_OVERLAP_CHARS = 150;
 const MAX_BATCH_CHARS = 4600;
-const MAX_ENTRIES_PER_BATCH = 6;
-const MAX_OUTPUT_TOKENS = 1200;
+const MAX_ENTRIES_PER_BATCH = 4;
+const MAX_OUTPUT_TOKENS = 1400;
 const INTER_BATCH_WAIT_MS = 30000;
 
 const INDEX_SCHEMA = {
   type: "object",
   properties: {
+    reviewedPassageIds: { type: "array", maxItems: 2, items: { type: "string", maxLength: 180 } },
     entries: {
       type: "array",
       maxItems: MAX_ENTRIES_PER_BATCH,
@@ -23,21 +24,21 @@ const INDEX_SCHEMA = {
         type: "object",
         properties: {
           term: { type: "string", maxLength: 120 },
-          aliases: { type: "array", maxItems: 8, items: { type: "string", maxLength: 100 } },
+          aliases: { type: "array", maxItems: 6, items: { type: "string", maxLength: 100 } },
           category: { type: "string", maxLength: 80 },
-          definition: { type: "string", maxLength: 650 },
-          explanation: { type: "string", maxLength: 1000 },
-          distinctions: { type: "array", maxItems: 4, items: { type: "string", maxLength: 260 } },
-          relatedTerms: { type: "array", maxItems: 8, items: { type: "string", maxLength: 120 } },
-          examples: { type: "array", maxItems: 4, items: { type: "string", maxLength: 260 } },
+          definition: { type: "string", maxLength: 480 },
+          explanation: { type: "string", maxLength: 700 },
+          distinctions: { type: "array", maxItems: 3, items: { type: "string", maxLength: 180 } },
+          relatedTerms: { type: "array", maxItems: 6, items: { type: "string", maxLength: 120 } },
+          examples: { type: "array", maxItems: 3, items: { type: "string", maxLength: 220 } },
           evidence: {
             type: "array",
-            maxItems: 3,
+            maxItems: 2,
             items: {
               type: "object",
               properties: {
                 passageId: { type: "string", maxLength: 180 },
-                excerpt: { type: "string", maxLength: 260 },
+                excerpt: { type: "string", maxLength: 180 },
               },
               required: ["passageId", "excerpt"],
               additionalProperties: false,
@@ -52,7 +53,7 @@ const INDEX_SCHEMA = {
       },
     },
   },
-  required: ["entries"],
+  required: ["reviewedPassageIds", "entries"],
   additionalProperties: false,
 };
 
@@ -190,6 +191,7 @@ function buildIndexPrompt(course, batch, batchNumber, totalBatches) {
     "Cada entrada DEBE citar uno o más pasajes de esta tanda mediante passageId. excerpt debe copiar literalmente una secuencia breve de TEXTO ORIGINAL. Nunca inventes IDs ni cites material de otro lote.",
     "Si un mismo término tiene sentidos diferentes según el contexto, conservá las diferencias en lugar de fusionarlas artificialmente.",
     "Devolvé hasta " + MAX_ENTRIES_PER_BATCH + " entradas sustantivas por lote. Priorizá cubrir todas las ideas específicas desarrolladas en estos textos, no repetir el mismo concepto con redacciones distintas.",
+    "reviewedPassageIds debe reproducir exactamente todos los PASSAGE_ID del lote actual, incluso si un pasaje no contiene un concepto sustantivo. No marques ningún pasaje como revisado si no lo analizaste. entries puede quedar vacío para pasajes sin contenido conceptual identificable.",
     "MATERIAL DE LA BIBLIOGRAFÍA:",
     material,
   ].join("\n\n");
@@ -264,8 +266,14 @@ async function requestIndexBatch({ apiKey, endpoint, models, course, batch, batc
     let parsed;
     try { parsed = JSON.parse(content); }
     catch { throw new Error("El lote " + batchNumber + " no devolvió JSON válido. El avance anterior se conservó."); }
+    const expectedPassageIds = batch.map(passage => passage.passageId);
+    const reviewedPassageIds = Array.isArray(parsed?.reviewedPassageIds) ? parsed.reviewedPassageIds.map(String) : [];
+    const missingPassageIds = expectedPassageIds.filter(id => !reviewedPassageIds.includes(id));
+    if (missingPassageIds.length) {
+      throw new Error("Groq no confirmó la revisión de todos los pasajes del lote " + batchNumber + ". El lote no se marcó como procesado; volvé a intentar para asegurar la cobertura completa.");
+    }
     const entries = Array.isArray(parsed?.entries) ? parsed.entries : [];
-    return { model: data?.model || model, entries, usage: data?.usage || null };
+    return { model: data?.model || model, entries, reviewedPassageIds, usage: data?.usage || null };
   }
   throw lastError || new Error("Ningún modelo configurado está disponible para el índice conceptual.");
 }
