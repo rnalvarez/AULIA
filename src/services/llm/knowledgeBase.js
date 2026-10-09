@@ -38,7 +38,7 @@ const INDEX_SCHEMA = {
               type: "object",
               properties: {
                 passageId: { type: "string", maxLength: 180 },
-                excerpt: { type: "string", maxLength: 180 },
+                excerpt: { type: "string", maxLength: 600 },
               },
               required: ["passageId", "excerpt"],
               additionalProperties: false,
@@ -188,7 +188,7 @@ function buildIndexPrompt(course, batch, batchNumber, totalBatches) {
     "Incluí también conceptos secundarios o términos que aparezcan explicados sin una definición formal. Si un pasaje contiene varias ideas diferentes, creá una entrada por idea siempre que sean claramente distinguibles. No fuerces una entrada para frases triviales.",
     "Para cada entrada, expresá una definición fiel al texto cuando exista y una explicación que preserve los matices y el contexto del autor. Registrá sinónimos y variantes terminológicas en aliases; diferencias importantes en distinctions; términos relacionados en relatedTerms; ejemplos del texto en examples.",
     "No completes lagunas con conocimientos externos. No transformes una interpretación tuya en una afirmación explícita del autor. Si el pasaje sugiere una relación pero no la afirma, describila con cautela en explanation.",
-    "Cada entrada DEBE citar uno o más pasajes de esta tanda mediante passageId. excerpt debe copiar literalmente una secuencia breve de TEXTO ORIGINAL. Nunca inventes IDs ni cites material de otro lote.",
+    "Cada entrada DEBE citar uno o más pasajes de esta tanda mediante passageId. excerpt debe copiar literalmente una secuencia breve de TEXTO ORIGINAL, de no más de 150 caracteres. Nunca inventes IDs ni cites material de otro lote.",
     "Si un mismo término tiene sentidos diferentes según el contexto, conservá las diferencias en lugar de fusionarlas artificialmente.",
     "Devolvé hasta " + MAX_ENTRIES_PER_BATCH + " entradas sustantivas por lote. Priorizá cubrir todas las ideas específicas desarrolladas en estos textos, no repetir el mismo concepto con redacciones distintas.",
     "reviewedPassageIds debe reproducir exactamente todos los PASSAGE_ID del lote actual, incluso si un pasaje no contiene un concepto sustantivo. No marques ningún pasaje como revisado si no lo analizaste. entries puede quedar vacío para pasajes sin contenido conceptual identificable.",
@@ -218,38 +218,59 @@ async function requestIndexBatch({ apiKey, endpoint, models, course, batch, batc
   const prompt = buildIndexPrompt(course, batch, batchNumber, totalBatches);
   let lastError = null;
   for (const model of models) {
-    const response = await fetch(endpoint, {
-      method: "POST",
-      headers: {
-        Authorization: "Bearer " + apiKey,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        model,
-        messages: [
-          {
-            role: "system",
-            content: "Sos un documentalista académico riguroso. Indexás conceptos únicamente a partir de los pasajes originales proporcionados. Tu salida debe ser JSON válido y cada entrada debe tener evidencia verificable.",
-          },
-          { role: "user", content: prompt },
-        ],
-        temperature: 0.1,
-        top_p: 0.9,
-        max_completion_tokens: MAX_OUTPUT_TOKENS,
-        reasoning_effort: "low",
-        response_format: responseFormatFor(model),
-        stream: false,
-      }),
-      signal,
-    });
+    const requestBody = {
+      model,
+      messages: [
+        {
+          role: "system",
+          content: "Sos un documentalista académico riguroso. Indexás conceptos únicamente a partir de los pasajes originales proporcionados. Tu salida debe ser JSON válido y cada entrada debe tener evidencia verificable. Mantené excerpts breves; el cliente los recortará y verificará contra la fuente.",
+        },
+        { role: "user", content: prompt },
+      ],
+      temperature: 0.1,
+      top_p: 0.9,
+      max_completion_tokens: MAX_OUTPUT_TOKENS,
+      reasoning_effort: "low",
+      response_format: responseFormatFor(model),
+      stream: false,
+    };
+    const sendRequest = async body => {
+      const result = await fetch(endpoint, {
+        method: "POST",
+        headers: {
+          Authorization: "Bearer " + apiKey,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(body),
+        signal,
+      });
+      const payload = await result.json().catch(() => ({}));
+      return { response: result, data: payload };
+    };
 
-    const data = await response.json().catch(() => ({}));
+    let { response, data } = await sendRequest(requestBody);
+    let responseMessage = data?.error?.message || data?.message || "";
+    // Some Groq models occasionally violate a strict JSON-schema string limit
+    // even when the result is otherwise usable. Retry that batch in JSON mode;
+    // passage coverage and evidence IDs are validated locally below.
+    if (
+      !response.ok &&
+      response.status === 400 &&
+      /Generated JSON does not match the expected schema|jsonschema:/i.test(responseMessage)
+    ) {
+      ({ response, data } = await sendRequest({
+        ...requestBody,
+        response_format: { type: "json_object" },
+      }));
+      responseMessage = data?.error?.message || data?.message || "";
+    }
+
     if (response.status === 404) {
       lastError = new Error("El modelo " + model + " no está disponible.");
       continue;
     }
     if (!response.ok) {
-      const message = data?.error?.message || data?.message || "";
+      const message = responseMessage;
       const error = new Error("Error " + response.status + (message ? ": " + message : "."));
       error.status = response.status;
       error.retryAfter = response.headers.get("retry-after") || "";
@@ -285,8 +306,8 @@ function actualExcerpt(passage, candidate, term, aliases) {
   const normalizedQuote = normalizeText(quote);
   if (normalizedQuote.length >= 32 && normalizedPassage.includes(normalizedQuote)) {
     const directIndex = passage.text.toLowerCase().indexOf(quote.toLowerCase());
-    if (directIndex >= 0) return cleanText(passage.text.slice(directIndex, directIndex + 250), 250);
-    return cleanText(quote, 250);
+    if (directIndex >= 0) return cleanText(passage.text.slice(directIndex, directIndex + 180), 180);
+    return cleanText(quote, 180);
   }
 
   const terms = [term, ...(aliases || [])].filter(Boolean).sort((a, b) => String(b).length - String(a).length);
@@ -296,12 +317,12 @@ function actualExcerpt(passage, candidate, term, aliases) {
     const index = passage.text.toLowerCase().indexOf(needle.toLowerCase());
     if (index >= 0) {
       const from = Math.max(0, index - 85);
-      return cleanText(passage.text.slice(from, from + 250), 250);
+      return cleanText(passage.text.slice(from, from + 180), 180);
     }
   }
 
   // Keep the full passage reference even when a model paraphrases an implicit concept.
-  return cleanText(passage.text, 250);
+  return cleanText(passage.text, 180);
 }
 
 function uniqueStrings(values, max, itemMax = 220) {
