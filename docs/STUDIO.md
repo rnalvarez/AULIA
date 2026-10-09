@@ -67,6 +67,16 @@ El trabajo es incremental: Studio guarda el avance en el borrador local tras cad
 
 La publicación de una cátedra con material activo requiere que el índice corresponda a la versión actual del corpus. Después de completarlo, el docente debe guardar la cátedra en el backend y publicar la versión actualizada. En las respuestas estudiantiles, AULIA usa el índice conceptual junto con la recuperación de pasajes originales; el índice no sustituye el texto de la bibliografía y la precisión debe verificarse con pruebas sobre cada corpus.
 
+### Alternativa con una IA externa
+
+En el mismo paso, Studio ofrece una guía para docentes que prefieran usar otra IA sin configurar una API key de Groq. La acción **Descargar paquete de bibliografía (.json)** exporta los pasajes activos, sus IDs estables y las referencias disponibles junto con una firma de la versión del corpus. Las secciones excluidas no se exportan.
+
+El botón **Copiar instrucciones para la IA** entrega un prompt contextualizado con el formato de salida, la firma y el número esperado de pasajes. La IA externa debe devolver uno o más JSON con el formato `aulia-external-knowledge-index`, identificando los pasajes cubiertos por cada archivo y enlazando cada concepto con citas literales verificables. Studio admite importar varios resultados y acumula conceptos, evidencias y cobertura.
+
+La importación comprueba formato, versión, firma del corpus, IDs de pasaje y que los extractos declarados aparezcan en el texto original. No se marca el índice como completo hasta cubrir todos los IDs esperados. Después de importar, el docente debe guardar y publicar la cátedra. Si modifica el corpus o el alcance de las secciones, los resultados externos anteriores dejan de corresponder a esa bibliografía y deben regenerarse.
+
+La revisión técnica comprueba estructura y trazabilidad; no garantiza que una IA externa haya interpretado todos los conceptos correctamente. El docente debe revisar una muestra sustantiva de las entradas antes de publicar.
+
 ## Eliminación segura de cátedras
 
 Solo el responsable (owner) puede borrar una cátedra. Studio solicita una primera confirmación y luego exige escribir el título exacto como segunda autorización. El backend emite un permiso temporal de un solo uso, ligado a la sesión docente, la cátedra y su versión; si la cátedra cambia o el permiso vence, hay que iniciar de nuevo.
