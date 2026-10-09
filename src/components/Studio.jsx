@@ -904,7 +904,7 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
     setStatus("Validando los archivos de análisis externo…");
     let nextIndex = draft.knowledgeBase &&
       draft.knowledgeBase.sourceSignature === knowledgeCorpusSignature(draft.corpus || []) &&
-      draft.knowledgeBase.version === 1
+      draft.knowledgeBase.version === KNOWLEDGE_BASE_VERSION
       ? cloneCourse(draft.knowledgeBase)
       : null;
     const expectedSignature = knowledgeCorpusSignature(draft.corpus || []);
@@ -932,7 +932,7 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
           if (parsed?.format !== EXTERNAL_KNOWLEDGE_OUTPUT_FORMAT) {
             throw new Error("No reconoce el formato de salida de AULIA. Copiá las instrucciones del Studio y pedile a la IA que respete el formato JSON indicado.");
           }
-          if (parsed?.version !== 1) {
+          if (parsed?.version !== KNOWLEDGE_BASE_VERSION) {
             throw new Error("La versión del archivo no es compatible con esta versión de AULIA.");
           }
           if (parsed?.sourceSignature !== expectedSignature) {
@@ -989,7 +989,7 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
 
           if (!nextIndex) {
             nextIndex = {
-              version: 1,
+              version: KNOWLEDGE_BASE_VERSION,
               sourceSignature: expectedSignature,
               status: "partial",
               totalPassages: externalPassages.length,
@@ -1011,7 +1011,7 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
 
           nextIndex = {
             ...nextIndex,
-            version: 1,
+            version: KNOWLEDGE_BASE_VERSION,
             sourceSignature: expectedSignature,
             status: complete ? "complete" : "partial",
             totalPassages: externalPassages.length,
