@@ -168,6 +168,9 @@ function buildSectionFragments({
         segmentationSource: section.segmentationSource || "text-structure",
         confidence: Number(section.confidence || 0.5),
         structureEvidence: Array.isArray(section.evidence) ? section.evidence : [],
+        ...(section.visualElementCount ? { visualElementCount: Number(section.visualElementCount) } : {}),
+        ...(section.needsReview ? { needsReview: true } : {}),
+        ...(section.reviewNotes ? { reviewNotes: String(section.reviewNotes) } : {}),
         ...(section.childrenCount ? { childrenCount: section.childrenCount } : {}),
         scope: section.scope || "included",
         priority: section.priority || "normal",
@@ -226,6 +229,9 @@ function buildDocumentMeta({
       segmentationSource: section.segmentationSource || "text-structure",
       confidence: Number(section.confidence || 0.5),
       evidence: Array.isArray(section.evidence) ? section.evidence : [],
+      visualElementCount: Number(section.visualElementCount || 0),
+      needsReview: Boolean(section.needsReview),
+      reviewNotes: String(section.reviewNotes || ""),
       childrenCount: Number(section.childrenCount || 0),
       scope: section.scope || "included",
       priority: section.priority || "normal",
@@ -305,7 +311,7 @@ function buildTextSections(text, sourceName, markdown = false) {
   return sections;
 }
 
-async function readPdf(file) {
+async function readPdf(file, { includePageImages = false } = {}) {
   const pdfjsLib = await import("pdfjs-dist/legacy/build/pdf.mjs");
   pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
     "pdfjs-dist/legacy/build/pdf.worker.min.mjs",
@@ -340,19 +346,44 @@ async function readPdf(file) {
       if (structHeadings > 0) structTreePages += 1;
 
       const lines = groupPdfItems(textContent.items, viewport.width);
+      let imageDataUrl = "";
+      if (includePageImages) {
+        let canvas = null;
+        try {
+          const maxDimension = 1500;
+          const scale = Math.min(2, maxDimension / Math.max(viewport.width, viewport.height));
+          const imageViewport = page.getViewport({ scale });
+          canvas = document.createElement("canvas");
+          canvas.width = Math.max(1, Math.ceil(imageViewport.width));
+          canvas.height = Math.max(1, Math.ceil(imageViewport.height));
+          const context = canvas.getContext("2d");
+          if (!context) throw new Error("No se pudo crear el lienzo de la página.");
+          await page.render({ canvasContext: context, viewport: imageViewport }).promise;
+          imageDataUrl = canvas.toDataURL("image/jpeg", 0.68);
+        } catch {
+          imageDataUrl = "";
+        } finally {
+          if (canvas) {
+            canvas.width = 0;
+            canvas.height = 0;
+          }
+        }
+      }
       pages.push({
         pageNumber,
         width: viewport.width,
         height: viewport.height,
         lines,
         structHeadings,
+        imageDataUrl,
       });
 
       page.cleanup?.();
     }
 
-    if (!pages.some((page) => page.lines.length)) {
-      throw new Error("El PDF no contiene texto extraíble. Si es un escaneo de páginas, todavía hace falta OCR antes de incorporarlo a AULIA.");
+    const hasExtractableText = pages.some((page) => page.lines.length);
+    if (!hasExtractableText && !includePageImages) {
+      throw new Error("Este PDF parece ser un escaneo sin texto extraíble. Para leerlo, configurá tu clave personal de Groq antes de cargarlo y activá el análisis multimodal.");
     }
 
     const analysis = await analyzePdfStructure({
@@ -369,12 +400,21 @@ async function readPdf(file) {
       sourcePageCount: pageCount,
     });
 
-    if (!corpus.length) {
+    if (!corpus.length && !includePageImages) {
       throw new Error("AULIA pudo abrir el PDF, pero no encontró unidades de contenido recuperables.");
     }
 
     return {
       corpus,
+      aiPages: includePageImages ? pages.map((page) => ({
+        pageNumber: page.pageNumber,
+        extractedText: (page.readingLines || page.lines || [])
+          .map((line) => typeof line === "string" ? line : line?.text || "")
+          .filter(Boolean)
+          .join("\\n")
+          .trim(),
+        imageDataUrl: page.imageDataUrl || "",
+      })) : undefined,
       bibliography: [],
       sourceName: file.name,
       pages: pageCount,
@@ -499,12 +539,12 @@ async function readDocx(file) {
   };
 }
 
-export async function readMaterialFile(file) {
+export async function readMaterialFile(file, { includePageImages = false } = {}) {
   const name = file.name || "material";
   const ext = name.toLowerCase().split(".").pop();
   const documentId = makeDocumentId(name);
 
-  if (ext === "pdf") return readPdf(file);
+  if (ext === "pdf") return readPdf(file, { includePageImages });
   if (ext === "docx") return readDocx(file);
 
   if (!["txt", "md", "markdown", "json"].includes(ext)) {
