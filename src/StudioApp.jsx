@@ -467,12 +467,12 @@ export default function StudioApp() {
                       <strong>{item.title || "Sin título"}</strong>
                       <span>{item.role === "owner" ? "Responsable" : item.role === "editor" ? "Editor" : "Solo lectura"} · {item.status === "published" ? "Publicada" : item.status === "changes-pending" ? "Cambios pendientes" : "Borrador"}</span>
                     </button>
-                    {item.status === "draft" && item.role === "owner" && (
+                    {item.role === "owner" && (
                       <button
                         type="button"
-                        className="studio-course-delete"
-                        title="Eliminar cátedra"
-                        aria-label={'Eliminar cátedra ' + (item.title || "sin título")}
+                        className={"studio-course-delete" + (item.status !== "draft" ? " published-delete" : "")}
+                        title={item.status === "draft" ? "Eliminar cátedra borrador · doble confirmación" : "Eliminar cátedra publicada · doble confirmación"}
+                        aria-label={'Eliminar cátedra ' + (item.title || "sin título") + (item.status !== "draft" ? " publicada" : " borrador")}
                         onClick={(event) => {
                           event.stopPropagation();
                           handleDeleteCourse(item.courseId, item.title);
@@ -503,6 +503,7 @@ export default function StudioApp() {
       </aside>
 
       <div className="studio-content">
+        {notice && <div className="studio-global-notice">✓ {notice}</div>}
         {error && <div className="studio-global-error">⚠ {error}</div>}
         {loadingCourse && course && <div className="studio-global-loading">Cargando versión remota…</div>}
         {course && courseMeta ? (
