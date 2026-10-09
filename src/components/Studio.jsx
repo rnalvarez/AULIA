@@ -1113,6 +1113,25 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
     }
   }
 
+  async function discardExternalAnalysis(batch) {
+    try {
+      await deleteExternalAnalysisBatch(batch.id);
+      const remaining = await listExternalAnalysisBatches(course.id);
+      setExternalAnalysisBatches(remaining);
+      const partial = remaining.find(item => item.processed < item.totalPages);
+      setExternalDocumentProgress(partial ? {
+        status: "partial",
+        sourceName: partial.sourceName,
+        processed: partial.processed,
+        total: partial.totalPages,
+        message: "Importá las tandas restantes del documento para continuar.",
+      } : null);
+      setStatus("Se descartaron las tandas guardadas de " + batch.sourceName + ".");
+    } catch (error) {
+      setStatus(error?.message || "No se pudieron descartar las tandas externas.");
+    }
+  }
+
   function downloadExternalDocumentPrompt() {
     downloadTextFile(
       createExternalDocumentAnalysisPrompt(),
@@ -1899,6 +1918,7 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
               {externalAnalysisBatches.map(batch => <div className="studio-wf-ai-ready" key={batch.id}>
                 <span>{batch.sourceName}</span>
                 <small>{batch.processed}/{batch.totalPages} páginas acumuladas</small>
+                <button className="ghost" type="button" onClick={() => discardExternalAnalysis(batch)} disabled={busy}>Descartar tandas</button>
               </div>)}
             </div>}
           </div>}
@@ -1911,7 +1931,7 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
             <strong>{uploadProgress.phase === "complete" ? "✓ Carga completada" : uploadProgress.phase === "paused" ? "Análisis pausado; el archivo está guardado" : uploadProgress.phase === "error" ? "No se pudo completar la carga" : uploadProgress.phase === "processing" || uploadProgress.phase === "processing-batch" ? "IA analizando el documento…" : uploadProgress.phase === "rendering" ? "Preparando imágenes de las páginas…" : "Preparando documento…"}</strong>
             {uploadProgress.fileName && <span>{uploadProgress.fileName}</span>}
             {Number(uploadProgress.total) > 0 && <>
-              <span>{uploadProgress.processed || 0} de {uploadProgress.total} páginas completadas{uploadProgress.activePages?.length ? " · analizando ahora: " + uploadProgress.activePages.join(", ") : ""}</span>
+              <span>{uploadProgress.processed || 0} de {uploadProgress.total} {uploadProgress.phase === "rendering" ? "páginas preparadas" : uploadProgress.phase === "extracting" ? "páginas leídas" : "páginas analizadas"}{uploadProgress.activePages?.length ? " · analizando ahora: " + uploadProgress.activePages.join(", ") : ""}</span>
               <progress className="studio-wf-progress" max={uploadProgress.total} value={Math.min(uploadProgress.processed || 0, uploadProgress.total)}/>
             </>}
             {uploadProgress.message && <small>{uploadProgress.message}</small>}
