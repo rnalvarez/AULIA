@@ -154,7 +154,7 @@ function makeBatches(passages) {
   for (const passage of passages) {
     const formattedLength = passage.text.length + passage.title.length +
       passage.sourceName.length + passage.sectionPath.join(" › ").length + 180;
-    if (current.length && charCount + formattedLength > MAX_BATCH_CHARS) {
+    if (current.length && (current.length >= 2 || charCount + formattedLength > MAX_BATCH_CHARS)) {
       batches.push(current);
       current = [];
       charCount = 0;
@@ -269,7 +269,8 @@ async function requestIndexBatch({ apiKey, endpoint, models, course, batch, batc
     const expectedPassageIds = batch.map(passage => passage.passageId);
     const reviewedPassageIds = Array.isArray(parsed?.reviewedPassageIds) ? parsed.reviewedPassageIds.map(String) : [];
     const missingPassageIds = expectedPassageIds.filter(id => !reviewedPassageIds.includes(id));
-    if (missingPassageIds.length) {
+    const unexpectedPassageIds = reviewedPassageIds.filter(id => !expectedPassageIds.includes(id));
+    if (missingPassageIds.length || unexpectedPassageIds.length) {
       throw new Error("Groq no confirmó la revisión de todos los pasajes del lote " + batchNumber + ". El lote no se marcó como procesado; volvé a intentar para asegurar la cobertura completa.");
     }
     const entries = Array.isArray(parsed?.entries) ? parsed.entries : [];
