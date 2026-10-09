@@ -341,7 +341,64 @@ export default function StudioApp() {
     let removalOptimistic = false;
 
     try {
-      const prepared = await prepareTeacherCourseDeletion(session.token, courseId);
+      let prepared;
+      try {
+        prepared = await prepareTeacherCourseDeletion(session.token, courseId);
+      } catch (prepareError) {
+        const unsupportedAction = /acción no reconocida|accion no reconocida/i.test(
+          String(prepareError?.message || "")
+        );
+
+        // Keep legacy draft deletion working while the Apps Script backend is
+        // being updated. The old backend still independently refuses any
+        // published course, so this fallback can never remove a published one.
+        if (!unsupportedAction || appearsPublished) {
+          if (unsupportedAction && appearsPublished) {
+            throw new Error(
+              "Para eliminar una cátedra publicada, primero actualizá el backend de Apps Script con los archivos Code.gs y studio-data.gs de AULIA."
+            );
+          }
+          throw prepareError;
+        }
+
+        const exactLegacyTitle = window.prompt(
+          "SEGUNDA AUTORIZACIÓN\n\n" +
+          "Para confirmar el borrado del borrador, escribí exactamente su título:\n\n" +
+          displayedTitle
+        );
+        if (exactLegacyTitle === null) return;
+        if (exactLegacyTitle.trim() !== displayedTitle.trim()) {
+          setError("No se eliminó la cátedra: el título escrito no coincide exactamente. No se realizaron cambios.");
+          return;
+        }
+
+        // Compatibility with an older deployed Apps Script (drafts only).
+        await deleteTeacherCourse(session.token, courseId);
+        setCourses((current) => {
+          const next = current.filter((item) => item.courseId !== courseId);
+          writeCachedCourses(session.teacher?.email, next);
+          return next;
+        });
+        if (courseMeta?.courseId === courseId) {
+          setCourse(null);
+          setCourseMeta(null);
+          const url = new URL(window.location.href);
+          url.searchParams.delete("course");
+          window.history.replaceState({}, "", url);
+        }
+        setNotice("Cátedra borrador eliminada correctamente.");
+        return;
+      }
+
+      if (prepared.published && !appearsPublished) {
+        const publishedConfirmation = window.confirm(
+          "ATENCIÓN: EL BACKEND CONFIRMA QUE ESTA CÁTEDRA TIENE UNA VERSIÓN PUBLICADA.\n\n" +
+          "Si continuás, el enlace público dejará de funcionar. La planilla de alumnos se conservará.\n\n" +
+          "¿Confirmás que querés continuar?"
+        );
+        if (!publishedConfirmation) return;
+      }
+
       const authoritativeTitle = String(prepared.title || displayedTitle);
       const exactTitle = window.prompt(
         "SEGUNDA AUTORIZACIÓN\n\n" +
@@ -477,7 +534,7 @@ export default function StudioApp() {
                           event.stopPropagation();
                           handleDeleteCourse(item.courseId, item.title);
                         }}
-                        disabled={deletingCourseId === item.courseId}
+                        disabled={loadingCourses || deletingCourseId === item.courseId}
                       >
                         {deletingCourseId === item.courseId ? "…" : "×"}
                       </button>
