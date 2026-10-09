@@ -11,7 +11,7 @@ const MAX_RESPONSE_TOKENS = 800;
 const MAX_ASSISTANT_INSTRUCTIONS_CHARS = 1000;
 const MAX_MODE_INSTRUCTIONS_CHARS = 650;
 const MAX_CONCEPT_SUMMARY_CHARS = 420;
-const MAX_CORPUS_EXCERPT_CHARS = 1900;
+const MAX_CORPUS_EXCERPT_CHARS = 1400;
 const MAX_CONVERSATION_CHARS = 3600;
 const MAX_LATEST_MESSAGE_CHARS = 1800;
 
@@ -114,7 +114,7 @@ function buildSystemPrompt({ course, assistant, mode, retrieved }) {
   // No volver a incluirlos dentro del corpus: duplicaba tokens sin sumar evidencia.
   const retrievedCorpus = (retrieved || [])
     .filter(item => !conceptIds.has(String(item?.id || "")))
-    .slice(0, 2);
+    .slice(0, 4);
 
   const context = retrievedCorpus.map(item => {
     const title = promptText(item?.title || item?.id || "Unidad", 140);
@@ -161,6 +161,8 @@ function buildSystemPrompt({ course, assistant, mode, retrieved }) {
     "Objetivo: " + promptText(mode?.pedagogicalGoal || "", 400),
     curriculumContext,
     "El mapa curricular es una guía pedagógica de la cátedra, no una fuente factual adicional. Usalo para orientar la progresión y los prerrequisitos, pero basá las respuestas sobre contenidos únicamente en el corpus y las fuentes autorizadas.",
+    "Interpretá los textos con libertad académica razonable: relacioná ideas, conceptos y términos equivalentes cuando el material dé sustento para hacerlo. Podés formular inferencias, pero no las presentes como citas o afirmaciones explícitas del autor si son interpretaciones tuyas.",
+    "No afirmes que un concepto no está en la bibliografía solo porque no aparezca literalmente en los fragmentos recuperados. Si la evidencia seleccionada no alcanza, decí que no localizaste evidencia suficiente en los pasajes consultados; no concluyas que el libro completo no lo trata. No uses conocimiento externo como evidencia factual.",
     "Instrucciones: " + promptText(mode?.instructions || "", MAX_MODE_INSTRUCTIONS_CHARS),
     conceptItems
       ? "CONCEPTOS AUTORIZADOS PARA EL ANÁLISIS DE ESTA INTERACCIÓN:\\n" + conceptItems
