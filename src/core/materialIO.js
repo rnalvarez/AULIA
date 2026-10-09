@@ -411,7 +411,7 @@ async function readPdf(file, { includePageImages = false } = {}) {
         extractedText: (page.readingLines || page.lines || [])
           .map((line) => typeof line === "string" ? line : line?.text || "")
           .filter(Boolean)
-          .join("\\n")
+          .join("\n")
           .trim(),
         imageDataUrl: page.imageDataUrl || "",
       })) : undefined,
@@ -708,4 +708,163 @@ export function mergeImportedDocuments(existing, incoming) {
     }
   }
   return merged;
+}
+
+
+export function applyAIMultimodalAnalysis(material, pageResults, model = "qwen/qwen3.8-27b") {
+  const sourcePages = (material?.aiPages || []).slice().sort((a, b) => Number(a.pageNumber) - Number(b.pageNumber));
+  const byNumber = new Map((pageResults || []).map(page => [Number(page.pageNumber), page]));
+  if (!sourcePages.length || sourcePages.some(page => !byNumber.has(Number(page.pageNumber)))) {
+    throw new Error("El análisis multimodal no cubrió todas las páginas. No se incorporó una segmentación parcial.");
+  }
+
+  const sections = [];
+  const warnings = [];
+  const sourceDocumentId = material?.document?.id || makeDocumentId(material?.sourceName || "material");
+  const confidenceValues = [];
+
+  for (const sourcePage of sourcePages) {
+    const pageNumber = Number(sourcePage.pageNumber);
+    const analysis = byNumber.get(pageNumber) || {};
+    const rawText = normalizeWhitespace(sourcePage.extractedText || "");
+    const transcription = normalizeWhitespace(analysis.transcription || "");
+    const primaryText = transcription || rawText;
+    const visualElements = Array.isArray(analysis.visualElements) ? analysis.visualElements : [];
+    const visualText = visualElements.map(element => {
+      const kind = String(element.kind || "elemento visual").trim();
+      const title = String(element.title || "").trim();
+      const description = String(element.description || "").trim();
+      const table = String(element.tableMarkdown || "").trim();
+      const transcriptionText = String(element.transcribedText || "").trim();
+      return [
+        "[Elemento visual: " + kind + (title ? " · " + title : "") + " · página " + pageNumber + "]",
+        description,
+        transcriptionText ? "Texto, etiquetas o valores visibles: " + transcriptionText : "",
+        table ? "Tabla reconstruida a partir de la página:\n" + table : "",
+      ].filter(Boolean).join("\n");
+    }).filter(Boolean);
+
+    const body = [
+      primaryText,
+      visualText.length ? "LECTURA VISUAL ASISTIDA POR IA\n" + visualText.join("\n\n") : "",
+    ].filter(Boolean).join("\n\n").trim();
+
+    const sectionTitle = String(analysis.sectionTitle || analysis.sectionPath?.slice(-1)?.[0] || "Material general").trim();
+    const sectionPath = Array.isArray(analysis.sectionPath) && analysis.sectionPath.length
+      ? analysis.sectionPath.map(value => String(value || "").trim()).filter(Boolean)
+      : [sectionTitle || "Material general"];
+    const key = sectionPath.join(" › ") + "::" + sectionTitle;
+    const confidence = Math.max(0, Math.min(1, Number(analysis.confidence ?? 0.5) || 0));
+    confidenceValues.push(confidence);
+    const needsReview = Boolean(analysis.needsReview || (!primaryText && visualText.length === 0));
+    const reviewNote = String(analysis.reviewNotes || "").trim();
+
+    if (needsReview) {
+      warnings.push("Página " + pageNumber + (reviewNote ? ": " + reviewNote : ": requiere revisión docente de la lectura visual."));
+    }
+
+    const pageContent = body || "[Página " + pageNumber + ": la IA no pudo recuperar texto legible. Requiere revisión docente.]";
+    const previous = sections[sections.length - 1];
+    if (previous && previous._key === key && Number(previous.sourcePageEnd) === pageNumber - 1) {
+      previous.content += "\n\n" + pageContent;
+      previous.sourcePageEnd = pageNumber;
+      previous.confidenceTotal += confidence;
+      previous.confidenceCount += 1;
+      previous.confidence = previous.confidenceTotal / previous.confidenceCount;
+      previous.needsReview = previous.needsReview || needsReview;
+      previous.visualElementCount += visualElements.length;
+      if (rawText && transcription && rawText !== transcription) {
+        previous.sourceTextOriginal = (previous.sourceTextOriginal ? previous.sourceTextOriginal + "\n\n" : "") +
+          "[Página " + pageNumber + "]\n" + rawText;
+        previous.reviewNotes = [previous.reviewNotes, "Página " + pageNumber + ": se conservó la extracción original porque la IA propuso una transcripción alternativa; cotejar ambas versiones."].filter(Boolean).join("\n");
+        previous.needsReview = true;
+      }
+      if (reviewNote) previous.reviewNotes = [previous.reviewNotes, "Página " + pageNumber + ": " + reviewNote].filter(Boolean).join("\n");
+    } else {
+      sections.push({
+        _key: key,
+        title: sectionTitle || "Material general",
+        level: Math.max(1, sectionPath.length),
+        sectionPath,
+        content: pageContent,
+        sourcePageStart: pageNumber,
+        sourcePageEnd: pageNumber,
+        segmentationSource: "ai-multimodal",
+        confidence,
+        confidenceTotal: confidence,
+        confidenceCount: 1,
+        evidence: ["Segmentación semántica y lectura visual mediante " + model],
+        visualElementCount: visualElements.length,
+        needsReview,
+        reviewNotes: reviewNote,
+        ...(rawText && transcription && rawText !== transcription ? {
+          sourceTextOriginal: "[Página " + pageNumber + "]\n" + rawText,
+          reviewNotes: [reviewNote, "La IA propuso una transcripción alternativa; cotejarla con la extracción original."].filter(Boolean).join("\n"),
+          needsReview: true,
+        } : {}),
+        scope: "included",
+        priority: "normal",
+        teacherTopic: "",
+        teacherConcepts: [],
+        teacherLimit: "",
+      });
+    }
+  }
+
+  const cleanSections = sections.map(section => {
+    const { _key, confidenceTotal, confidenceCount, ...clean } = section;
+    return clean;
+  });
+  const confidence = confidenceValues.length
+    ? confidenceValues.reduce((sum, value) => sum + value, 0) / confidenceValues.length
+    : 0;
+  const baseAnalysis = material.analysis || {};
+  const analysis = {
+    ...baseAnalysis,
+    version: 3,
+    method: "ai-multimodal",
+    documentType: "documento analizado con IA multimodal",
+    confidence,
+    pageCount: sourcePages.length,
+    sectionCount: cleanSections.length,
+    lowConfidenceSections: cleanSections.filter(section => section.confidence < 0.62 || section.needsReview).length,
+    warnings,
+    model,
+    aiAnalyzedPages: pageResults.length,
+  };
+  const corpus = buildSectionFragments({
+    sections: cleanSections,
+    sourceName: material.sourceName,
+    documentId: sourceDocumentId,
+    sourcePageCount: sourcePages.length,
+  });
+  if (!corpus.length) {
+    throw new Error("La IA no produjo unidades consultables. No se incorporó el documento.");
+  }
+
+  const document = buildDocumentMeta({
+    file: { name: material.sourceName || "Material.pdf" },
+    documentId: sourceDocumentId,
+    sections: cleanSections,
+    pages: sourcePages.length,
+    format: "pdf",
+    analysis,
+  });
+
+  return {
+    ...material,
+    corpus,
+    document,
+    analysis,
+    warnings,
+    aiPages: undefined,
+    aiAnalysis: {
+      provider: "Groq",
+      model,
+      method: "multimodal-page-analysis",
+      pagesProcessed: pageResults.length,
+      pagesTotal: sourcePages.length,
+      needsReview: warnings.length > 0,
+    },
+  };
 }
