@@ -91,6 +91,7 @@ function buildSystemPrompt({ course, assistant, mode, retrieved }) {
       "FUENTE: " + promptText(ref.sourceName || ref.title || "", 120),
       ref.sectionPath?.length ? "SECCIÓN: " + promptText(ref.sectionPath.join(" › "), 150) : "",
       ref.pageStart ? "PÁGINAS: " + ref.pageStart + (ref.pageEnd && ref.pageEnd !== ref.pageStart ? "-" + ref.pageEnd : "") : "",
+      ref.printedPageStart ? "PÁGINAS IMPRESAS: " + ref.printedPageStart + (ref.printedPageEnd && ref.printedPageEnd !== ref.printedPageStart ? "-" + ref.printedPageEnd : "") : "",
       "PASO DE EVIDENCIA: " + promptText(ref.excerpt || "", 210),
     ].filter(Boolean).join(" · ")).join("\\n");
     return [
@@ -199,6 +200,7 @@ function buildSystemPrompt({ course, assistant, mode, retrieved }) {
     "Instrucciones: " + promptText(mode?.instructions || "", MAX_MODE_INSTRUCTIONS_CHARS),
     knowledgeContext ? "BASE DE CONOCIMIENTO CONSTRUIDA A PARTIR DE LA BIBLIOGRAFÍA:\\n" + knowledgeContext : "",
     "Las entradas de la base conceptual se extrajeron de la bibliografía de esta cátedra. Usalas para reconocer conceptos aunque el estudiante emplee sinónimos o paráfrasis; verificá sus evidencias y páginas antes de afirmar que un tema no aparece.",
+    "Cuando sea relevante y la referencia esté disponible, indicá el capítulo, la sección o la página que respalda la explicación. No inventes referencias ni presentes una paráfrasis del índice como cita textual.",
     conceptItems
       ? "CONCEPTOS AUTORIZADOS PARA EL ANÁLISIS DE ESTA INTERACCIÓN:\\n" + conceptItems
       : "No hay conceptos recuperados para clasificar esta interacción.",
