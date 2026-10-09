@@ -153,9 +153,9 @@ async function requestBatch({ apiKey, courseTitle, pages, batchNumber, signal })
       error.status = response.status;
       error.retryAfter = response.headers.get("retry-after") || "";
       if (response.status === 401) error.message = "La API key de Groq no es válida. Revisá la clave docente en Studio.";
-      if (response.status === 413) error.message = "La tanda de imágenes supera el tamaño admitido por Groq. Volvé a cargar el archivo para reintentar con el avance conservado.";
+      if (response.status === 413) error.message = "La tanda de imágenes supera el tamaño admitido por Groq. El archivo queda guardado; usá «Reanudar análisis» para continuar.";
       if (response.status === 429) {
-        error.message = "Groq alcanzó un límite temporal o de cuota durante el análisis multimodal. Se conservó el avance de las páginas terminadas; volvé a cargar el mismo PDF para reanudar cuando se restablezca el límite.";
+        error.message = "Groq alcanzó un límite temporal o de cuota durante el análisis multimodal. Se conservó el avance de las páginas terminadas; usá «Reanudar análisis» cuando se restablezca el límite.";
       }
       throw error;
     }
@@ -164,7 +164,7 @@ async function requestBatch({ apiKey, courseTitle, pages, batchNumber, signal })
     const raw = String(choice?.message?.content || "").trim();
     if (!raw) throw new Error("Groq devolvió una respuesta vacía para las páginas " + pages.map(page => page.pageNumber).join(", ") + ".");
     if (choice?.finish_reason === "length") {
-      const error = new Error("La respuesta visual quedó truncada. El avance de las tandas anteriores se conservó; volvé a cargar el PDF para continuar.");
+      const error = new Error("La respuesta visual quedó truncada. El avance de las tandas anteriores se conservó; usá «Reanudar análisis» para continuar.");
       error.code = "AULIA_OUTPUT_TRUNCATED";
       throw error;
     }
@@ -191,7 +191,7 @@ async function requestBatch({ apiKey, courseTitle, pages, batchNumber, signal })
       normalized.push(normalisePage(page, number));
     }
     if (received.size !== expected.size) {
-      throw new Error("La IA no analizó todas las páginas de la tanda. No se marcó el lote como completado; volvé a cargar el PDF para reintentar.");
+      throw new Error("La IA no analizó todas las páginas de la tanda. No se marcó el lote como completado; usá «Reanudar análisis» para reintentar esa tanda.");
     }
     return { pages: normalized, model: data?.model || model };
   }
