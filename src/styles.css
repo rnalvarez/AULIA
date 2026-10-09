@@ -1933,3 +1933,51 @@ button { border: 0; }
   .studio-wf-knowledge-setup .studio-wf-tool-row { flex-direction:column; align-items:stretch; }
   .studio-wf-knowledge-setup .studio-wf-tool-row > * { width:100%; box-sizing:border-box; }
 }
+
+
+.studio-wf-source-details {
+  margin:0 0 12px;
+  padding:0 12px 10px;
+  border:1px solid #2c2b27;
+  border-radius:10px;
+  background:#141414;
+}
+.studio-wf-source-details > summary {
+  padding:11px 0 2px;
+  color:#9e9688;
+  cursor:pointer;
+  font-size:10px;
+  font-weight:600;
+}
+.studio-wf-source-details > summary span {
+  color:#625d54;
+  font-weight:400;
+}
+.studio-wf-source-details[open] > summary { margin-bottom:2px; color:#d7cfc1; }
+.studio-wf-source-details .studio-wf-panel {
+  margin:10px 0 0;
+  padding:12px;
+}
+.studio-wf-extracted-text {
+  margin:8px 0;
+  border:1px solid #2d2b27;
+  border-radius:8px;
+  background:#141413;
+}
+.studio-wf-extracted-text > summary {
+  padding:7px 9px;
+  color:#8f887d;
+  cursor:pointer;
+  font-size:9px;
+}
+.studio-wf-extracted-text[open] > summary { border-bottom:1px solid #2d2b27; color:#d3cbbd; }
+.studio-wf-extracted-text pre {
+  max-height:320px;
+  overflow:auto;
+  margin:0;
+  padding:10px;
+  color:#a9a195;
+  font:10px/1.6 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  white-space:pre-wrap;
+  overflow-wrap:anywhere;
+}
