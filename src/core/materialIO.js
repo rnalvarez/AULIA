@@ -215,6 +215,8 @@ function buildDocumentMeta({
           sectionCount: Number(analysis.sectionCount || (sections || []).length),
           lowConfidenceSections: Number(analysis.lowConfidenceSections || 0),
           warnings: Array.isArray(analysis.warnings) ? analysis.warnings : [],
+          model: String(analysis.model || ""),
+          aiAnalyzedPages: Number(analysis.aiAnalyzedPages || 0),
         }
       : null,
     sections: (sections || []).map((section, index) => ({
@@ -232,6 +234,7 @@ function buildDocumentMeta({
       visualElementCount: Number(section.visualElementCount || 0),
       needsReview: Boolean(section.needsReview),
       reviewNotes: String(section.reviewNotes || ""),
+      ...(section.sourceTextOriginal ? { sourceTextOriginal: String(section.sourceTextOriginal) } : {}),
       childrenCount: Number(section.childrenCount || 0),
       scope: section.scope || "included",
       priority: section.priority || "normal",
