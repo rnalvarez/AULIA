@@ -1824,30 +1824,106 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
           </div></Row>)}</div> : <Empty title="Todavía no cargaste fuentes." text="Podés agregarlas manualmente o incorporarlas desde un JSON." action={<button className="ghost" type="button" onClick={addBibliography}>Agregar primera fuente</button>}/>}
           </Panel>
         </details>
-        {!materialSections.length && <Panel
+        <Panel
           eyebrow="IA PARA LA CARGA"
-          title="Analizá los PDF desde la primera lectura"
-          description="Con una clave personal de Groq, AULIA renderiza las páginas y usa IA multimodal para reconocer la estructura semántica, leer tablas y gráficos, y recuperar texto de escaneos. La lectura visual se integra al corpus antes de construir la base conceptual."
+          title="Elegí cómo analizar el documento"
+          description="Podés analizar los PDF con Groq desde AULIA o utilizar una IA externa. El progreso queda visible y los análisis interrumpidos se pueden reanudar sin seleccionar el PDF otra vez."
         >
-          {studioApiKey
-            ? <div className="studio-wf-ai-ready"><span>● IA multimodal lista para la carga</span><small>La clave permanece en esta sesión del navegador. El análisis por páginas se guarda localmente y puede reanudarse si Groq alcanza un límite temporal.</small><button className="ghost" type="button" onClick={() => setShowStudioKey(true)} disabled={busy}>Cambiar clave</button></div>
-            : <div className="studio-wf-ai-setup">
-                <div><strong>Clave personal de Groq</strong><span>Configurala antes de subir el PDF para analizar imágenes y texto durante la carga. Sin clave, AULIA conservará la extracción convencional disponible.</span></div>
-                <div className="studio-wf-ai-key-row">
-                  <input type="password" value={studioKeyInput} placeholder="gsk_…" autoComplete="off" onChange={(event) => setStudioKeyInput(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") saveTeacherKey(); }}/>
-                  <button className="ghost" type="button" onClick={saveTeacherKey} disabled={!studioKeyInput.trim() || !canEdit || busy}>Guardar clave</button>
-                </div>
-              </div>}
-          <p className="studio-wf-security-note">En esta primera versión, la lectura visual multimodal se aplica a PDF. DOCX, TXT y Markdown conservan su extracción actual; el análisis conceptual posterior sigue disponible para esos formatos.</p>
-          {showStudioKey && studioApiKey && <div className="studio-wf-ai-setup">
-            <div><strong>Cambiar clave de Groq</strong><span>Ingresá una nueva clave o quitá la actual.</span></div>
-            <div className="studio-wf-ai-key-row">
-              <input type="password" value={studioKeyInput} placeholder="gsk_…" autoComplete="off" onChange={(event) => setStudioKeyInput(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") saveTeacherKey(); }}/>
-              <button className="ghost" type="button" onClick={saveTeacherKey} disabled={!studioKeyInput.trim() || !canEdit || busy}>Guardar clave</button>
-              <button className="ghost" type="button" onClick={() => { forgetTeacherKey(); setShowStudioKey(false); }} disabled={busy}>Quitar</button>
+          <div className="studio-wf-knowledge-provider">
+            <button type="button" className={ingestionProvider === "groq" ? "active" : ""} onClick={() => setIngestionProvider("groq")} disabled={!canEdit || busy} aria-pressed={ingestionProvider === "groq"}>
+              <strong>IA interna · Groq</strong><span>Leer páginas, tablas y gráficos durante la carga</span>
+            </button>
+            <button type="button" className={ingestionProvider === "external" ? "active" : ""} onClick={() => setIngestionProvider("external")} disabled={!canEdit || busy} aria-pressed={ingestionProvider === "external"}>
+              <strong>IA externa</strong><span>Usar ChatGPT, Claude, Gemini u otro servicio</span>
+            </button>
+            <button type="button" className={ingestionProvider === "local" ? "active" : ""} onClick={() => setIngestionProvider("local")} disabled={!canEdit || busy} aria-pressed={ingestionProvider === "local"}>
+              <strong>Extracción local</strong><span>Sin IA en la etapa de carga</span>
+            </button>
+          </div>
+
+          {ingestionProvider === "groq" && <>
+            {studioApiKey
+              ? <div className="studio-wf-ai-ready"><span>● IA multimodal lista</span><small>Se analizarán texto e imágenes del PDF. El archivo se guarda en este navegador para reanudar si Groq alcanza un límite.</small><button className="ghost" type="button" onClick={() => setShowStudioKey(true)} disabled={busy}>Cambiar clave</button></div>
+              : <div className="studio-wf-ai-setup">
+                  <div><strong>Clave personal de Groq</strong><span>Ingresala para activar el análisis multimodal durante la carga. Sin clave, AULIA no puede ejecutar este paso.</span></div>
+                  <div className="studio-wf-ai-key-row">
+                    <input type="password" value={studioKeyInput} placeholder="gsk_…" autoComplete="off" onChange={(event) => setStudioKeyInput(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") saveTeacherKey(); }}/>
+                    <button className="ghost" type="button" onClick={saveTeacherKey} disabled={!studioKeyInput.trim() || !canEdit || busy}>Guardar clave</button>
+                  </div>
+                </div>}
+            {showStudioKey && studioApiKey && <div className="studio-wf-ai-setup">
+              <div><strong>Cambiar clave de Groq</strong><span>Ingresá una nueva clave o quitá la actual.</span></div>
+              <div className="studio-wf-ai-key-row">
+                <input type="password" value={studioKeyInput} placeholder="gsk_…" autoComplete="off" onChange={(event) => setStudioKeyInput(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") saveTeacherKey(); }}/>
+                <button className="ghost" type="button" onClick={saveTeacherKey} disabled={!studioKeyInput.trim() || !canEdit || busy}>Guardar clave</button>
+                <button className="ghost" type="button" onClick={() => { forgetTeacherKey(); setIngestionProvider("external"); }} disabled={busy}>Quitar</button>
+              </div>
+            </div>}
+            <p className="studio-wf-security-note">Aplicable a PDF. DOCX, TXT y Markdown conservan la extracción local y luego pueden indexarse con Groq o una IA externa.</p>
+          </>}
+
+          {ingestionProvider === "external" && <div className="studio-wf-external-help">
+            <h3>Análisis del PDF con una IA externa</h3>
+            <p>En este recorrido, la IA externa lee directamente el PDF original. No necesitás subirlo primero a AULIA ni configurar una clave de Groq.</p>
+            <ol>
+              <li><strong>Descargá las instrucciones.</strong> El archivo explica cómo leer el documento y qué JSON debe producir la IA.</li>
+              <li><strong>Adjuntá dos archivos en ChatGPT, Claude, Gemini u otro servicio.</strong> El PDF original de la bibliografía y el TXT de instrucciones. Pedile que analice el documento con esas reglas.</li>
+              <li><strong>Si el documento es largo, trabajá por tandas.</strong> La IA debe conservar el mismo nombre del PDF y total de páginas en todos los JSON. Guardá cada tanda como un archivo .json independiente.</li>
+              <li><strong>Importá los resultados aquí.</strong> Podés seleccionar varias tandas juntas o importar una tanda ahora y continuar después. AULIA guarda la cobertura localmente y no incorpora el documento hasta que todas las páginas estén cubiertas.</li>
+            </ol>
+            <div className="studio-wf-tool-row">
+              <button className="primary" type="button" onClick={downloadExternalDocumentPrompt} disabled={!canEdit || busy}>1. Descargar instrucciones (.txt)</button>
+              <label className={"ghost studio-file" + (!canEdit || busy ? " disabled" : "")}>2. Importar análisis (.json)<input type="file" accept="application/json,.json,text/plain,.txt" multiple onChange={importExternalDocumentAnalysis} disabled={!canEdit || busy}/></label>
             </div>
+            <small className="studio-wf-external-note">Los resultados parciales se almacenan en este navegador. Para completar el análisis, importá las tandas restantes del mismo PDF sin cambiar el nombre de origen ni el total de páginas.</small>
+            {externalDocumentProgress && <div className={"studio-wf-ai-report " + (externalDocumentProgress.status === "complete" ? "ok" : externalDocumentProgress.status === "error" ? "error" : "")}>
+              <strong>{externalDocumentProgress.status === "complete" ? "✓ Análisis externo completo" : externalDocumentProgress.status === "partial" ? "Análisis externo parcial" : externalDocumentProgress.status === "error" ? "No se pudo completar la importación" : "Importando análisis externo…"}</strong>
+              {externalDocumentProgress.sourceName && <span>{externalDocumentProgress.sourceName}</span>}
+              {Number(externalDocumentProgress.total) > 0 && <>
+                <span>{externalDocumentProgress.processed || 0} de {externalDocumentProgress.total} páginas recibidas</span>
+                <progress className="studio-wf-progress" max={externalDocumentProgress.total} value={Math.min(externalDocumentProgress.processed || 0, externalDocumentProgress.total)}/>
+              </>}
+              {externalDocumentProgress.message && <small>{externalDocumentProgress.message}</small>}
+              {externalDocumentProgress.error && <small>{externalDocumentProgress.error}</small>}
+            </div>}
+            {externalAnalysisBatches.length > 0 && <div className="studio-wf-stack">
+              <strong>Documentos externos guardados para continuar</strong>
+              {externalAnalysisBatches.map(batch => <div className="studio-wf-ai-ready" key={batch.id}>
+                <span>{batch.sourceName}</span>
+                <small>{batch.processed}/{batch.totalPages} páginas acumuladas</small>
+              </div>)}
+            </div>}
           </div>}
-        </Panel>}
+
+          {ingestionProvider === "local" && <div className="studio-wf-security-note">
+            La extracción local no utiliza IA para interpretar la estructura ni los elementos visuales. Elegí este modo solo si querés cargar material sin análisis multimodal y construir la base conceptual después.
+          </div>}
+
+          {uploadProgress && <div className={"studio-wf-ai-report " + (uploadProgress.phase === "complete" ? "ok" : uploadProgress.phase === "paused" || uploadProgress.phase === "error" ? "error" : "")}>
+            <strong>{uploadProgress.phase === "complete" ? "✓ Carga completada" : uploadProgress.phase === "paused" ? "Análisis pausado; el archivo está guardado" : uploadProgress.phase === "error" ? "No se pudo completar la carga" : uploadProgress.phase === "processing" || uploadProgress.phase === "processing-batch" ? "IA analizando el documento…" : uploadProgress.phase === "rendering" ? "Preparando imágenes de las páginas…" : "Preparando documento…"}</strong>
+            {uploadProgress.fileName && <span>{uploadProgress.fileName}</span>}
+            {Number(uploadProgress.total) > 0 && <>
+              <span>{uploadProgress.processed || 0} de {uploadProgress.total} páginas completadas{uploadProgress.activePages?.length ? " · analizando ahora: " + uploadProgress.activePages.join(", ") : ""}</span>
+              <progress className="studio-wf-progress" max={uploadProgress.total} value={Math.min(uploadProgress.processed || 0, uploadProgress.total)}/>
+            </>}
+            {uploadProgress.message && <small>{uploadProgress.message}</small>}
+            {uploadProgress.model && <small>Modelo: {uploadProgress.model}</small>}
+            {uploadProgress.error && <small>{uploadProgress.error}</small>}
+            {uploadProgress.phase === "paused" && uploadProgress.pendingId && <button className="primary" type="button" onClick={() => resumePendingPdf({ id: uploadProgress.pendingId, fileName: uploadProgress.fileName })} disabled={!canEdit || busy}>Reanudar análisis guardado</button>}
+          </div>}
+
+          {pendingPdfs.length > 0 && <div className="studio-wf-stack">
+            <strong>PDF guardados para reanudar</strong>
+            {pendingPdfs.map(pending => <div className="studio-wf-ai-ready" key={pending.id}>
+              <span>{pending.fileName}</span>
+              <small>Archivo guardado en este navegador. No necesitás volver a seleccionarlo.</small>
+              <div className="studio-wf-panel-actions">
+                <button className="primary" type="button" onClick={() => resumePendingPdf(pending)} disabled={!canEdit || busy}>Reanudar análisis</button>
+                <button className="ghost" type="button" onClick={() => discardPendingPdf(pending)} disabled={busy}>Descartar</button>
+              </div>
+            </div>)}
+          </div>}
+        </Panel>
 
         <Panel
           eyebrow="MATERIAL"
