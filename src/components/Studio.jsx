@@ -5,7 +5,7 @@ import { readMaterialFile, materialToCorpus, mergeImportedBibliography, mergeImp
 import { requestTeacherProposal } from "../services/llm/teacherProposal.js";
 import { buildKnowledgeBase, buildKnowledgePassages, isSupportedKnowledgeExcerpt, normalizeExternalKnowledgeEntries, mergeKnowledgeBaseEntries } from "../services/llm/knowledgeBase.js";
 import { createExternalKnowledgePackage, createExternalKnowledgePrompt, downloadJsonFile, EXTERNAL_KNOWLEDGE_OUTPUT_FORMAT } from "../core/externalKnowledgeBaseIO.js";
-import { isKnowledgeBaseCurrent, summarizeKnowledgeBase, knowledgeCorpusSignature } from "../core/knowledgeBase.js";
+import { KNOWLEDGE_BASE_VERSION, isKnowledgeBaseCurrent, summarizeKnowledgeBase, knowledgeCorpusSignature, legacyKnowledgeCorpusSignature } from "../core/knowledgeBase.js";
 import { clearStudioApiKey, isGroqApiKey, loadStudioApiKey, saveStudioApiKey } from "../utils/studioStorage.js";
 import LegalNotice from "./LegalNotice.jsx";
 
@@ -13,8 +13,8 @@ const STORAGE_PREFIX = "aulia:studio:";
 const VERSION = "0.7";
 const STEPS = [
   ["overview", "01", "Cátedra"],
-  ["material", "02", "Material"],
-  ["proposal", "03", "Organización"],
+  ["material", "02", "Bibliografía"],
+  ["proposal", "03", "Diseño pedagógico"],
   ["interaction", "04", "Interacción"],
   ["commissions", "05", "Comisiones"],
 ];
@@ -432,6 +432,7 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
   const [analysisReport, setAnalysisReport] = useState(null);
   const [knowledgeBaseReport, setKnowledgeBaseReport] = useState(null);
   const [showExternalPrompt, setShowExternalPrompt] = useState(false);
+  const [knowledgeProvider, setKnowledgeProvider] = useState("groq");
 
   useEffect(() => {
     const saved = localStorage.getItem(storageKey);
@@ -1075,17 +1076,18 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
       return;
     }
     if (!studioApiKey) {
+      setKnowledgeProvider("groq");
       setShowStudioKey(true);
-      setStatus("Configurá tu clave propia de Groq para construir el índice de toda la bibliografía.");
+      setStep("material");
+      setStatus("Para analizar con Groq, configurá tu clave de IA docente en el paso Bibliografía. También podés elegir análisis externo.");
       return;
     }
 
-    const activeFragments = (draft.corpus || []).filter((item) =>
-      (item?.scope || "included") !== "excluded" &&
+    const analyzableFragments = (draft.corpus || []).filter((item) =>
       String(item?.content || item?.explanation || item?.summary || "").trim()
     );
-    if (!activeFragments.length) {
-      setStatus("No hay fragmentos activos para indexar. Cambiá el alcance de al menos una sección a Incluido o Referencial.");
+    if (!analyzableFragments.length) {
+      setStatus("No hay texto extraíble en la bibliografía. Revisá la carga de los documentos antes de analizarlos.");
       return;
     }
 
@@ -1100,7 +1102,7 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
       requests: latestIndex?.requestCount || 0,
       error: "",
     });
-    setStatus("Preparando el análisis de toda la bibliografía. El proceso se realiza por lotes y se puede reanudar si Groq limita el uso.");
+    setStatus("Preparando la base conceptual de toda la bibliografía. El proceso se realiza por tandas y se puede reanudar si hay límites temporales.");
 
     const persistProgress = (index) => {
       latestIndex = index;
@@ -1135,7 +1137,7 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
             error: progress.error || "",
           });
           if (complete) {
-            setStatus("Base conceptual completa. Guardá la cátedra para conservar el índice en el backend antes de publicarla.");
+            setStatus("Base conceptual completa. Ahora revisá el alcance y la prioridad pedagógica de cada sección; después guardá y publicá.");
           } else if (progress.error) {
             setStatus(progress.error);
           } else {
@@ -1272,10 +1274,18 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
 
   const knowledgeBaseCurrent = isKnowledgeBaseCurrent(draft);
   const knowledgeBaseStats = summarizeKnowledgeBase(draft.knowledgeBase);
+  const currentKnowledgeSignature = knowledgeCorpusSignature(draft.corpus || []);
+  const legacyKnowledgeSignature = legacyKnowledgeCorpusSignature(draft.corpus || []);
   const knowledgeBaseResumable = Boolean(
-    draft.knowledgeBase?.sourceSignature === knowledgeCorpusSignature(draft.corpus || []) &&
-    (draft.knowledgeBase?.processedPassageIds || []).length > 0
-  );
+    (
+      draft.knowledgeBase?.sourceSignature === currentKnowledgeSignature &&
+      draft.knowledgeBase?.version === KNOWLEDGE_BASE_VERSION
+    ) ||
+    (
+      draft.knowledgeBase?.sourceSignature === legacyKnowledgeSignature &&
+      draft.knowledgeBase?.version === 1
+    )
+  ) && (draft.knowledgeBase?.processedPassageIds || []).length > 0;
   const materialSections = useMemo(() => buildMaterialStructure(draft), [draft.documents, draft.corpus]);
   const materialDocumentGroups = useMemo(() => {
     const documents = Array.isArray(draft.documents) ? draft.documents : [];
@@ -1383,7 +1393,7 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
       </>}
 
       {step === "material" && <>
-        <div className="studio-wf-hero"><div className="eyebrow">PASO 02 · MATERIAL</div><h1>Cargá la bibliografía y el material de trabajo.</h1><p>AULIA primero organiza el documento y después propone su estructura pedagógica. No necesitás crear conceptos ni fragmentos a mano.</p></div>
+        <div className="studio-wf-hero"><div className="eyebrow">PASO 02 · BIBLIOGRAFÍA</div><h1>Una sola carga para preparar la base de conocimiento.</h1><p>Primero cargá los documentos y analizá toda la bibliografía con Groq o una IA externa. Después revisá las secciones detectadas y decidí qué podrá consultar el chatbot y con qué prioridad pedagógica.</p></div>
         <Panel eyebrow="BIBLIOGRAFÍA" title="Fuentes de la cátedra" description="Libros, apuntes o materiales principales." actions={<button className="ghost" type="button" onClick={addBibliography} disabled={!canEdit}>+ Agregar fuente</button>}>
           {draft.bibliography?.length ? <div className="studio-wf-stack">{draft.bibliography.map((x, i) => <Row key={x.id || i} title={x.title} meta={[x.author, x.year].filter(Boolean).join(" · ")} onRemove={() => remove("bibliography", i)}><div className="studio-wf-grid">
             <Field label="Título" value={x.title} onChange={(v) => edit("bibliography", i, { title: v })}/><Field label="Autor" value={x.author} onChange={(v) => edit("bibliography", i, { author: v })}/><Field label="Editorial" value={x.publisher} onChange={(v) => edit("bibliography", i, { publisher: v })}/><Field label="Año" value={x.year} onChange={(v) => edit("bibliography", i, { year: v })}/><Field label="Rol" value={x.role} onChange={(v) => edit("bibliography", i, { role: v })}/>
@@ -1392,7 +1402,7 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
         <Panel
           eyebrow="MATERIAL"
           title="Bibliografía y corpus de la cátedra"
-          description="AULIA releva cada PDF antes de segmentarlo. Usa las evidencias disponibles —índice, marcadores, estructura etiquetada, tipografía, geometría y consistencia— y evita inventar secciones cuando la evidencia es insuficiente. Todo queda incluido por defecto."
+          description="AULIA extrae el texto y propone una segmentación inicial. Luego la IA construye la base conceptual y vos revisás el alcance y la prioridad de cada sección."
           actions={<label className="primary studio-wf-file-btn">{busy ? "Procesando…" : "Cargar material"}<input type="file" accept=".txt,.md,.markdown,.json,.pdf,.docx,text/plain,text/markdown,application/json,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document" multiple onChange={importMaterial} disabled={busy}/></label>}
         >
           {materialSections.length ? <>
@@ -1409,7 +1419,7 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
             </div>
 
             <div className="studio-wf-structure-note">
-              El estado inicial de todo material es <strong>Incluido</strong>. La prioridad organiza el foco docente sin eliminar contenido.
+              La IA analiza primero <strong>toda la bibliografía cargada</strong>. Después podés cambiar el alcance y la prioridad sin repetir el análisis: esas decisiones se aplican al recuperar información para el chatbot. Todo comienza como Incluido, con prioridad Complementario.
             </div>
 
             <div className="studio-wf-material-documents">
@@ -1527,11 +1537,11 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
             </div>
           </> : <Empty title="El corpus está vacío." text="Empezá cargando un PDF, DOCX, TXT, Markdown o JSON. AULIA conservará toda la estructura detectada y la dejará incluida por defecto."/>}
         </Panel>
-        <div className="studio-wf-next"><button className="primary" type="button" onClick={() => setStep("proposal")}>Ir a la propuesta pedagógica →</button></div>
+        <div className="studio-wf-next"><button className="primary" type="button" onClick={() => setStep("proposal")}>Continuar al diseño pedagógico →</button></div>
       </>}
 
       {step === "proposal" && <>
-        <div className="studio-wf-hero"><div className="eyebrow">PASO 03 · PROPUESTA</div><h1>La organización pedagógica empieza con las decisiones del docente.</h1><p>AULIA conserva la bibliografía original y construye un índice conceptual automático para ayudar al chatbot a encontrar definiciones, sinónimos, distinciones y relaciones entre ideas. La propuesta pedagógica y la base de conocimiento son procesos distintos.</p></div>
+        <div className="studio-wf-hero"><div className="eyebrow">PASO 03 · DISEÑO PEDAGÓGICO</div><h1>Diseñá la experiencia de aprendizaje.</h1><p>La base de conocimiento y su alcance se preparan en Bibliografía. Esta etapa es opcional y reúne la propuesta pedagógica y el mapa curricular; no hace falta completarla para organizar el material.</p></div>
 
         <Panel
           eyebrow="BASE DE CONOCIMIENTO"
