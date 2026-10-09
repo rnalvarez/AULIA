@@ -902,12 +902,25 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
 
     setBusy(true);
     setStatus("Validando los archivos de análisis externo…");
+    const expectedSignature = knowledgeCorpusSignature(draft.corpus || []);
+    const legacyIndexCanResume = draft.knowledgeBase?.version === 1 &&
+      draft.knowledgeBase?.sourceSignature === legacyKnowledgeCorpusSignature(draft.corpus || []);
     let nextIndex = draft.knowledgeBase &&
-      draft.knowledgeBase.sourceSignature === knowledgeCorpusSignature(draft.corpus || []) &&
+      draft.knowledgeBase.sourceSignature === expectedSignature &&
       draft.knowledgeBase.version === KNOWLEDGE_BASE_VERSION
       ? cloneCourse(draft.knowledgeBase)
-      : null;
-    const expectedSignature = knowledgeCorpusSignature(draft.corpus || []);
+      : legacyIndexCanResume
+        ? {
+            ...cloneCourse(draft.knowledgeBase),
+            version: KNOWLEDGE_BASE_VERSION,
+            sourceSignature: expectedSignature,
+            status: "partial",
+            totalPassages: externalPassages.length,
+            processedPassageIds: (draft.knowledgeBase.processedPassageIds || [])
+              .filter(id => externalPassages.some(passage => passage.passageId === id)),
+            updatedAt: new Date().toISOString(),
+          }
+        : null;
     const passagesById = new Map(externalPassages.map(passage => [passage.passageId, passage]));
     const passagePosition = new Map(externalPassages.map((passage, index) => [passage.passageId, index]));
     const failures = [];
