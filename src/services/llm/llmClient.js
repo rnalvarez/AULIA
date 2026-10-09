@@ -16,7 +16,7 @@ const MAX_CONVERSATION_CHARS = 3600;
 const MAX_LATEST_MESSAGE_CHARS = 1800;
 
 function normalizePromptValue(value) {
-  return String(value || "").toLowerCase().normalize("NFD").replace(/[\\u0300-\\u036f]/g, "").replace(/\\s+/g, " ").trim();
+  return String(value || "").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/\s+/g, " ").trim();
 }
 
 function promptText(value, maxChars) {
