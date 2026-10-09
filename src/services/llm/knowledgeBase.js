@@ -170,8 +170,10 @@ function buildIndexPrompt(course, batch, batchNumber, totalBatches) {
     "[PASSAGE_ID:" + passage.passageId + "]",
     "FUENTE: " + cleanText(passage.sourceName, 140),
     "SECCIÓN: " + cleanText(passage.sectionPath.join(" › ") || passage.title, 220),
-    passage.pageStart ? "PÁGINAS IMPRESAS: " + passage.pageStart +
+    passage.pageStart ? "PÁGINAS DEL DOCUMENTO: " + passage.pageStart +
       (passage.pageEnd && passage.pageEnd !== passage.pageStart ? "-" + passage.pageEnd : "") : "",
+    passage.printedPageStart ? "PÁGINAS IMPRESAS: " + passage.printedPageStart +
+      (passage.printedPageEnd && passage.printedPageEnd !== passage.printedPageStart ? "-" + passage.printedPageEnd : "") : "",
     "TEXTO ORIGINAL:",
     passage.text,
   ].filter(Boolean).join("\n")).join("\n\n---\n\n");
