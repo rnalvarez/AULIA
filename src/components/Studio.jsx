@@ -478,6 +478,7 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
     setLegalAccepted(false);
     setAnalysisReport(null);
     setKnowledgeBaseReport(null);
+    setShowExternalPrompt(false);
   }, [course.id]);
 
   function mutate(updater, message = "Cambios pendientes de guardar.") {
@@ -1577,7 +1578,7 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
             <ol>
               <li><strong>Descargá el paquete de análisis.</strong> Contiene los pasajes con sus IDs y referencias. Solo incluye las secciones Incluido y Referencial; las excluidas no se envían.</li>
               <li><strong>Abrí el servicio de IA que uses.</strong> Adjuntá el JSON descargado y pulsá «Copiar instrucciones». Pegá ese texto en el chat para explicarle a la IA qué debe hacer y en qué formato.</li>
-              <li><strong>Pedí que trabaje por tandas.</strong> Si no entra todo en una respuesta, escribí «CONTINUAR». Guardá cada resultado como un archivo .json independiente. Algunas herramientas pueden crear el archivo; si la respuesta aparece como texto, pedile que entregue JSON válido sin comentarios y guardalo con extensión .json.</li>
+              <li><strong>Pedí que trabaje por tandas.</strong> Si no entra todo en una respuesta, escribí «CONTINUAR». Guardá cada resultado como un archivo .json independiente. Algunas herramientas pueden crear el archivo; si la respuesta aparece como texto, copiá el JSON completo (sin las marcas de bloque ```) en el Bloc de notas de Windows. Elegí «Guardar como», escribí un nombre como <code>resultado-01.json</code>, seleccioná «Todos los archivos» y codificación UTF-8. No uses Word.</li>
               <li><strong>Importá los resultados.</strong> Podés seleccionar varios JSON a la vez. AULIA combinará sus conceptos y referencias, y mostrará cuántos pasajes quedan cubiertos.</li>
               <li><strong>Guardá y publicá.</strong> La publicación se habilita cuando la base acumulada cubre todos los pasajes activos. Revisá los resultados de la IA antes de publicar.</li>
             </ol>
