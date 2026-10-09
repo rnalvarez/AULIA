@@ -495,6 +495,9 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
     setAnalysisReport(null);
     setKnowledgeBaseReport(null);
     setShowExternalPrompt(false);
+    setIngestionProvider(loadStudioApiKey(course.id) ? "groq" : "external");
+    setUploadProgress(null);
+    setExternalDocumentProgress(null);
   }, [course.id]);
 
   useEffect(() => {
@@ -682,6 +685,7 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
         const ext = String(file.name || "").toLowerCase().split(".").pop();
         const useVision = ext === "pdf" && Boolean(studioApiKey) && (forceVision || ingestionProvider === "groq");
         let pendingId = "";
+        let lastProgress = { processed: 0, total: 0 };
         try {
           if (useVision) {
             const pendingRecord = await savePendingPdf(course.id, file);
@@ -705,6 +709,7 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
           const extracted = await readMaterialFile(file, {
             includePageImages: useVision,
             onProgress: (progress) => {
+              lastProgress = { processed: progress.processed || 0, total: progress.total || 0 };
               setUploadProgress(current => ({
                 ...(current || {}),
                 fileName: file.name,
@@ -721,6 +726,7 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
           let prepared = extracted;
 
           if (useVision && Array.isArray(extracted.aiPages) && extracted.aiPages.length) {
+            lastProgress = { processed: 0, total: extracted.aiPages.length };
             setUploadProgress({
               fileName: file.name,
               phase: "processing",
@@ -734,7 +740,8 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
               apiKey: studioApiKey,
               courseTitle: workingDraft.title,
               onProgress: (progress) => {
-                const activePages = progress.activePageNumbers || progress.pageNumbers || [];
+                lastProgress = { processed: progress.processed || 0, total: progress.total || extracted.aiPages.length };
+                const activePages = progress.phase === "processing-batch" ? (progress.activePageNumbers || []) : [];
                 setUploadProgress({
                   fileName: file.name,
                   phase: progress.phase || "processing",
