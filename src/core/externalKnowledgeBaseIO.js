@@ -25,7 +25,7 @@ export function createExternalKnowledgePrompt({ courseTitle = "", sourceSignatur
     "8. Al terminar una tanda, verificá que JSON sea válido, que cada evidencia use IDs de esa tanda y que no haya ningún pasaje revisado que falte en processedPassageIds.",
     "",
     "FORMATO DE SALIDA OBLIGATORIO",
-    JSON con esta estructura exacta:",
+    "JSON con esta estructura exacta:",
     JSON.stringify({
       format: EXTERNAL_KNOWLEDGE_OUTPUT_FORMAT,
       version: KNOWLEDGE_BASE_VERSION,
