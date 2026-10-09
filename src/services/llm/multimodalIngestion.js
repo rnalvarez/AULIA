@@ -235,6 +235,14 @@ export async function analyzePdfWithVision(material, {
       }
     }
 
+    onProgress({
+      processed: Object.keys(pageResults).length,
+      total,
+      model,
+      phase: "processing-batch",
+      activePageNumbers: batch.map(page => page.pageNumber),
+    });
+
     let result;
     try {
       result = await requestBatch({
@@ -274,6 +282,7 @@ export async function analyzePdfWithVision(material, {
       processed: Object.keys(pageResults).length,
       total,
       model,
+      phase: "processing",
       pageNumbers: batch.map(page => page.pageNumber),
     });
   }
