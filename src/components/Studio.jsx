@@ -1342,7 +1342,7 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
     }
   }
 
-remove obsolete external page-analysis handlers  async function importExternalKnowledge(e) {
+async function importExternalKnowledge(e) {
     const files = Array.from(e.target.files || []);
     e.target.value = "";
     if (!files.length) return;
