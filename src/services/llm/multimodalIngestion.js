@@ -2,7 +2,7 @@ import { readStudioRecord, writeStudioRecord } from "../../core/studioPersistenc
 
 const DEFAULT_MODELS = ["qwen/qwen3.8-27b"];
 const ENDPOINT = "https://api.groq.com/openai/v1/chat/completions";
-const CACHE_PREFIX = "aulia:multimodal-ingestion:v1:";
+const CACHE_PREFIX = "aulia:multimodal-ingestion:v2:";
 const DIGITAL_BATCH_SIZE = 2;
 const MAX_DIGITAL_OUTPUT_TOKENS = 1500;
 const MAX_OCR_OUTPUT_TOKENS = 4500;
@@ -21,6 +21,31 @@ function cleanText(value, max = 6000) {
   const text = String(value || "").replace(/\r/g, "").trim();
   return text.length <= max ? text : text.slice(0, max) + "\n[Texto extraído truncado para el análisis visual]";
 }
+
+function parseRateReset(value) {
+  const text = String(value || "").trim();
+  if (!text) return 0;
+  if (/^\d+(?:\.\d+)?$/.test(text)) return Number(text) * 1000;
+  const clock = text.match(/^(\d+):(\d{1,2})(?::(\d{1,2}(?:\.\d+)?))?$/);
+  if (clock) {
+    if (clock[3] !== undefined) return (Number(clock[1]) * 3600 + Number(clock[2]) * 60 + Number(clock[3])) * 1000;
+    return (Number(clock[1]) * 60 + Number(clock[2])) * 1000;
+  }
+  let milliseconds = 0;
+  const parts = /([\d.]+)\s*(ms|d|h|m|s)/gi;
+  let match;
+  while ((match = parts.exec(text))) {
+    const unit = match[2].toLowerCase();
+    milliseconds += Number(match[1]) * (unit === "d" ? 86400000 : unit === "h" ? 3600000 : unit === "m" ? 60000 : unit === "s" ? 1000 : 1);
+  }
+  return milliseconds;
+}
+
+function retryFromMessage(message) {
+  const match = String(message || "").match(/(?:try again in|retry after)\s+((?:\d+(?:\.\d+)?\s*(?:ms|d|h|m|s)\s*)+)/i);
+  return match ? parseRateReset(match[1]) : 0;
+}
+
 
 function normalisePage(page, expectedNumber) {
   const number = Number(page?.pageNumber);
@@ -166,12 +191,21 @@ async function requestBatch({ apiKey, courseTitle, pages, batchNumber, signal })
     }
     if (!response.ok) {
       const error = new Error("Groq no pudo analizar las páginas (" + response.status + ")" + (message ? ": " + message : "."));
+      const combined = (message + " " + String(data?.error?.code || "")).toLowerCase();
       error.status = response.status;
+      error.isDailyLimit = /tokens per day|requests per day|daily limit|daily quota|per day \(t[dp]d\)|limit.*per day/.test(combined);
+      const resetRequestsMs = parseRateReset(response.headers.get("x-ratelimit-reset-requests"));
+      const resetTokensMs = parseRateReset(response.headers.get("x-ratelimit-reset-tokens"));
+      error.retryAfterMs = error.isDailyLimit
+        ? (retryFromMessage(message) || parseRateReset(response.headers.get("retry-after")) || resetRequestsMs)
+        : (parseRateReset(response.headers.get("retry-after")) || resetTokensMs || retryFromMessage(message));
       error.retryAfter = response.headers.get("retry-after") || "";
       if (response.status === 401) error.message = "La API key de Groq no es válida. Revisá la clave docente en Studio.";
       if (response.status === 413) error.message = "La tanda de imágenes supera el tamaño admitido por Groq. El archivo queda guardado; usá «Reanudar análisis» para continuar.";
-      if (response.status === 429) {
-        error.message = "Groq alcanzó un límite temporal o de cuota durante el análisis multimodal. Se conservó el avance de las páginas terminadas; usá «Reanudar análisis» cuando se restablezca el límite.";
+      if (response.status === 429 && error.isDailyLimit) {
+        error.message = "Groq agotó la cuota diaria para este modelo. Se conserva la preparación y el avance; no hace falta volver a leer el PDF. Reintentá cuando se restablezca el límite indicado.";
+      } else if (response.status === 429) {
+        error.message = "Groq alcanzó un límite temporal de solicitudes o tokens por minuto. AULIA conservará la preparación y el avance.";
       }
       throw error;
     }
@@ -215,6 +249,27 @@ async function requestBatch({ apiKey, courseTitle, pages, batchNumber, signal })
   throw lastError || new Error("Ningún modelo multimodal de Groq está disponible.");
 }
 
+function visionCacheIdentity(material, sourcePages) {
+  const identity = String(material?.sourceFingerprint || material?.document?.id || material?.sourceName || "pdf");
+  const signature = hashString([
+    identity,
+    sourcePages.map(page => [
+      page.pageNumber,
+      hashString(page.extractedText || ""),
+    ].join("|")).join("::"),
+  ].join("||"));
+  const cacheKey = CACHE_PREFIX + String(material?.document?.id || material?.sourceName || "pdf") + ":" + signature;
+  return { signature, cacheKey };
+}
+
+export async function getCachedVisionPageNumbers(material) {
+  const sourcePages = (material?.aiPages || []).slice().sort((a, b) => Number(a.pageNumber) - Number(b.pageNumber));
+  if (!sourcePages.length) return new Set();
+  const { signature, cacheKey } = visionCacheIdentity(material, sourcePages);
+  const pages = await readCache(cacheKey, signature);
+  return new Set(Object.keys(pages || {}).map(Number).filter(Number.isFinite));
+}
+
 export async function analyzePdfWithVision(material, {
   apiKey,
   courseTitle = "",
@@ -224,16 +279,7 @@ export async function analyzePdfWithVision(material, {
   if (!apiKey) throw new Error("Para analizar gráficamente el PDF desde la carga, configurá primero tu clave personal de Groq.");
   const sourcePages = (material?.aiPages || []).slice().sort((a, b) => Number(a.pageNumber) - Number(b.pageNumber));
   if (!sourcePages.length) throw new Error("No hay imágenes de páginas para analizar.");
-  if (sourcePages.some(page => !String(page.imageDataUrl || "").startsWith("data:image/"))) {
-    throw new Error("AULIA no pudo preparar las imágenes de todas las páginas. Probá con otro PDF o con una versión de menor resolución.");
-  }
-
-  const signature = hashString(sourcePages.map(page => [
-    page.pageNumber,
-    hashString(page.extractedText || ""),
-    hashString(page.imageDataUrl || ""),
-  ].join("|")).join("::"));
-  const cacheKey = CACHE_PREFIX + String(material?.document?.id || material?.sourceName || "pdf") + ":" + signature;
+  const { signature, cacheKey } = visionCacheIdentity(material, sourcePages);
   const pageResults = await readCache(cacheKey, signature);
   let model = "qwen/qwen3.8-27b";
   const total = sourcePages.length;
@@ -249,6 +295,11 @@ export async function analyzePdfWithVision(material, {
           String(next.extractedText || "").trim().length >= 100) {
         batch.push(next);
       }
+    }
+
+    const missingImages = batch.filter(page => !String(page.imageDataUrl || "").startsWith("data:image/"));
+    if (missingImages.length) {
+      throw new Error("Faltan imágenes para analizar las páginas " + missingImages.map(page => page.pageNumber).join(", ") + ". AULIA no repetirá las páginas visuales que ya están guardadas.");
     }
 
     onProgress({

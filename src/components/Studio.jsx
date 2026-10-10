@@ -1,10 +1,10 @@
 import { useEffect, useMemo, useState } from "react";
 import { cloneCourse, validateCourse } from "../core/courseContract.js";
 import { downloadCoursePack, readCoursePackFile } from "../core/coursePackIO.js";
-import { readMaterialFile, materialToCorpus, mergeImportedBibliography, mergeImportedDocuments, applyAIMultimodalAnalysis } from "../core/materialIO.js";
-import { savePendingPdf, getPendingPdf, listPendingPdfs, deletePendingPdf, saveExternalAnalysisBatch, listExternalAnalysisBatches, getExternalAnalysisBatch, deleteExternalAnalysisBatch } from "../core/studioPersistence.js";
+import { readMaterialFile, renderPdfPageImages, materialToCorpus, mergeImportedBibliography, mergeImportedDocuments, applyAIMultimodalAnalysis } from "../core/materialIO.js";
+import { savePendingPdf, getPendingPdf, getPendingPdfStatus, savePreparedPdf, getPreparedPdf, updatePendingPdfStatus, listPendingPdfs, deletePendingPdf, saveExternalAnalysisBatch, listExternalAnalysisBatches, getExternalAnalysisBatch, deleteExternalAnalysisBatch } from "../core/studioPersistence.js";
 import { createExternalDocumentAnalysisPrompt, EXTERNAL_DOCUMENT_ANALYSIS_FORMAT, EXTERNAL_DOCUMENT_ANALYSIS_VERSION } from "../core/externalDocumentAnalysis.js";
-import { analyzePdfWithVision } from "../services/llm/multimodalIngestion.js";
+import { analyzePdfWithVision, getCachedVisionPageNumbers } from "../services/llm/multimodalIngestion.js";
 import { analyzePdfTextFirst } from "../services/llm/textFirstIngestion.js";
 import { requestTeacherProposal } from "../services/llm/teacherProposal.js";
 import { buildKnowledgeBase, buildKnowledgePassages, isSupportedKnowledgeExcerpt, normalizeExternalKnowledgeEntries, mergeKnowledgeBaseEntries } from "../services/llm/knowledgeBase.js";
@@ -448,6 +448,7 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
   const [ingestionProvider, setIngestionProvider] = useState(() => loadStudioApiKey(course.id) ? "groq" : "external");
   const [uploadProgress, setUploadProgress] = useState(null);
   const [pendingPdfs, setPendingPdfs] = useState([]);
+  const [rateLimitClock, setRateLimitClock] = useState(() => Date.now());
   const [externalAnalysisBatches, setExternalAnalysisBatches] = useState([]);
   const [externalDocumentProgress, setExternalDocumentProgress] = useState(null);
 
@@ -525,6 +526,12 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
     });
     return () => { active = false; };
   }, [course.id]);
+
+  useEffect(() => {
+    if (!pendingPdfs.some(item => item.blockedUntil && Date.parse(item.blockedUntil) > rateLimitClock)) return undefined;
+    const timer = setInterval(() => setRateLimitClock(Date.now()), 15000);
+    return () => clearInterval(timer);
+  }, [pendingPdfs, rateLimitClock]);
 
   function mutate(updater, message = "Cambios pendientes de guardar.") {
     setDraft((current) => typeof updater === "function" ? updater(current) : { ...current, ...updater });
@@ -671,7 +678,7 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
     updateMaterialSection(sectionId, { priority });
   }
 
-  async function processMaterialFiles(files, { forceVision = false } = {}) {
+  async function processMaterialFiles(files, { forceVision = false, resumePendingId = "" } = {}) {
     if (!files.length) return;
     setAnalysisReport(null);
     setBusy(true);
@@ -686,52 +693,105 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
       for (const file of files) {
         const ext = String(file.name || "").toLowerCase().split(".").pop();
         const useVision = ext === "pdf" && Boolean(studioApiKey) && (forceVision || ingestionProvider === "groq");
-        let pendingId = "";
+        let pendingId = resumePendingId || "";
         let lastProgress = { processed: 0, total: 0 };
         try {
           if (useVision) {
-            const pendingRecord = await savePendingPdf(course.id, file);
-            pendingId = pendingRecord.id;
+            if (!pendingId) {
+              const pendingRecord = await savePendingPdf(course.id, file);
+              pendingId = pendingRecord.id;
+            }
             setPendingPdfs(await listPendingPdfs(course.id));
           }
 
-          setUploadProgress({
-            fileName: file.name,
-            phase: "extracting",
-            processed: 0,
-            total: 0,
-            message: useVision
-              ? "Leyendo el PDF y preparando imágenes de sus páginas…"
-              : "Extrayendo el texto del documento…",
-            error: "",
-            pendingId,
-          });
-          setStatus("Preparando " + file.name + "…");
-
-          const extracted = await readMaterialFile(file, {
-            includePageImages: false,
-            includeAIPageText: useVision,
-            includePageImagesForLowText: useVision,
-            onProgress: (progress) => {
-              lastProgress = { processed: progress.processed || 0, total: progress.total || 0 };
-              setUploadProgress(current => ({
-                ...(current || {}),
+          // A fresh file-selection must not bypass a persisted cooldown for the same pending PDF.
+          if (useVision && pendingId && !resumePendingId) {
+            const priorStatus = await getPendingPdfStatus(pendingId);
+            const priorBlockedUntil = Date.parse(priorStatus?.blockedUntil || "");
+            if (Number.isFinite(priorBlockedUntil) && priorBlockedUntil > Date.now()) {
+              const availableAt = new Date(priorBlockedUntil).toLocaleString("es-AR", { dateStyle: "short", timeStyle: "short" });
+              const message = "La cuota de Groq sigue bloqueada hasta " + availableAt + ". AULIA ya guardó la preparación y el avance; no se volvió a leer el PDF.";
+              failedCount += 1;
+              setUploadProgress({
                 fileName: file.name,
-                phase: progress.phase || "extracting",
-                processed: progress.processed || 0,
-                total: progress.total || 0,
-                message: (progress.phase === "rendering" ? "Preparando imágenes" : "Extrayendo texto") +
-                  " · página " + (progress.processed || 0) + " de " + (progress.total || 0),
-                error: "",
+                phase: "quota-wait",
+                processed: 0,
+                total: 0,
                 pendingId,
-              }));
-            },
-          });
+                blockedUntil: priorStatus.blockedUntil,
+                isDailyLimit: priorStatus.isDailyLimit,
+                message,
+                error: priorStatus.lastError || "",
+              });
+              setStatus(message);
+              continue;
+            }
+          }
+
+          setStatus("Preparando " + file.name + "…");
+          let extracted = null;
+          const cachedPreparation = useVision && pendingId
+            ? await getPreparedPdf(pendingId, file)
+            : null;
+
+          if (cachedPreparation) {
+            extracted = {
+              ...cachedPreparation,
+              aiPages: (cachedPreparation.aiPages || []).map(page => ({
+                ...page,
+                imageDataUrl: "",
+              })),
+            };
+            lastProgress = { processed: Number(extracted.pages || extracted.aiPages?.length || 0), total: Number(extracted.pages || extracted.aiPages?.length || 0) };
+            setUploadProgress({
+              fileName: file.name,
+              phase: "restoring",
+              processed: lastProgress.processed,
+              total: lastProgress.total,
+              message: "Preparación recuperada del navegador. No se volverá a extraer todo el PDF; solo se renderizarán las páginas visuales que hagan falta.",
+              error: "",
+              pendingId,
+            });
+          } else {
+            setUploadProgress({
+              fileName: file.name,
+              phase: "extracting",
+              processed: 0,
+              total: 0,
+              message: useVision
+                ? "Leyendo el PDF una vez y guardando la preparación local para futuras reanudaciones…"
+                : "Extrayendo el texto del documento…",
+              error: "",
+              pendingId,
+            });
+            extracted = await readMaterialFile(file, {
+              includePageImages: false,
+              includeAIPageText: useVision,
+              includePageImagesForLowText: useVision,
+              onProgress: (progress) => {
+                lastProgress = { processed: progress.processed || 0, total: progress.total || 0 };
+                setUploadProgress(current => ({
+                  ...(current || {}),
+                  fileName: file.name,
+                  phase: progress.phase || "extracting",
+                  processed: progress.processed || 0,
+                  total: progress.total || 0,
+                  message: (progress.phase === "rendering" ? "Preparando imágenes" : "Extrayendo texto") +
+                    " · página " + (progress.processed || 0) + " de " + (progress.total || 0),
+                  error: "",
+                  pendingId,
+                }));
+              },
+            });
+            if (useVision && pendingId) {
+              await savePreparedPdf(pendingId, file, extracted);
+            }
+          }
           let prepared = extracted;
 
           if (useVision && Array.isArray(extracted.aiPages) && extracted.aiPages.length) {
-            const allPages = extracted.aiPages.slice().sort((a, b) => Number(a.pageNumber) - Number(b.pageNumber));
-            const visualPages = allPages.filter(page => Boolean(page.needsVisualAnalysis) || String(page.extractedText || "").trim().length < 100);
+            let allPages = extracted.aiPages.slice().sort((a, b) => Number(a.pageNumber) - Number(b.pageNumber));
+            let visualPages = allPages.filter(page => Boolean(page.needsVisualAnalysis) || String(page.extractedText || "").trim().length < 100);
             const visualPageNumbers = new Set(visualPages.map(page => Number(page.pageNumber)));
             const textPages = allPages.filter(page => !visualPageNumbers.has(Number(page.pageNumber)) && String(page.extractedText || "").trim().length >= 100);
             const resultByPage = new Map();
@@ -792,12 +852,56 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
             }
 
             if (visualPages.length) {
-              const missingImages = visualPages.filter(page => !String(page.imageDataUrl || "").startsWith("data:image/"));
+              const visionMaterial = {
+                ...extracted,
+                sourceFingerprint: [pendingId || course.id, file.name, file.size, file.lastModified].join("::"),
+                aiPages: visualPages,
+              };
+              const cachedVisionPages = await getCachedVisionPageNumbers(visionMaterial);
+              const missingImages = visualPages.filter(page =>
+                !cachedVisionPages.has(Number(page.pageNumber)) &&
+                !String(page.imageDataUrl || "").startsWith("data:image/")
+              );
               if (missingImages.length) {
-                throw new Error("No se pudieron preparar las imágenes de las páginas " + missingImages.map(page => page.pageNumber).join(", ") + ". No se incorporó un análisis parcial; reanudá para reintentar.");
+                setUploadProgress({
+                  fileName: file.name,
+                  phase: "rendering",
+                  processed: completedTextPages,
+                  total: allPages.length,
+                  message: "El texto ya está preparado. Renderizando únicamente " + missingImages.length + " página(s) que requieren visión.",
+                  error: "",
+                  pendingId,
+                });
+                const rendered = await renderPdfPageImages(
+                  file,
+                  missingImages.map(page => page.pageNumber),
+                  progress => setUploadProgress({
+                    fileName: file.name,
+                    phase: "rendering",
+                    processed: completedTextPages,
+                    total: allPages.length,
+                    activePages: [progress.pageNumber],
+                    message: "Preparando solo las páginas visuales pendientes (" + progress.processed + " de " + progress.total + ").",
+                    error: "",
+                    pendingId,
+                  })
+                );
+                const imageByPage = new Map(rendered.map(page => [Number(page.pageNumber), page.imageDataUrl]));
+                allPages = allPages.map(page => ({
+                  ...page,
+                  imageDataUrl: String(page.imageDataUrl || "").startsWith("data:image/")
+                    ? page.imageDataUrl
+                    : (imageByPage.get(Number(page.pageNumber)) || ""),
+                }));
+                visualPages = allPages.filter(page => visualPageNumbers.has(Number(page.pageNumber)));
+                extracted = { ...extracted, aiPages: allPages };
+              }
+              const visionImagesStillMissing = visualPages.filter(page => !cachedVisionPages.has(Number(page.pageNumber)) && !String(page.imageDataUrl || "").startsWith("data:image/"));
+              if (visionImagesStillMissing.length) {
+                throw new Error("No se pudieron preparar las imágenes de las páginas " + visionImagesStillMissing.map(page => page.pageNumber).join(", ") + ". AULIA conservó el texto y no incorporó un corpus incompleto.");
               }
               const visionResult = await analyzePdfWithVision(
-                { ...extracted, aiPages: visualPages },
+                { ...visionMaterial, aiPages: visualPages },
                 {
                   apiKey: studioApiKey,
                   courseTitle: workingDraft.title,
@@ -865,22 +969,50 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
           });
         } catch (error) {
           failedCount += 1;
+          const isRateLimit = Number(error?.status) === 429;
+          const isDailyLimit = Boolean(error?.isDailyLimit);
+          const waitMs = Math.max(0, Number(error?.retryAfterMs || 0));
+          const blockedUntil = isRateLimit && waitMs > 0
+            ? new Date(Date.now() + waitMs + 1500).toISOString()
+            : "";
+          let pauseMessage = "El análisis se interrumpió. AULIA conservó el PDF y la preparación local para reanudar sin volver a extraer todo el documento.";
+          if (isRateLimit && isDailyLimit) {
+            pauseMessage = blockedUntil
+              ? "Se agotó la cuota diaria de Groq. La preparación y las tandas completadas están guardadas. Reanudar se habilitará después de " +
+                new Date(blockedUntil).toLocaleString("es-AR", { dateStyle: "short", timeStyle: "short" }) + "."
+              : "Se agotó la cuota diaria de Groq. La preparación y las tandas completadas están guardadas. No vuelvas a intentar hasta que se restablezca la cuota; el servicio no indicó la hora de renovación.";
+          } else if (isRateLimit) {
+            pauseMessage = blockedUntil
+              ? "Límite temporal de Groq. La preparación está guardada; se puede reanudar después de " +
+                new Date(blockedUntil).toLocaleTimeString("es-AR", { hour: "2-digit", minute: "2-digit" }) + "."
+              : "Límite temporal de Groq. La preparación y las tandas completadas están guardadas para reanudar.";
+          }
+          if (pendingId) {
+            try {
+              await updatePendingPdfStatus(pendingId, {
+                blockedUntil,
+                pauseReason: isRateLimit ? (isDailyLimit ? "daily-quota" : "temporary-rate-limit") : "",
+                lastError: error?.message || "Error desconocido durante la carga.",
+                isDailyLimit,
+              });
+            } catch {}
+          }
           setUploadProgress({
             fileName: file.name,
-            phase: pendingId ? "paused" : "error",
+            phase: isRateLimit ? "quota-wait" : pendingId ? "paused" : "error",
             processed: lastProgress.processed,
             total: lastProgress.total,
-            message: pendingId
-              ? "El análisis se pausó. AULIA conservó el PDF y las páginas ya analizadas en este navegador."
-              : "No se pudo completar la carga de este archivo.",
+            message: pendingId ? pauseMessage : "No se pudo completar la carga de este archivo.",
             error: error?.message || "Error desconocido durante la carga.",
             pendingId,
+            blockedUntil,
+            isDailyLimit,
           });
           if (pendingId) {
             try { setPendingPdfs(await listPendingPdfs(course.id)); } catch {}
           }
           setStatus(pendingId
-            ? "Análisis pausado para " + file.name + ". Usá «Reanudar análisis»; no hace falta seleccionar el archivo otra vez."
+            ? pauseMessage + (error?.message ? " Detalle: " + error.message : "")
             : (error?.message || "No se pudo cargar el material."));
         }
       }
@@ -919,9 +1051,30 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
     setIngestionProvider("groq");
     setBusy(true);
     try {
+      const pendingStatus = await getPendingPdfStatus(pending.id);
+      const blockedUntilMs = Date.parse(pendingStatus?.blockedUntil || "");
+      if (Number.isFinite(blockedUntilMs) && blockedUntilMs > Date.now()) {
+        const availableAt = new Date(blockedUntilMs).toLocaleString("es-AR", { dateStyle: "short", timeStyle: "short" });
+        setUploadProgress({
+          fileName: pendingStatus.fileName || pending.fileName,
+          phase: "quota-wait",
+          processed: 0,
+          total: 0,
+          pendingId: pending.id,
+          blockedUntil: pendingStatus.blockedUntil,
+          isDailyLimit: pendingStatus.isDailyLimit,
+          message: (pendingStatus.isDailyLimit ? "La cuota diaria de Groq todavía no se restableció." : "El límite temporal de Groq todavía está vigente.") +
+            " AULIA guardó la preparación del PDF y no volverá a leerlo. Podés reanudar después de " + availableAt + ".",
+          error: pendingStatus.lastError || "",
+        });
+        setStatus("Todavía no conviene reanudar: Groq indicó que la cuota estará disponible después de " + availableAt + ".");
+        return;
+      }
+
       const file = await getPendingPdf(pending.id);
       if (!file) throw new Error("No se encontró el PDF guardado. Si el almacenamiento del navegador fue borrado, será necesario seleccionar el archivo otra vez.");
-      await processMaterialFiles([file], { forceVision: true });
+      await updatePendingPdfStatus(pending.id, {});
+      await processMaterialFiles([file], { forceVision: true, resumePendingId: pending.id });
     } catch (error) {
       setStatus(error?.message || "No se pudo recuperar el PDF pendiente.");
     } finally {
@@ -1986,26 +2139,31 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
             La extracción local no utiliza IA para interpretar la estructura ni los elementos visuales. Elegí este modo solo si querés cargar material sin análisis multimodal y construir la base conceptual después.
           </div>}
 
-          {uploadProgress && <div className={"studio-wf-ai-report " + (uploadProgress.phase === "complete" ? "ok" : uploadProgress.phase === "paused" || uploadProgress.phase === "error" ? "error" : "")}>
-            <strong>{uploadProgress.phase === "complete" ? "✓ Carga completada" : uploadProgress.phase === "paused" ? "Análisis pausado; el archivo está guardado" : uploadProgress.phase === "error" ? "No se pudo completar la carga" : uploadProgress.phase === "rate-wait" ? "Esperando renovación de cuota…" : uploadProgress.phase === "processing" || uploadProgress.phase === "processing-batch" ? "IA analizando el documento…" : uploadProgress.phase === "rendering" ? "Preparando imágenes de las páginas…" : "Preparando documento…"}</strong>
+          {uploadProgress && <div className={"studio-wf-ai-report " + (uploadProgress.phase === "complete" ? "ok" : uploadProgress.phase === "paused" || uploadProgress.phase === "quota-wait" || uploadProgress.phase === "error" ? "error" : "")}>
+            <strong>{uploadProgress.phase === "complete" ? "✓ Carga completada" : uploadProgress.phase === "paused" ? "Análisis pausado; el trabajo está guardado" : uploadProgress.phase === "quota-wait" ? "Cuota de Groq agotada; reanudación controlada" : uploadProgress.phase === "error" ? "No se pudo completar la carga" : uploadProgress.phase === "rate-wait" ? "Esperando renovación de cuota…" : uploadProgress.phase === "restoring" ? "Recuperando la preparación guardada…" : uploadProgress.phase === "processing" || uploadProgress.phase === "processing-batch" ? "IA analizando el documento…" : uploadProgress.phase === "rendering" ? "Preparando solo las páginas visuales…" : "Preparando documento…"}</strong>
             {uploadProgress.fileName && <span>{uploadProgress.fileName}</span>}
             {Number(uploadProgress.total) > 0 && <>
-              <span>{uploadProgress.processed || 0} de {uploadProgress.total} {uploadProgress.phase === "rendering" ? "páginas preparadas" : uploadProgress.phase === "extracting" ? "páginas leídas" : "páginas analizadas"}{uploadProgress.activePages?.length ? " · analizando ahora: " + uploadProgress.activePages.join(", ") : ""}</span>
+              <span>{uploadProgress.processed || 0} de {uploadProgress.total} {uploadProgress.phase === "restoring" ? "páginas recuperadas" : uploadProgress.phase === "rendering" ? "páginas preparadas" : uploadProgress.phase === "extracting" ? "páginas leídas" : "páginas analizadas"}{uploadProgress.activePages?.length ? " · analizando ahora: " + uploadProgress.activePages.join(", ") : ""}</span>
               <progress className="studio-wf-progress" max={uploadProgress.total} value={Math.min(uploadProgress.processed || 0, uploadProgress.total)}/>
             </>}
             {uploadProgress.message && <small>{uploadProgress.message}</small>}
             {uploadProgress.model && <small>Modelo: {uploadProgress.model}</small>}
             {uploadProgress.error && <small>{uploadProgress.error}</small>}
-            {uploadProgress.phase === "paused" && uploadProgress.pendingId && <button className="primary" type="button" onClick={() => resumePendingPdf({ id: uploadProgress.pendingId, fileName: uploadProgress.fileName })} disabled={!canEdit || busy}>Reanudar análisis guardado</button>}
+            {(uploadProgress.phase === "paused" || uploadProgress.phase === "quota-wait") && uploadProgress.pendingId && <button className="primary" type="button" onClick={() => resumePendingPdf({ id: uploadProgress.pendingId, fileName: uploadProgress.fileName })} disabled={!canEdit || busy || Boolean(uploadProgress.blockedUntil && Date.parse(uploadProgress.blockedUntil) > rateLimitClock)}>{uploadProgress.blockedUntil && Date.parse(uploadProgress.blockedUntil) > rateLimitClock ? "Esperar restablecimiento de Groq" : "Reanudar desde el avance guardado"}</button>}
           </div>}
 
           {pendingPdfs.length > 0 && <div className="studio-wf-stack">
             <strong>PDF guardados para reanudar</strong>
             {pendingPdfs.map(pending => <div className="studio-wf-ai-ready" key={pending.id}>
               <span>{pending.fileName}</span>
-              <small>Archivo guardado en este navegador. No necesitás volver a seleccionarlo.</small>
+              {pending.blockedUntil && Date.parse(pending.blockedUntil) > rateLimitClock
+                ? <small>{pending.isDailyLimit ? "Cuota diaria agotada." : "Límite temporal de Groq."} Reanudación habilitada después de {new Date(pending.blockedUntil).toLocaleString("es-AR", { dateStyle: "short", timeStyle: "short" })}.</small>
+                : <small>{pending.prepared
+                    ? "PDF, texto y estructura ya preparados. La reanudación no volverá a extraer todas las páginas."
+                    : "PDF guardado. AULIA preparará el texto una vez y lo conservará para futuras reanudaciones."}</small>}
+              {pending.lastError && <small>{pending.lastError}</small>}
               <div className="studio-wf-panel-actions">
-                <button className="primary" type="button" onClick={() => resumePendingPdf(pending)} disabled={!canEdit || busy}>Reanudar análisis</button>
+                <button className="primary" type="button" onClick={() => resumePendingPdf(pending)} disabled={!canEdit || busy || Boolean(pending.blockedUntil && Date.parse(pending.blockedUntil) > rateLimitClock)}>{pending.blockedUntil && Date.parse(pending.blockedUntil) > rateLimitClock ? "Esperar restablecimiento" : pending.prepared ? "Reanudar desde el avance guardado" : "Preparar y reanudar análisis"}</button>
                 <button className="ghost" type="button" onClick={() => discardPendingPdf(pending)} disabled={busy}>Descartar</button>
               </div>
             </div>)}

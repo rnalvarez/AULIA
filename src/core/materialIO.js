@@ -587,6 +587,59 @@ async function readDocx(file) {
   };
 }
 
+/**
+ * Render only the requested PDF pages. Used by resume so a large PDF's text and
+ * structure are not re-extracted just because Groq temporarily ran out of quota.
+ */
+export async function renderPdfPageImages(file, pageNumbers, onProgress = () => {}) {
+  const requested = Array.from(new Set((pageNumbers || []).map(Number)))
+    .filter(number => Number.isInteger(number) && number > 0)
+    .sort((a, b) => a - b);
+  if (!requested.length) return [];
+  const pdfjsLib = await import("pdfjs-dist/legacy/build/pdf.mjs");
+  pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
+    "pdfjs-dist/legacy/build/pdf.worker.min.mjs",
+    import.meta.url
+  ).toString();
+  const pdf = await pdfjsLib.getDocument({
+    data: new Uint8Array(await file.arrayBuffer()),
+  }).promise;
+  try {
+    const rendered = [];
+    for (let index = 0; index < requested.length; index += 1) {
+      const pageNumber = requested[index];
+      if (pageNumber > pdf.numPages) {
+        throw new Error("La página " + pageNumber + " ya no existe en el PDF guardado.");
+      }
+      const page = await pdf.getPage(pageNumber);
+      let canvas = null;
+      try {
+        const viewport = page.getViewport({ scale: 1 });
+        const scale = Math.min(2, 1500 / Math.max(viewport.width, viewport.height));
+        const imageViewport = page.getViewport({ scale });
+        canvas = document.createElement("canvas");
+        canvas.width = Math.max(1, Math.ceil(imageViewport.width));
+        canvas.height = Math.max(1, Math.ceil(imageViewport.height));
+        const context = canvas.getContext("2d");
+        if (!context) throw new Error("No se pudo crear la imagen de la página " + pageNumber + ".");
+        await page.render({ canvasContext: context, viewport: imageViewport }).promise;
+        rendered.push({ pageNumber, imageDataUrl: canvas.toDataURL("image/jpeg", 0.68) });
+      } finally {
+        if (canvas) {
+          canvas.width = 0;
+          canvas.height = 0;
+        }
+        page.cleanup?.();
+      }
+      onProgress({ phase: "rendering", processed: index + 1, total: requested.length, pageNumber });
+    }
+    return rendered;
+  } finally {
+    await pdf.cleanup?.();
+    await pdf.destroy?.();
+  }
+}
+
 export async function readMaterialFile(file, { includePageImages = false, includeAIPageText = false, includePageImagesForLowText = false, onProgress = () => {} } = {}) {
   const name = file.name || "material";
   const ext = name.toLowerCase().split(".").pop();

@@ -123,7 +123,7 @@ Esta estrategia reduce el consumo comparada con enviar las 236 imágenes de un d
 
 La lectura visual u OCR asistido puede equivocarse. Las páginas con poca confianza o marcadas para revisión deben cotejarse con el PDF original. La verificación automática de cobertura confirma que haya un resultado por página, no que cada interpretación semántica sea perfecta.
 
-El modelo agrupa varias páginas de texto por petición y reduce automáticamente el tamaño de las tandas si una respuesta queda mal formada. Los límites temporales se reintentan con espera; un límite diario detiene el trabajo y conserva el avance ya validado. Studio muestra el progreso y permite **«Reanudar análisis guardado»** sin volver a seleccionar el PDF. El archivo solo podrá recuperarse en el mismo navegador/perfil y mientras no se borre el almacenamiento del sitio.
+El modelo agrupa varias páginas de texto por petición y reduce automáticamente el tamaño de las tandas si una respuesta queda mal formada. Tras la primera extracción, AULIA guarda en IndexedDB el texto por página y la estructura del PDF, sin duplicar las imágenes. Al reanudar, restaura esa preparación y renderiza únicamente las páginas visuales que todavía necesita; no vuelve a recorrer ni extraer todo el libro. Las tandas ya analizadas se omiten mediante la caché de páginas. Ante un límite de Groq, Studio distingue las esperas temporales de las cuotas diarias, muestra la hora estimada de reanudación cuando la API la informa y deshabilita el botón durante ese intervalo. El archivo solo podrá recuperarse en el mismo navegador/perfil y mientras no se borre el almacenamiento del sitio.
 
 ### Análisis del PDF con una IA externa
 
