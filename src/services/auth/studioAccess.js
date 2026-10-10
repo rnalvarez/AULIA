@@ -82,7 +82,17 @@ export async function storeOriginalPdfInDrive(courseId, file, onProgress = () =>
     lastModified: Number(file.lastModified || 0),
     chunkCount,
   };
-  const started = await request({ action: "start-original-pdf-upload", ...metadata });
+  let started;
+  try {
+    started = await request({ action: "start-original-pdf-upload", ...metadata });
+  } catch (error) {
+    if (/acción no reconocida|accion no reconocida|handleStartOriginalPdfUpload is not defined/i.test(String(error?.message || ""))) {
+      throw new StudioApiError(
+        "El backend de Apps Script todavía no tiene habilitado el almacenamiento de PDF originales. Actualizá Code.gs y studio-data.gs de AULIA en Apps Script y volvé a implementar el Web App."
+      );
+    }
+    throw error;
+  }
   if (started.alreadyStored && started.fileId) {
     onProgress({ processed: chunkCount, total: chunkCount, alreadyStored: true });
     return started;
