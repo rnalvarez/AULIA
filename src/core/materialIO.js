@@ -869,12 +869,18 @@ export function applySelectiveVisualAnalysis(material, pageResults, model = "qwe
       Number(item?.sourcePageStart || item?.sourcePage || 0) <= pageNumber &&
       Number(item?.sourcePageEnd || item?.sourcePageStart || item?.sourcePage || 0) >= pageNumber
     ) || existingCorpus.find(item => item?.documentId === sourceDocumentId);
+    const localSectionMeta = (material?.document?.sections || []).find(section =>
+      Number(section?.sourcePageStart || 0) <= pageNumber &&
+      Number(section?.sourcePageEnd || section?.sourcePageStart || 0) >= pageNumber
+    ) || (material?.document?.sections || [])[0];
     const sectionPath = Array.isArray(localSection?.sectionPath) && localSection.sectionPath.length
       ? localSection.sectionPath
-      : (Array.isArray(analysis.sectionPath) && analysis.sectionPath.length
-          ? analysis.sectionPath
-          : [String(analysis.sectionTitle || "Material sin sección identificada")]);
-    const sectionTitle = String(localSection?.title || sectionPath[sectionPath.length - 1] || "Lectura visual").trim();
+      : Array.isArray(localSectionMeta?.path) && localSectionMeta.path.length
+        ? localSectionMeta.path
+        : (Array.isArray(analysis.sectionPath) && analysis.sectionPath.length
+            ? analysis.sectionPath
+            : [String(analysis.sectionTitle || "Material sin sección identificada")]);
+    const sectionTitle = String(localSection?.title || localSectionMeta?.title || sectionPath[sectionPath.length - 1] || "Lectura visual").trim();
     const baseId = slugify(sourceDocumentId + "-lectura-visual-pagina-" + pageNumber);
     let id = baseId;
     let suffix = 1;
@@ -884,7 +890,7 @@ export function applySelectiveVisualAnalysis(material, pageResults, model = "qwe
     visualChunks.push({
       id,
       unitId: id,
-      sectionId: localSection?.sectionId || slugify(sourceDocumentId + "-" + sectionPath.join("-")),
+      sectionId: localSection?.sectionId || localSectionMeta?.id || slugify(sourceDocumentId + "-" + sectionPath.join("-")),
       title: sectionTitle + " · lectura visual p. " + pageNumber,
       chapter: sectionPath.join(" › "),
       sectionPath: [...sectionPath],
@@ -898,11 +904,13 @@ export function applySelectiveVisualAnalysis(material, pageResults, model = "qwe
       documentId: sourceDocumentId,
       segmentationSource: "vision-selective",
       confidence: Math.max(0, Math.min(1, Number(analysis.confidence ?? 0.5) || 0)),
-      scope: localSection?.scope || "included",
-      priority: localSection?.priority || "normal",
-      teacherTopic: localSection?.teacherTopic || "",
-      teacherConcepts: Array.isArray(localSection?.teacherConcepts) ? localSection.teacherConcepts : [],
-      teacherLimit: localSection?.teacherLimit || "",
+      scope: localSection?.scope || localSectionMeta?.scope || "included",
+      priority: localSection?.priority || localSectionMeta?.priority || "normal",
+      teacherTopic: localSection?.teacherTopic || localSectionMeta?.teacherTopic || "",
+      teacherConcepts: Array.isArray(localSection?.teacherConcepts)
+        ? localSection.teacherConcepts
+        : (Array.isArray(localSectionMeta?.teacherConcepts) ? localSectionMeta.teacherConcepts : []),
+      teacherLimit: localSection?.teacherLimit || localSectionMeta?.teacherLimit || "",
       visualElementCount: visualElements.length,
       ...(needsReview ? { needsReview: true } : {}),
       ...(reviewNote ? { reviewNotes: reviewNote } : {}),
