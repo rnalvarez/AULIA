@@ -430,7 +430,7 @@ async function readPdf(file, { includePageImages = false, includeAIPageText = fa
 
     const hasExtractableText = pages.some((page) => page.lines.length);
     if (!hasExtractableText && !includePageImages && !includePageImagesForLowText) {
-      throw new Error("Este PDF parece ser un escaneo sin texto extraíble. Activá IA interna · Groq para analizar visualmente las páginas que no tienen texto.");
+      throw new Error("Este PDF parece ser un escaneo sin texto extraíble. Elegí «OCR y visión selectiva · Groq» para recuperar el texto de sus páginas.");
     }
 
     const analysis = await analyzePdfStructure({
