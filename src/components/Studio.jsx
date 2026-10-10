@@ -2106,8 +2106,8 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
             La extracción local no utiliza IA para interpretar la estructura ni los elementos visuales. Elegí este modo solo si querés cargar material sin análisis multimodal y construir la base conceptual después.
           </div>}
 
-          {uploadProgress && <div className={"studio-wf-ai-report " + (uploadProgress.phase === "complete" ? "ok" : uploadProgress.phase === "paused" || uploadProgress.phase === "error" ? "error" : "")}>
-            <strong>{uploadProgress.phase === "complete" ? "✓ Carga completada" : uploadProgress.phase === "paused" ? "Análisis pausado; el archivo está guardado" : uploadProgress.phase === "error" ? "No se pudo completar la carga" : uploadProgress.phase === "rate-wait" ? "Esperando renovación de cuota…" : uploadProgress.phase === "processing" || uploadProgress.phase === "processing-batch" ? "IA analizando el documento…" : uploadProgress.phase === "rendering" ? "Preparando imágenes de las páginas…" : "Preparando documento…"}</strong>
+          {uploadProgress && <div className={"studio-wf-ai-report " + (uploadProgress.phase === "complete" ? "ok" : uploadProgress.phase === "paused" || uploadProgress.phase === "quota-wait" || uploadProgress.phase === "error" ? "error" : "")}>
+            <strong>{uploadProgress.phase === "complete" ? "✓ Carga completada" : uploadProgress.phase === "paused" ? "Análisis pausado; el trabajo está guardado" : uploadProgress.phase === "quota-wait" ? "Cuota de Groq agotada; reanudación controlada" : uploadProgress.phase === "error" ? "No se pudo completar la carga" : uploadProgress.phase === "rate-wait" ? "Esperando renovación de cuota…" : uploadProgress.phase === "restoring" ? "Recuperando la preparación guardada…" : uploadProgress.phase === "processing" || uploadProgress.phase === "processing-batch" ? "IA analizando el documento…" : uploadProgress.phase === "rendering" ? "Preparando solo las páginas visuales…" : "Preparando documento…"}</strong>
             {uploadProgress.fileName && <span>{uploadProgress.fileName}</span>}
             {Number(uploadProgress.total) > 0 && <>
               <span>{uploadProgress.processed || 0} de {uploadProgress.total} {uploadProgress.phase === "rendering" ? "páginas preparadas" : uploadProgress.phase === "extracting" ? "páginas leídas" : "páginas analizadas"}{uploadProgress.activePages?.length ? " · analizando ahora: " + uploadProgress.activePages.join(", ") : ""}</span>
@@ -2116,16 +2116,21 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
             {uploadProgress.message && <small>{uploadProgress.message}</small>}
             {uploadProgress.model && <small>Modelo: {uploadProgress.model}</small>}
             {uploadProgress.error && <small>{uploadProgress.error}</small>}
-            {uploadProgress.phase === "paused" && uploadProgress.pendingId && <button className="primary" type="button" onClick={() => resumePendingPdf({ id: uploadProgress.pendingId, fileName: uploadProgress.fileName })} disabled={!canEdit || busy}>Reanudar análisis guardado</button>}
+            {(uploadProgress.phase === "paused" || uploadProgress.phase === "quota-wait") && uploadProgress.pendingId && <button className="primary" type="button" onClick={() => resumePendingPdf({ id: uploadProgress.pendingId, fileName: uploadProgress.fileName })} disabled={!canEdit || busy || Boolean(uploadProgress.blockedUntil && Date.parse(uploadProgress.blockedUntil) > rateLimitClock)}>{uploadProgress.blockedUntil && Date.parse(uploadProgress.blockedUntil) > rateLimitClock ? "Esperar restablecimiento de Groq" : "Reanudar desde el avance guardado"}</button>}
           </div>}
 
           {pendingPdfs.length > 0 && <div className="studio-wf-stack">
             <strong>PDF guardados para reanudar</strong>
             {pendingPdfs.map(pending => <div className="studio-wf-ai-ready" key={pending.id}>
               <span>{pending.fileName}</span>
-              <small>Archivo guardado en este navegador. No necesitás volver a seleccionarlo.</small>
+              {pending.blockedUntil && Date.parse(pending.blockedUntil) > rateLimitClock
+                ? <small>{pending.isDailyLimit ? "Cuota diaria agotada." : "Límite temporal de Groq."} Reanudación habilitada después de {new Date(pending.blockedUntil).toLocaleString("es-AR", { dateStyle: "short", timeStyle: "short" })}.</small>
+                : <small>{pending.prepared
+                    ? "PDF, texto y estructura ya preparados. La reanudación no volverá a extraer todas las páginas."
+                    : "PDF guardado. AULIA preparará el texto una vez y lo conservará para futuras reanudaciones."}</small>}
+              {pending.lastError && <small>{pending.lastError}</small>}
               <div className="studio-wf-panel-actions">
-                <button className="primary" type="button" onClick={() => resumePendingPdf(pending)} disabled={!canEdit || busy}>Reanudar análisis</button>
+                <button className="primary" type="button" onClick={() => resumePendingPdf(pending)} disabled={!canEdit || busy || Boolean(pending.blockedUntil && Date.parse(pending.blockedUntil) > rateLimitClock)}>{pending.blockedUntil && Date.parse(pending.blockedUntil) > rateLimitClock ? "Esperar restablecimiento" : pending.prepared ? "Reanudar desde el avance guardado" : "Preparar y reanudar análisis"}</button>
                 <button className="ghost" type="button" onClick={() => discardPendingPdf(pending)} disabled={busy}>Descartar</button>
               </div>
             </div>)}
