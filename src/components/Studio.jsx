@@ -711,8 +711,8 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
             section.sourcePageStart, section.sourcePageEnd,
             reference?.sourcePageStart, reference?.sourcePageEnd
           );
-          const fallbackMatch = Boolean(reference && sameDocument && (
-            (sameTitle && sameStructuralPath) || samePageRange
+          const fallbackMatch = Boolean(reference && sameDocument && sameTitle && (
+            sameStructuralPath || samePageRange
           ));
           return directMatch || fallbackMatch
             ? { ...section, id: section.id || sectionId, ...patch }
@@ -732,8 +732,8 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
           reference?.sourcePageStart, reference?.sourcePageEnd
         );
         const sameTitle = slug(String(chunk.title || "").replace(/ · parte \d+$/i, "")) === slug(reference?.title || "");
-        const fallbackMatch = Boolean(reference && !hasExactCorpusMatch && sameDocument && (
-          samePageRange || (pathsMatch && sameTitle)
+        const fallbackMatch = Boolean(reference && !hasExactCorpusMatch && sameDocument && sameTitle && (
+          samePageRange || pathsMatch
         ));
         if (!directMatch && !fallbackMatch) return chunk;
         return { ...chunk, ...patch, sectionId: chunk.sectionId || sectionId };
