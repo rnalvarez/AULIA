@@ -41,6 +41,11 @@ function parseRateReset(value) {
   return milliseconds;
 }
 
+function retryFromMessage(message) {
+  const match = String(message || "").match(/(?:try again in|retry after)\s+((?:\d+(?:\.\d+)?\s*(?:ms|d|h|m|s)\s*)+)/i);
+  return match ? parseRateReset(match[1]) : 0;
+}
+
 
 function normalisePage(page, expectedNumber) {
   const number = Number(page?.pageNumber);
@@ -192,8 +197,8 @@ async function requestBatch({ apiKey, courseTitle, pages, batchNumber, signal })
       const resetRequestsMs = parseRateReset(response.headers.get("x-ratelimit-reset-requests"));
       const resetTokensMs = parseRateReset(response.headers.get("x-ratelimit-reset-tokens"));
       error.retryAfterMs = error.isDailyLimit
-        ? (resetRequestsMs || parseRateReset(response.headers.get("retry-after")))
-        : (parseRateReset(response.headers.get("retry-after")) || resetTokensMs);
+        ? (retryFromMessage(message) || parseRateReset(response.headers.get("retry-after")) || resetRequestsMs)
+        : (parseRateReset(response.headers.get("retry-after")) || resetTokensMs || retryFromMessage(message));
       error.retryAfter = response.headers.get("retry-after") || "";
       if (response.status === 401) error.message = "La API key de Groq no es válida. Revisá la clave docente en Studio.";
       if (response.status === 413) error.message = "La tanda de imágenes supera el tamaño admitido por Groq. El archivo queda guardado; usá «Reanudar análisis» para continuar.";
