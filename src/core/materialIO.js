@@ -314,7 +314,7 @@ function buildTextSections(text, sourceName, markdown = false) {
   return sections;
 }
 
-async function readPdf(file, { includePageImages = false, onProgress = () => {} } = {}) {
+async function readPdf(file, { includePageImages = false, includeAIPageText = false, includePageImagesForLowText = false, onProgress = () => {} } = {}) {
   const pdfjsLib = await import("pdfjs-dist/legacy/build/pdf.mjs");
   pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
     "pdfjs-dist/legacy/build/pdf.worker.min.mjs",
@@ -349,8 +349,14 @@ async function readPdf(file, { includePageImages = false, onProgress = () => {} 
       if (structHeadings > 0) structTreePages += 1;
 
       const lines = groupPdfItems(textContent.items, viewport.width);
+      const pageTextForImageDecision = lines
+        .map(line => typeof line === "string" ? line : line?.text || "")
+        .filter(Boolean)
+        .join("\n")
+        .trim();
+      const renderPageImage = includePageImages || (includePageImagesForLowText && pageTextForImageDecision.length < 100);
       let imageDataUrl = "";
-      if (includePageImages) {
+      if (renderPageImage) {
         let canvas = null;
         try {
           const maxDimension = 1500;
@@ -386,8 +392,8 @@ async function readPdf(file, { includePageImages = false, onProgress = () => {} 
     }
 
     const hasExtractableText = pages.some((page) => page.lines.length);
-    if (!hasExtractableText && !includePageImages) {
-      throw new Error("Este PDF parece ser un escaneo sin texto extraíble. Para leerlo, configurá tu clave personal de Groq antes de cargarlo y activá el análisis multimodal.");
+    if (!hasExtractableText && !includePageImages && !includePageImagesForLowText) {
+      throw new Error("Este PDF parece ser un escaneo sin texto extraíble. Activá IA interna · Groq para analizar visualmente las páginas que no tienen texto.");
     }
 
     const analysis = await analyzePdfStructure({
@@ -404,13 +410,13 @@ async function readPdf(file, { includePageImages = false, onProgress = () => {} 
       sourcePageCount: pageCount,
     });
 
-    if (!corpus.length && !includePageImages) {
+    if (!corpus.length && !includePageImages && !includePageImagesForLowText) {
       throw new Error("AULIA pudo abrir el PDF, pero no encontró unidades de contenido recuperables.");
     }
 
     return {
       corpus,
-      aiPages: includePageImages ? pages.map((page) => ({
+      aiPages: (includePageImages || includeAIPageText || includePageImagesForLowText) ? pages.map((page) => ({
         pageNumber: page.pageNumber,
         extractedText: (page.readingLines || page.lines || [])
           .map((line) => typeof line === "string" ? line : line?.text || "")
@@ -543,12 +549,12 @@ async function readDocx(file) {
   };
 }
 
-export async function readMaterialFile(file, { includePageImages = false, onProgress = () => {} } = {}) {
+export async function readMaterialFile(file, { includePageImages = false, includeAIPageText = false, includePageImagesForLowText = false, onProgress = () => {} } = {}) {
   const name = file.name || "material";
   const ext = name.toLowerCase().split(".").pop();
   const documentId = makeDocumentId(name);
 
-  if (ext === "pdf") return readPdf(file, { includePageImages, onProgress });
+  if (ext === "pdf") return readPdf(file, { includePageImages, includeAIPageText, includePageImagesForLowText, onProgress });
   if (ext === "docx") return readDocx(file);
 
   if (!["txt", "md", "markdown", "json"].includes(ext)) {
