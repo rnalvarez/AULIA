@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { cloneCourse, validateCourse } from "../core/courseContract.js";
 import { downloadCoursePack, readCoursePackFile } from "../core/coursePackIO.js";
 import { readMaterialFile, renderPdfPageImages, materialToCorpus, mergeImportedBibliography, mergeImportedDocuments, applyAIMultimodalAnalysis } from "../core/materialIO.js";
@@ -432,7 +432,12 @@ function buildMaterialStructure(course) {
 }
 export default function Studio({ course, courseMeta = null, canEdit = true, onCourseChanged, onSaveCourse, onPublishCourse, onReloadCourse }) {
   const storageKey = useMemo(() => STORAGE_PREFIX + course.id, [course.id]);
+  const knowledgeRetryStorageKey = useMemo(() => STORAGE_PREFIX + "groq-retry:" + course.id, [course.id]);
   const [draft, setDraft] = useState(() => cloneCourse(course));
+  const [draftReady, setDraftReady] = useState(false);
+  const [knowledgeRetryAt, setKnowledgeRetryAt] = useState(() => localStorage.getItem(knowledgeRetryStorageKey) || "");
+  const autoResumePdfRef = useRef(false);
+  const autoResumeKnowledgeRef = useRef(false);
   const [step, setStep] = useState("overview");
   const [status, setStatus] = useState("");
   const [validation, setValidation] = useState(null);
@@ -454,11 +459,13 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
   const [externalDocumentProgress, setExternalDocumentProgress] = useState(null);
 
   useEffect(() => {
+    setDraftReady(false);
     const saved = localStorage.getItem(storageKey);
     if (!saved) {
       setDraft(cloneCourse(course));
       setValidation(null);
       setStatus("");
+      setDraftReady(true);
       return;
     }
 
@@ -471,6 +478,7 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
         setDraft(cloneCourse(course));
         setValidation(null);
         setStatus("Modo solo lectura.");
+        setDraftReady(true);
         return;
       }
 
@@ -479,6 +487,7 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
         setValidation(null);
         setStatus("La versión remota cambió. Se descartó el borrador local anterior.");
         localStorage.removeItem(storageKey);
+        setDraftReady(true);
         return;
       }
 
@@ -488,10 +497,13 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
     } catch {
       localStorage.removeItem(storageKey);
       setDraft(cloneCourse(course));
+    } finally {
+      setDraftReady(true);
     }
   }, [course, storageKey, courseMeta?.updatedAt, canEdit]);
 
   useEffect(() => {
+    setKnowledgeRetryAt(localStorage.getItem(knowledgeRetryStorageKey) || "");
     setStudioApiKey(loadStudioApiKey(course.id));
     setStudioKeyInput("");
     setShowStudioKey(false);
@@ -529,10 +541,39 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
   }, [course.id]);
 
   useEffect(() => {
-    if (!pendingPdfs.some(item => item.blockedUntil && Date.parse(item.blockedUntil) > rateLimitClock)) return undefined;
+    const pendingWait = pendingPdfs.some(item => item.blockedUntil && Date.parse(item.blockedUntil) > rateLimitClock);
+    const knowledgeWait = knowledgeRetryAt && Date.parse(knowledgeRetryAt) > rateLimitClock;
+    if (!pendingWait && !knowledgeWait) return undefined;
     const timer = setInterval(() => setRateLimitClock(Date.now()), 15000);
     return () => clearInterval(timer);
-  }, [pendingPdfs, rateLimitClock]);
+  }, [pendingPdfs, knowledgeRetryAt, rateLimitClock]);
+
+  useEffect(() => {
+    if (!draftReady || !canEdit || !studioApiKey || busy || autoResumePdfRef.current) return;
+    const candidate = pendingPdfs.find(item =>
+      item?.id && item.blockedUntil && Number.isFinite(Date.parse(item.blockedUntil)) &&
+      Date.parse(item.blockedUntil) <= rateLimitClock
+    );
+    if (!candidate) return;
+    autoResumePdfRef.current = true;
+    setStatus("Se liberó la ventana estimada de cuota de Groq. AULIA reanudará automáticamente el PDF desde el avance guardado…");
+    Promise.resolve(resumePendingPdf(candidate)).finally(() => {
+      autoResumePdfRef.current = false;
+    });
+  }, [draftReady, canEdit, studioApiKey, busy, pendingPdfs, rateLimitClock, course.id]);
+
+  useEffect(() => {
+    if (!draftReady || !canEdit || !studioApiKey || busy || autoResumeKnowledgeRef.current) return;
+    const retryMs = Date.parse(knowledgeRetryAt || "");
+    if (!knowledgeRetryAt || !Number.isFinite(retryMs) || retryMs > rateLimitClock) return;
+    autoResumeKnowledgeRef.current = true;
+    localStorage.removeItem(knowledgeRetryStorageKey);
+    setKnowledgeRetryAt("");
+    setStatus("Se cumplió el tiempo de espera estimado de Groq. AULIA continuará automáticamente la base conceptual desde los pasajes ya procesados…");
+    Promise.resolve(buildFullKnowledgeBase()).finally(() => {
+      autoResumeKnowledgeRef.current = false;
+    });
+  }, [draftReady, canEdit, studioApiKey, busy, knowledgeRetryAt, rateLimitClock, knowledgeRetryStorageKey, course.id]);
 
   function mutate(updater, message = "Cambios pendientes de guardar.") {
     setDraft((current) => typeof updater === "function" ? updater(current) : { ...current, ...updater });
@@ -1020,20 +1061,19 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
           const isRateLimit = Number(error?.status) === 429;
           const isDailyLimit = Boolean(error?.isDailyLimit);
           const waitMs = Math.max(0, Number(error?.retryAfterMs || 0));
-          const blockedUntil = isRateLimit && waitMs > 0
-            ? new Date(Date.now() + waitMs + 1500).toISOString()
+          // When Groq omits a reset hint, make a bounded retry instead of requiring a manual click.
+          const scheduledWaitMs = waitMs > 0 ? waitMs + 1500 : (isDailyLimit ? 60 * 60 * 1000 : 30 * 1000);
+          const blockedUntil = isRateLimit
+            ? new Date(Date.now() + scheduledWaitMs).toISOString()
             : "";
           let pauseMessage = "El análisis se interrumpió. AULIA conservó el PDF y la preparación local para reanudar sin volver a extraer todo el documento.";
           if (isRateLimit && isDailyLimit) {
-            pauseMessage = blockedUntil
-              ? "Se agotó la cuota diaria de Groq. La preparación y las tandas completadas están guardadas. Reanudar se habilitará después de " +
-                new Date(blockedUntil).toLocaleString("es-AR", { dateStyle: "short", timeStyle: "short" }) + "."
-              : "Se agotó la cuota diaria de Groq. La preparación y las tandas completadas están guardadas. No vuelvas a intentar hasta que se restablezca la cuota; el servicio no indicó la hora de renovación.";
+            pauseMessage = "Se agotó la cuota diaria de Groq. La preparación y las tandas completadas están guardadas. AULIA intentará reanudar automáticamente después de " +
+              new Date(blockedUntil).toLocaleString("es-AR", { dateStyle: "short", timeStyle: "short" }) +
+              (waitMs > 0 ? ", según la indicación del servicio." : "; como Groq no informó una hora exacta, volverá a comprobar la cuota aproximadamente cada hora.");
           } else if (isRateLimit) {
-            pauseMessage = blockedUntil
-              ? "Límite temporal de Groq. La preparación está guardada; se puede reanudar después de " +
-                new Date(blockedUntil).toLocaleTimeString("es-AR", { hour: "2-digit", minute: "2-digit" }) + "."
-              : "Límite temporal de Groq. La preparación y las tandas completadas están guardadas para reanudar.";
+            pauseMessage = "Límite temporal de Groq. La preparación está guardada; AULIA reintentará automáticamente a partir de " +
+              new Date(blockedUntil).toLocaleTimeString("es-AR", { hour: "2-digit", minute: "2-digit" }) + ".";
           }
           if (pendingId) {
             try {
@@ -1801,6 +1841,8 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
 
     const courseSnapshot = cloneCourse(draft);
     let latestIndex = courseSnapshot.knowledgeBase || null;
+    localStorage.removeItem(knowledgeRetryStorageKey);
+    setKnowledgeRetryAt("");
     setBusy(true);
     setKnowledgeBaseReport({
       status: "processing",
@@ -1865,6 +1907,8 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
           draft: next,
         }));
       } catch {}
+      localStorage.removeItem(knowledgeRetryStorageKey);
+      setKnowledgeRetryAt("");
       setKnowledgeBaseReport({
         status: "complete",
         processed: result.processedPassageIds?.length || 0,
@@ -1877,6 +1921,17 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
       setStatus("Base conceptual completa: " + (result.entries?.length || 0) +
         " entradas con referencias a la bibliografía. Guardá la cátedra y después publicá la versión actualizada.");
     } catch (err) {
+      const isRateLimit = Number(err?.status) === 429;
+      if (isRateLimit) {
+        const retryDelayMs = Math.max(0, Number(err?.retryAfterMs || 0));
+        const fallbackDelayMs = err?.isDailyLimit ? 60 * 60 * 1000 : 30 * 1000;
+        const retryAt = new Date(Date.now() + (retryDelayMs > 0 ? retryDelayMs + 1500 : fallbackDelayMs)).toISOString();
+        localStorage.setItem(knowledgeRetryStorageKey, retryAt);
+        setKnowledgeRetryAt(retryAt);
+      } else {
+        localStorage.removeItem(knowledgeRetryStorageKey);
+        setKnowledgeRetryAt("");
+      }
       if (latestIndex) {
         const next = { ...courseSnapshot, knowledgeBase: latestIndex };
         setDraft(next);
@@ -1896,8 +1951,12 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
         model: latestIndex?.model || "",
         error: err?.message || "No se pudo completar el índice conceptual.",
       });
-      setStatus((err?.message || "No se pudo completar el índice conceptual.") +
-        " El avance se conservó en el borrador local; corregí el límite o esperá a que se restablezca Groq y volvé a ejecutar para continuar.");
+      const retryAtMs = Date.parse(localStorage.getItem(knowledgeRetryStorageKey) || "");
+      const scheduledMessage = isRateLimit && Number.isFinite(retryAtMs)
+        ? " AULIA reanudará automáticamente alrededor de " + new Date(retryAtMs).toLocaleString("es-AR", { dateStyle: "short", timeStyle: "short" }) +
+          (err?.isDailyLimit && !(Number(err?.retryAfterMs) > 0) ? ". Groq no informó la hora exacta; la cuota se comprobará aproximadamente cada hora." : ".")
+        : " El avance se conservó en el borrador local y se puede reanudar sin reprocesar los pasajes ya completados.";
+      setStatus((err?.message || "No se pudo completar el índice conceptual.") + scheduledMessage);
     } finally {
       setBusy(false);
     }
