@@ -226,7 +226,11 @@ function parseRateLimitDuration(value) {
   return minutes * 60000 + seconds * 1000 + milliseconds;
 }
 
-function parseRetryDelay(response, message) {
+function isDailyQuotaMessage(message) {
+  return /tokens per day|requests per day|daily limit|daily quota|per day \(t[dp]d\)|limit.*per day/i.test(String(message || ""));
+}
+
+function parseRetryDelay(response, message, dailyLimit = false) {
   const retryAfter = String(response?.headers?.get("retry-after") || "").trim();
   if (retryAfter) {
     const seconds = Number(retryAfter);
@@ -235,16 +239,21 @@ function parseRetryDelay(response, message) {
     if (Number.isFinite(date)) return Math.max(0, date - Date.now());
   }
 
-  const resetDelay = parseRateLimitDuration(response?.headers?.get("x-ratelimit-reset-tokens"));
-  if (resetDelay > 0) return resetDelay;
-
-  const match = String(message || "").match(/(?:try again in|retry after)\s*([0-9]+(?:\.[0-9]+)?)\s*(ms|s|m)/i);
+  const match = String(message || "").match(/(?:try again in|retry after)\s*([0-9]+(?:\.[0-9]+)?)\s*(ms|s|m|h)/i);
   if (match) {
     const amount = Number(match[1]);
     const unit = match[2].toLowerCase();
-    return amount * (unit === "m" ? 60000 : unit === "ms" ? 1 : 1000);
+    return amount * (unit === "h" ? 3600000 : unit === "m" ? 60000 : unit === "ms" ? 1 : 1000);
   }
-  return 6000;
+
+  // Groq documents reset-tokens as TPM. Do not mistake it for a daily TPD reset.
+  if (dailyLimit) {
+    if (/requests per day|\brpd\b/i.test(String(message || ""))) {
+      return parseRateLimitDuration(response?.headers?.get("x-ratelimit-reset-requests"));
+    }
+    return 0;
+  }
+  return parseRateLimitDuration(response?.headers?.get("x-ratelimit-reset-tokens")) || 6000;
 }
 
 function estimateRequestTokens(prompt) {
@@ -330,13 +339,25 @@ async function requestIndexBatch({ apiKey, endpoint, models, course, batch, batc
       for (let attempt = 0; ; attempt += 1) {
         const result = await sendRequest(body);
         const message = result.data?.error?.message || result.data?.message || "";
+        const isDailyLimit = result.response.status === 429 && isDailyQuotaMessage(message);
+        if (isDailyLimit) {
+          // Daily quota will not clear in a rolling-minute retry loop. Surface
+          // the reset hint so Studio can pause, preserve the index, and resume later.
+          const error = new Error("Groq agotó una cuota diaria. El avance quedó guardado y AULIA reanudará el índice cuando vuelva a haber cuota. Detalle: " + message);
+          error.status = 429;
+          error.isDailyLimit = true;
+          error.retryAfterMs = parseRetryDelay(result.response, message, true);
+          throw error;
+        }
         if (result.response.status !== 429 || attempt >= maxRetries) {
           if (result.response.status === 429) {
             const error = new Error(
-              "Groq mantuvo el límite TPM después de " + (maxRetries + 1) +
-              " intentos automáticos. El avance queda guardado; podés reanudar sin perder los pasajes procesados. Detalle: " + message
+              "Groq mantuvo el límite temporal después de " + (maxRetries + 1) +
+              " intentos automáticos. El avance queda guardado; AULIA puede reanudar sin perder los pasajes procesados. Detalle: " + message
             );
             error.status = 429;
+            error.isDailyLimit = false;
+            error.retryAfterMs = parseRetryDelay(result.response, message);
             throw error;
           }
           return result;
