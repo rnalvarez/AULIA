@@ -678,7 +678,7 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
     updateMaterialSection(sectionId, { priority });
   }
 
-  async function processMaterialFiles(files, { forceVision = false } = {}) {
+  async function processMaterialFiles(files, { forceVision = false, resumePendingId = "" } = {}) {
     if (!files.length) return;
     setAnalysisReport(null);
     setBusy(true);
@@ -693,52 +693,81 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
       for (const file of files) {
         const ext = String(file.name || "").toLowerCase().split(".").pop();
         const useVision = ext === "pdf" && Boolean(studioApiKey) && (forceVision || ingestionProvider === "groq");
-        let pendingId = "";
+        let pendingId = resumePendingId || "";
         let lastProgress = { processed: 0, total: 0 };
         try {
           if (useVision) {
-            const pendingRecord = await savePendingPdf(course.id, file);
-            pendingId = pendingRecord.id;
+            if (!pendingId) {
+              const pendingRecord = await savePendingPdf(course.id, file);
+              pendingId = pendingRecord.id;
+            }
             setPendingPdfs(await listPendingPdfs(course.id));
           }
 
-          setUploadProgress({
-            fileName: file.name,
-            phase: "extracting",
-            processed: 0,
-            total: 0,
-            message: useVision
-              ? "Leyendo el PDF y preparando imágenes de sus páginas…"
-              : "Extrayendo el texto del documento…",
-            error: "",
-            pendingId,
-          });
           setStatus("Preparando " + file.name + "…");
+          let extracted = null;
+          const cachedPreparation = useVision && pendingId
+            ? await getPreparedPdf(pendingId, file)
+            : null;
 
-          const extracted = await readMaterialFile(file, {
-            includePageImages: false,
-            includeAIPageText: useVision,
-            includePageImagesForLowText: useVision,
-            onProgress: (progress) => {
-              lastProgress = { processed: progress.processed || 0, total: progress.total || 0 };
-              setUploadProgress(current => ({
-                ...(current || {}),
-                fileName: file.name,
-                phase: progress.phase || "extracting",
-                processed: progress.processed || 0,
-                total: progress.total || 0,
-                message: (progress.phase === "rendering" ? "Preparando imágenes" : "Extrayendo texto") +
-                  " · página " + (progress.processed || 0) + " de " + (progress.total || 0),
-                error: "",
-                pendingId,
-              }));
-            },
-          });
+          if (cachedPreparation) {
+            extracted = {
+              ...cachedPreparation,
+              aiPages: (cachedPreparation.aiPages || []).map(page => ({
+                ...page,
+                imageDataUrl: "",
+              })),
+            };
+            lastProgress = { processed: 0, total: Number(extracted.pages || extracted.aiPages?.length || 0) };
+            setUploadProgress({
+              fileName: file.name,
+              phase: "restoring",
+              processed: 0,
+              total: lastProgress.total,
+              message: "Preparación recuperada del navegador. No se volverá a extraer todo el PDF; solo se renderizarán las páginas visuales que hagan falta.",
+              error: "",
+              pendingId,
+            });
+          } else {
+            setUploadProgress({
+              fileName: file.name,
+              phase: "extracting",
+              processed: 0,
+              total: 0,
+              message: useVision
+                ? "Leyendo el PDF una vez y guardando la preparación local para futuras reanudaciones…"
+                : "Extrayendo el texto del documento…",
+              error: "",
+              pendingId,
+            });
+            extracted = await readMaterialFile(file, {
+              includePageImages: false,
+              includeAIPageText: useVision,
+              includePageImagesForLowText: useVision,
+              onProgress: (progress) => {
+                lastProgress = { processed: progress.processed || 0, total: progress.total || 0 };
+                setUploadProgress(current => ({
+                  ...(current || {}),
+                  fileName: file.name,
+                  phase: progress.phase || "extracting",
+                  processed: progress.processed || 0,
+                  total: progress.total || 0,
+                  message: (progress.phase === "rendering" ? "Preparando imágenes" : "Extrayendo texto") +
+                    " · página " + (progress.processed || 0) + " de " + (progress.total || 0),
+                  error: "",
+                  pendingId,
+                }));
+              },
+            });
+            if (useVision && pendingId) {
+              await savePreparedPdf(pendingId, file, extracted);
+            }
+          }
           let prepared = extracted;
 
           if (useVision && Array.isArray(extracted.aiPages) && extracted.aiPages.length) {
-            const allPages = extracted.aiPages.slice().sort((a, b) => Number(a.pageNumber) - Number(b.pageNumber));
-            const visualPages = allPages.filter(page => Boolean(page.needsVisualAnalysis) || String(page.extractedText || "").trim().length < 100);
+            let allPages = extracted.aiPages.slice().sort((a, b) => Number(a.pageNumber) - Number(b.pageNumber));
+            let visualPages = allPages.filter(page => Boolean(page.needsVisualAnalysis) || String(page.extractedText || "").trim().length < 100);
             const visualPageNumbers = new Set(visualPages.map(page => Number(page.pageNumber)));
             const textPages = allPages.filter(page => !visualPageNumbers.has(Number(page.pageNumber)) && String(page.extractedText || "").trim().length >= 100);
             const resultByPage = new Map();
@@ -801,7 +830,42 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
             if (visualPages.length) {
               const missingImages = visualPages.filter(page => !String(page.imageDataUrl || "").startsWith("data:image/"));
               if (missingImages.length) {
-                throw new Error("No se pudieron preparar las imágenes de las páginas " + missingImages.map(page => page.pageNumber).join(", ") + ". No se incorporó un análisis parcial; reanudá para reintentar.");
+                setUploadProgress({
+                  fileName: file.name,
+                  phase: "rendering",
+                  processed: completedTextPages,
+                  total: allPages.length,
+                  message: "El texto ya está preparado. Renderizando únicamente " + missingImages.length + " página(s) que requieren visión.",
+                  error: "",
+                  pendingId,
+                });
+                const rendered = await renderPdfPageImages(
+                  file,
+                  missingImages.map(page => page.pageNumber),
+                  progress => setUploadProgress({
+                    fileName: file.name,
+                    phase: "rendering",
+                    processed: completedTextPages,
+                    total: allPages.length,
+                    activePages: [progress.pageNumber],
+                    message: "Preparando solo las páginas visuales pendientes (" + progress.processed + " de " + progress.total + ").",
+                    error: "",
+                    pendingId,
+                  })
+                );
+                const imageByPage = new Map(rendered.map(page => [Number(page.pageNumber), page.imageDataUrl]));
+                allPages = allPages.map(page => ({
+                  ...page,
+                  imageDataUrl: String(page.imageDataUrl || "").startsWith("data:image/")
+                    ? page.imageDataUrl
+                    : (imageByPage.get(Number(page.pageNumber)) || ""),
+                }));
+                visualPages = allPages.filter(page => visualPageNumbers.has(Number(page.pageNumber)));
+                extracted = { ...extracted, aiPages: allPages };
+              }
+              const visionImagesStillMissing = visualPages.filter(page => !String(page.imageDataUrl || "").startsWith("data:image/"));
+              if (visionImagesStillMissing.length) {
+                throw new Error("No se pudieron preparar las imágenes de las páginas " + visionImagesStillMissing.map(page => page.pageNumber).join(", ") + ". AULIA conservó el texto y no incorporó un corpus incompleto.");
               }
               const visionResult = await analyzePdfWithVision(
                 { ...extracted, aiPages: visualPages },
