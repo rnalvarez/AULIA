@@ -726,14 +726,14 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
       const corpus = (current.corpus || []).map((chunk) => {
         const directMatch = String(chunk.sectionId || "") === sectionId;
         const sameDocument = !reference?.documentId || String(chunk.documentId || "") === String(reference.documentId);
-        const samePath = samePathFn(chunk.sectionPath, reference?.path);
+        const pathsMatch = samePath(chunk.sectionPath, reference?.path);
         const samePageRange = overlapsPages(
           chunk.sourcePageStart || chunk.sourcePage, chunk.sourcePageEnd || chunk.sourcePageStart || chunk.sourcePage,
           reference?.sourcePageStart, reference?.sourcePageEnd
         );
         const sameTitle = slug(String(chunk.title || "").replace(/ · parte \d+$/i, "")) === slug(reference?.title || "");
         const fallbackMatch = Boolean(reference && !hasExactCorpusMatch && sameDocument && (
-          samePageRange || (samePath && sameTitle)
+          samePageRange || (pathsMatch && sameTitle)
         ));
         if (!directMatch && !fallbackMatch) return chunk;
         return { ...chunk, ...patch, sectionId: chunk.sectionId || sectionId };
@@ -741,12 +741,6 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
 
       return { ...current, documents, corpus };
     });
-  }
-
-  function samePathFn(left, right) {
-    return Array.isArray(left) && Array.isArray(right) &&
-      left.length === right.length &&
-      left.every((value, index) => String(value || "") === String(right[index] || ""));
   }
 
   function setMaterialScope(section, scope) {
