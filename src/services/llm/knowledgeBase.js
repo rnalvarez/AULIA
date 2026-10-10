@@ -220,10 +220,20 @@ async function wait(milliseconds) {
 
 function parseRateLimitDuration(value) {
   const text = String(value || "");
-  const milliseconds = Number(text.match(/([0-9]+(?:\.[0-9]+)?)\s*ms/i)?.[1] || 0);
-  const minutes = Number(text.match(/([0-9]+(?:\.[0-9]+)?)\s*m/i)?.[1] || 0);
-  const seconds = Number(text.match(/([0-9]+(?:\.[0-9]+)?)\s*s/i)?.[1] || 0);
-  return minutes * 60000 + seconds * 1000 + milliseconds;
+  let totalMs = 0;
+  const parts = /([0-9]+(?:\.[0-9]+)?)\s*(ms|d|h|m|s)/gi;
+  let match;
+  while ((match = parts.exec(text))) {
+    const amount = Number(match[1]);
+    const unit = match[2].toLowerCase();
+    totalMs += amount * (
+      unit === "d" ? 86400000 :
+      unit === "h" ? 3600000 :
+      unit === "m" ? 60000 :
+      unit === "s" ? 1000 : 1
+    );
+  }
+  return totalMs;
 }
 
 function isDailyQuotaMessage(message) {
