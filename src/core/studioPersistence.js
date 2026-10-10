@@ -151,11 +151,14 @@ export async function savePreparedPdf(id, file, material) {
     extractedText: String(page.extractedText || ""),
     needsVisualAnalysis: Boolean(page.needsVisualAnalysis),
   }));
+  const { sections: _redundantSections, ...compactAnalysis } = material?.analysis || {};
   const payload = {
     sourceName: String(material?.sourceName || file?.name || "material.pdf"),
     pages: Number(material?.pages || aiPages.length || 0),
     document: material?.document || null,
-    analysis: material?.analysis || null,
+    // The final AI analysis rebuilds section records from validated page results.
+    // Do not store the heuristic section bodies twice in IndexedDB.
+    analysis: compactAnalysis,
     bibliography: Array.isArray(material?.bibliography) ? material.bibliography : [],
     warnings: Array.isArray(material?.warnings) ? material.warnings : [],
     aiPages,
