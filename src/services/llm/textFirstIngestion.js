@@ -337,7 +337,6 @@ export async function analyzePdfTextFirst(material, {
   const pageResults = await readCache(cacheKey, signature);
   const missing = textPages.filter(page => !pageResults[String(page.pageNumber)]);
   const batches = makeBatches(missing);
-  let liveRateLimit = null;
   let batchIndex = 0;
 
   while (batches.length) {
@@ -395,10 +394,6 @@ export async function analyzePdfTextFirst(material, {
 
     for (const page of result.pages) pageResults[String(page.pageNumber)] = page;
     await saveCache(cacheKey, signature, pageResults);
-    liveRateLimit = {
-      remainingTokens: result.remainingTokens,
-      resetTokensMs: result.resetTokensMs,
-    };
     recordGroqUsage(MODEL, estimatedTokens, result.usage?.total_tokens);
     onProgress({
       phase: "processing",
