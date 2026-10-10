@@ -718,11 +718,11 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
                 imageDataUrl: "",
               })),
             };
-            lastProgress = { processed: 0, total: Number(extracted.pages || extracted.aiPages?.length || 0) };
+            lastProgress = { processed: Number(extracted.pages || extracted.aiPages?.length || 0), total: Number(extracted.pages || extracted.aiPages?.length || 0) };
             setUploadProgress({
               fileName: file.name,
               phase: "restoring",
-              processed: 0,
+              processed: lastProgress.processed,
               total: lastProgress.total,
               message: "Preparación recuperada del navegador. No se volverá a extraer todo el PDF; solo se renderizarán las páginas visuales que hagan falta.",
               error: "",
