@@ -704,6 +704,30 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
             setPendingPdfs(await listPendingPdfs(course.id));
           }
 
+          // A fresh file-selection must not bypass a persisted cooldown for the same pending PDF.
+          if (useVision && pendingId && !resumePendingId) {
+            const priorStatus = await getPendingPdfStatus(pendingId);
+            const priorBlockedUntil = Date.parse(priorStatus?.blockedUntil || "");
+            if (Number.isFinite(priorBlockedUntil) && priorBlockedUntil > Date.now()) {
+              const availableAt = new Date(priorBlockedUntil).toLocaleString("es-AR", { dateStyle: "short", timeStyle: "short" });
+              const message = "La cuota de Groq sigue bloqueada hasta " + availableAt + ". AULIA ya guardó la preparación y el avance; no se volvió a leer el PDF.";
+              failedCount += 1;
+              setUploadProgress({
+                fileName: file.name,
+                phase: "quota-wait",
+                processed: 0,
+                total: 0,
+                pendingId,
+                blockedUntil: priorStatus.blockedUntil,
+                isDailyLimit: priorStatus.isDailyLimit,
+                message,
+                error: priorStatus.lastError || "",
+              });
+              setStatus(message);
+              continue;
+            }
+          }
+
           setStatus("Preparando " + file.name + "…");
           let extracted = null;
           const cachedPreparation = useVision && pendingId
