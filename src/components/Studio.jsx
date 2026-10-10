@@ -802,7 +802,7 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
             });
             extracted = await readMaterialFile(file, {
               includePageImages: false,
-              includeAIPageText: ext === "pdf",
+              includeAIPageText: useVision,
               includePageImagesForLowText: useVision,
               onProgress: (progress) => {
                 lastProgress = { processed: progress.processed || 0, total: progress.total || 0 };
