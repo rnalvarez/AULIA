@@ -896,7 +896,7 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
                 visualPages = allPages.filter(page => visualPageNumbers.has(Number(page.pageNumber)));
                 extracted = { ...extracted, aiPages: allPages };
               }
-              const visionImagesStillMissing = visualPages.filter(page => !String(page.imageDataUrl || "").startsWith("data:image/"));
+              const visionImagesStillMissing = visualPages.filter(page => !cachedVisionPages.has(Number(page.pageNumber)) && !String(page.imageDataUrl || "").startsWith("data:image/"));
               if (visionImagesStillMissing.length) {
                 throw new Error("No se pudieron preparar las imágenes de las páginas " + visionImagesStillMissing.map(page => page.pageNumber).join(", ") + ". AULIA conservó el texto y no incorporó un corpus incompleto.");
               }
