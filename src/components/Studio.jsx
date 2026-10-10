@@ -436,6 +436,8 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
   const [draft, setDraft] = useState(() => cloneCourse(course));
   const [draftReady, setDraftReady] = useState(false);
   const [knowledgeRetryAt, setKnowledgeRetryAt] = useState(() => localStorage.getItem(knowledgeRetryStorageKey) || "");
+  const [knowledgeRetryCourseId, setKnowledgeRetryCourseId] = useState(() => course.id);
+  const [pendingPdfsCourseId, setPendingPdfsCourseId] = useState(() => course.id);
   const autoResumePdfRef = useRef(false);
   const autoResumeKnowledgeRef = useRef(false);
   const [step, setStep] = useState("overview");
@@ -503,7 +505,11 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
   }, [course, storageKey, courseMeta?.updatedAt, canEdit]);
 
   useEffect(() => {
+    setKnowledgeRetryCourseId("");
+    setPendingPdfsCourseId("");
+    setPendingPdfs([]);
     setKnowledgeRetryAt(localStorage.getItem(knowledgeRetryStorageKey) || "");
+    setKnowledgeRetryCourseId(course.id);
     setStudioApiKey(loadStudioApiKey(course.id));
     setStudioKeyInput("");
     setShowStudioKey(false);
@@ -524,6 +530,7 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
     ]).then(([pending, external]) => {
       if (!active) return;
       setPendingPdfs(pending);
+      setPendingPdfsCourseId(course.id);
       setExternalAnalysisBatches(external);
       const partial = external.find(item => item.processed < item.totalPages);
       if (partial) {
@@ -549,7 +556,7 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
   }, [pendingPdfs, knowledgeRetryAt, rateLimitClock]);
 
   useEffect(() => {
-    if (!draftReady || !canEdit || !studioApiKey || busy || autoResumePdfRef.current) return;
+    if (!draftReady || pendingPdfsCourseId !== course.id || !canEdit || !studioApiKey || busy || autoResumePdfRef.current) return;
     const candidate = pendingPdfs.find(item =>
       item?.id && item.blockedUntil && Number.isFinite(Date.parse(item.blockedUntil)) &&
       Date.parse(item.blockedUntil) <= rateLimitClock
@@ -560,10 +567,10 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
     Promise.resolve(resumePendingPdf(candidate)).finally(() => {
       autoResumePdfRef.current = false;
     });
-  }, [draftReady, canEdit, studioApiKey, busy, pendingPdfs, rateLimitClock, course.id]);
+  }, [draftReady, pendingPdfsCourseId, canEdit, studioApiKey, busy, pendingPdfs, rateLimitClock, course.id]);
 
   useEffect(() => {
-    if (!draftReady || !canEdit || !studioApiKey || busy || autoResumeKnowledgeRef.current) return;
+    if (!draftReady || knowledgeRetryCourseId !== course.id || !canEdit || !studioApiKey || busy || autoResumeKnowledgeRef.current) return;
     const retryMs = Date.parse(knowledgeRetryAt || "");
     if (!knowledgeRetryAt || !Number.isFinite(retryMs) || retryMs > rateLimitClock) return;
     autoResumeKnowledgeRef.current = true;
@@ -573,7 +580,7 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
     Promise.resolve(buildFullKnowledgeBase()).finally(() => {
       autoResumeKnowledgeRef.current = false;
     });
-  }, [draftReady, canEdit, studioApiKey, busy, knowledgeRetryAt, rateLimitClock, knowledgeRetryStorageKey, course.id]);
+  }, [draftReady, knowledgeRetryCourseId, canEdit, studioApiKey, busy, knowledgeRetryAt, rateLimitClock, knowledgeRetryStorageKey, course.id]);
 
   function mutate(updater, message = "Cambios pendientes de guardar.") {
     setDraft((current) => typeof updater === "function" ? updater(current) : { ...current, ...updater });
