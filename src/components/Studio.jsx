@@ -901,7 +901,7 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
                 throw new Error("No se pudieron preparar las imágenes de las páginas " + visionImagesStillMissing.map(page => page.pageNumber).join(", ") + ". AULIA conservó el texto y no incorporó un corpus incompleto.");
               }
               const visionResult = await analyzePdfWithVision(
-                visionMaterial,
+                { ...visionMaterial, aiPages: visualPages },
                 {
                   apiKey: studioApiKey,
                   courseTitle: workingDraft.title,
