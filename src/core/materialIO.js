@@ -818,11 +818,11 @@ export function applyAIMultimodalAnalysis(material, pageResults, model = "qwen/q
         content: pageContent,
         sourcePageStart: pageNumber,
         sourcePageEnd: pageNumber,
-        segmentationSource: String(provider || "").includes("texto") ? "ai-text-first" : "ai-multimodal",
+        segmentationSource: (String(provider || "").includes("texto primero") || String(provider || "").includes("análisis textual")) ? "ai-text-first" : "ai-multimodal",
         confidence,
         confidenceTotal: confidence,
         confidenceCount: 1,
-        evidence: [String(provider || "").includes("texto")
+        evidence: [(String(provider || "").includes("texto primero") || String(provider || "").includes("análisis textual"))
           ? "Segmentación semántica mediante " + model + "; visión utilizada solo en páginas con poco texto extraíble."
           : "Segmentación semántica y lectura visual mediante " + model],
         visualElementCount: visualElements.length,
@@ -853,8 +853,8 @@ export function applyAIMultimodalAnalysis(material, pageResults, model = "qwen/q
   const analysis = {
     ...baseAnalysis,
     version: 3,
-    method: String(provider || "").includes("texto") ? "ai-text-first-selective-vision" : "ai-multimodal",
-    documentType: String(provider || "").includes("texto")
+    method: (String(provider || "").includes("texto primero") || String(provider || "").includes("análisis textual")) ? "ai-text-first-selective-vision" : "ai-multimodal",
+    documentType: (String(provider || "").includes("texto primero") || String(provider || "").includes("análisis textual"))
       ? "documento analizado primero mediante texto extraído y visión selectiva"
       : "documento analizado con IA multimodal",
     confidence,
