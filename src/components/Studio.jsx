@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { cloneCourse, validateCourse } from "../core/courseContract.js";
 import { downloadCoursePack, readCoursePackFile } from "../core/coursePackIO.js";
-import { readMaterialFile, materialToCorpus, mergeImportedBibliography, mergeImportedDocuments, applyAIMultimodalAnalysis } from "../core/materialIO.js";
-import { savePendingPdf, getPendingPdf, listPendingPdfs, deletePendingPdf, saveExternalAnalysisBatch, listExternalAnalysisBatches, getExternalAnalysisBatch, deleteExternalAnalysisBatch } from "../core/studioPersistence.js";
+import { readMaterialFile, renderPdfPageImages, materialToCorpus, mergeImportedBibliography, mergeImportedDocuments, applyAIMultimodalAnalysis } from "../core/materialIO.js";
+import { savePendingPdf, getPendingPdf, getPendingPdfStatus, savePreparedPdf, getPreparedPdf, updatePendingPdfStatus, listPendingPdfs, deletePendingPdf, saveExternalAnalysisBatch, listExternalAnalysisBatches, getExternalAnalysisBatch, deleteExternalAnalysisBatch } from "../core/studioPersistence.js";
 import { createExternalDocumentAnalysisPrompt, EXTERNAL_DOCUMENT_ANALYSIS_FORMAT, EXTERNAL_DOCUMENT_ANALYSIS_VERSION } from "../core/externalDocumentAnalysis.js";
 import { analyzePdfWithVision } from "../services/llm/multimodalIngestion.js";
 import { analyzePdfTextFirst } from "../services/llm/textFirstIngestion.js";
@@ -448,6 +448,7 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
   const [ingestionProvider, setIngestionProvider] = useState(() => loadStudioApiKey(course.id) ? "groq" : "external");
   const [uploadProgress, setUploadProgress] = useState(null);
   const [pendingPdfs, setPendingPdfs] = useState([]);
+  const [rateLimitClock, setRateLimitClock] = useState(() => Date.now());
   const [externalAnalysisBatches, setExternalAnalysisBatches] = useState([]);
   const [externalDocumentProgress, setExternalDocumentProgress] = useState(null);
 
@@ -525,6 +526,12 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
     });
     return () => { active = false; };
   }, [course.id]);
+
+  useEffect(() => {
+    if (!pendingPdfs.some(item => item.blockedUntil && Date.parse(item.blockedUntil) > rateLimitClock)) return undefined;
+    const timer = setInterval(() => setRateLimitClock(Date.now()), 15000);
+    return () => clearInterval(timer);
+  }, [pendingPdfs, rateLimitClock]);
 
   function mutate(updater, message = "Cambios pendientes de guardar.") {
     setDraft((current) => typeof updater === "function" ? updater(current) : { ...current, ...updater });
