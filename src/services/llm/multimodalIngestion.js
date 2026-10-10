@@ -2,7 +2,7 @@ import { readStudioRecord, writeStudioRecord } from "../../core/studioPersistenc
 
 const DEFAULT_MODELS = ["qwen/qwen3.8-27b"];
 const ENDPOINT = "https://api.groq.com/openai/v1/chat/completions";
-const CACHE_PREFIX = "aulia:multimodal-ingestion:v1:";
+const CACHE_PREFIX = "aulia:multimodal-ingestion:v2:";
 const DIGITAL_BATCH_SIZE = 2;
 const MAX_DIGITAL_OUTPUT_TOKENS = 1500;
 const MAX_OCR_OUTPUT_TOKENS = 4500;
@@ -249,6 +249,27 @@ async function requestBatch({ apiKey, courseTitle, pages, batchNumber, signal })
   throw lastError || new Error("Ningún modelo multimodal de Groq está disponible.");
 }
 
+function visionCacheIdentity(material, sourcePages) {
+  const identity = String(material?.sourceFingerprint || material?.document?.id || material?.sourceName || "pdf");
+  const signature = hashString([
+    identity,
+    sourcePages.map(page => [
+      page.pageNumber,
+      hashString(page.extractedText || ""),
+    ].join("|")).join("::"),
+  ].join("||"));
+  const cacheKey = CACHE_PREFIX + String(material?.document?.id || material?.sourceName || "pdf") + ":" + signature;
+  return { signature, cacheKey };
+}
+
+export async function getCachedVisionPageNumbers(material) {
+  const sourcePages = (material?.aiPages || []).slice().sort((a, b) => Number(a.pageNumber) - Number(b.pageNumber));
+  if (!sourcePages.length) return new Set();
+  const { signature, cacheKey } = visionCacheIdentity(material, sourcePages);
+  const pages = await readCache(cacheKey, signature);
+  return new Set(Object.keys(pages || {}).map(Number).filter(Number.isFinite));
+}
+
 export async function analyzePdfWithVision(material, {
   apiKey,
   courseTitle = "",
@@ -258,16 +279,7 @@ export async function analyzePdfWithVision(material, {
   if (!apiKey) throw new Error("Para analizar gráficamente el PDF desde la carga, configurá primero tu clave personal de Groq.");
   const sourcePages = (material?.aiPages || []).slice().sort((a, b) => Number(a.pageNumber) - Number(b.pageNumber));
   if (!sourcePages.length) throw new Error("No hay imágenes de páginas para analizar.");
-  if (sourcePages.some(page => !String(page.imageDataUrl || "").startsWith("data:image/"))) {
-    throw new Error("AULIA no pudo preparar las imágenes de todas las páginas. Probá con otro PDF o con una versión de menor resolución.");
-  }
-
-  const signature = hashString(sourcePages.map(page => [
-    page.pageNumber,
-    hashString(page.extractedText || ""),
-    hashString(page.imageDataUrl || ""),
-  ].join("|")).join("::"));
-  const cacheKey = CACHE_PREFIX + String(material?.document?.id || material?.sourceName || "pdf") + ":" + signature;
+  const { signature, cacheKey } = visionCacheIdentity(material, sourcePages);
   const pageResults = await readCache(cacheKey, signature);
   let model = "qwen/qwen3.8-27b";
   const total = sourcePages.length;
@@ -283,6 +295,11 @@ export async function analyzePdfWithVision(material, {
           String(next.extractedText || "").trim().length >= 100) {
         batch.push(next);
       }
+    }
+
+    const missingImages = batch.filter(page => !String(page.imageDataUrl || "").startsWith("data:image/"));
+    if (missingImages.length) {
+      throw new Error("Faltan imágenes para analizar las páginas " + missingImages.map(page => page.pageNumber).join(", ") + ". AULIA no repetirá las páginas visuales que ya están guardadas.");
     }
 
     onProgress({
