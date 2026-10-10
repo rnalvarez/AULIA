@@ -6,7 +6,7 @@ const ENDPOINT = "https://api.groq.com/openai/v1/chat/completions";
 const CACHE_PREFIX = "aulia:multimodal-ingestion:v2:";
 const DIGITAL_BATCH_SIZE = 2;
 const MAX_DIGITAL_OUTPUT_TOKENS = 1500;
-const MAX_OCR_OUTPUT_TOKENS = 4500;
+const MAX_OCR_OUTPUT_TOKENS = 4000;
 
 function hashString(value) {
   let hash = 2166136261;
