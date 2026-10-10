@@ -48,9 +48,9 @@ function joinPdfTextItems(parts) {
       const gap = Number(item.x || 0) - (Number(previous.x || 0) + Number(previous.width || 0));
       const fontSize = Math.max(1, Number(previous.fontSize || item.fontSize || 10));
       const threshold = Math.max(1.15, Math.min(2.8, fontSize * 0.15));
-      const startsWithClosingPunctuation = /^[,.;:!?%\\)\\]\\}»”’]/u.test(currentText);
-      const endsWithOpeningPunctuation = /[(\\[\\{«“‘]$/u.test(text);
-      if (gap > threshold && !startsWithClosingPunctuation && !endsWithOpeningPunctuation && !/\\s$/.test(text)) {
+      const startsWithClosingPunctuation = /^[,.;:!?%\)\]\}»”’]/u.test(currentText);
+      const endsWithOpeningPunctuation = /[(\[\{«“‘]$/u.test(text);
+      if (gap > threshold && !startsWithClosingPunctuation && !endsWithOpeningPunctuation && !/\s$/.test(text)) {
         text += " ";
       }
     }
@@ -59,7 +59,7 @@ function joinPdfTextItems(parts) {
     previous = item;
   }
 
-  return text.replace(/\\s+/g, " ").trim();
+  return text.replace(/\s+/g, " ").trim();
 }
 
 function groupPdfItems(items, pageWidth = 0) {
