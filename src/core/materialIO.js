@@ -314,7 +314,7 @@ function buildTextSections(text, sourceName, markdown = false) {
   return sections;
 }
 
-async function readPdf(file, { includePageImages = false, onProgress = () => {} } = {}) {
+async function readPdf(file, { includePageImages = false, includeAIPageText = false, includePageImagesForLowText = false, onProgress = () => {} } = {}) {
   const pdfjsLib = await import("pdfjs-dist/legacy/build/pdf.mjs");
   pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
     "pdfjs-dist/legacy/build/pdf.worker.min.mjs",
@@ -349,8 +349,50 @@ async function readPdf(file, { includePageImages = false, onProgress = () => {} 
       if (structHeadings > 0) structTreePages += 1;
 
       const lines = groupPdfItems(textContent.items, viewport.width);
+      const pageTextForImageDecision = lines
+        .map(line => typeof line === "string" ? line : line?.text || "")
+        .filter(Boolean)
+        .join("\n")
+        .trim();
+      const alphanumericCount = (pageTextForImageDecision.match(/[\p{L}\p{N}]/gu) || []).length;
+      const replacementCount = (pageTextForImageDecision.match(/\uFFFD/g) || []).length;
+      const textLooksUnreliable = pageTextForImageDecision.length < 100 ||
+        (pageTextForImageDecision.length > 0 && alphanumericCount / pageTextForImageDecision.length < 0.23) ||
+        replacementCount > Math.max(2, pageTextForImageDecision.length * 0.01);
+      let hasEmbeddedImage = false;
+      let hasComplexVectorGraphics = false;
+      if (includePageImagesForLowText && !includePageImages) {
+        try {
+          const operatorList = await page.getOperatorList();
+          const ops = pdfjsLib.OPS || {};
+          const imageOps = new Set([
+            ops.paintImageXObject,
+            ops.paintInlineImageXObject,
+            ops.paintImageMaskXObject,
+            ops.paintImageMaskXObjectGroup,
+          ].filter(value => typeof value === "number"));
+          const drawingOps = new Set([
+            ops.constructPath,
+            ops.stroke,
+            ops.fill,
+            ops.eoFill,
+            ops.fillStroke,
+            ops.eoFillStroke,
+            ops.shadingFill,
+          ].filter(value => typeof value === "number"));
+          hasEmbeddedImage = operatorList.fnArray.some(operator => imageOps.has(operator));
+          const drawingCount = operatorList.fnArray.reduce((count, operator) => count + (drawingOps.has(operator) ? 1 : 0), 0);
+          hasComplexVectorGraphics = drawingCount >= 24;
+        } catch {
+          hasEmbeddedImage = false;
+          hasComplexVectorGraphics = false;
+        }
+      }
+      const needsVisualAnalysis = includePageImages ||
+        (includePageImagesForLowText && (textLooksUnreliable || hasEmbeddedImage || hasComplexVectorGraphics));
+      const renderPageImage = needsVisualAnalysis;
       let imageDataUrl = "";
-      if (includePageImages) {
+      if (renderPageImage) {
         let canvas = null;
         try {
           const maxDimension = 1500;
@@ -379,6 +421,7 @@ async function readPdf(file, { includePageImages = false, onProgress = () => {} 
         lines,
         structHeadings,
         imageDataUrl,
+        needsVisualAnalysis,
       });
 
       onProgress({ phase: includePageImages ? "rendering" : "extracting", processed: pageNumber, total: pageCount, pageNumber });
@@ -386,8 +429,8 @@ async function readPdf(file, { includePageImages = false, onProgress = () => {} 
     }
 
     const hasExtractableText = pages.some((page) => page.lines.length);
-    if (!hasExtractableText && !includePageImages) {
-      throw new Error("Este PDF parece ser un escaneo sin texto extraíble. Para leerlo, configurá tu clave personal de Groq antes de cargarlo y activá el análisis multimodal.");
+    if (!hasExtractableText && !includePageImages && !includePageImagesForLowText) {
+      throw new Error("Este PDF parece ser un escaneo sin texto extraíble. Activá IA interna · Groq para analizar visualmente las páginas que no tienen texto.");
     }
 
     const analysis = await analyzePdfStructure({
@@ -404,20 +447,21 @@ async function readPdf(file, { includePageImages = false, onProgress = () => {} 
       sourcePageCount: pageCount,
     });
 
-    if (!corpus.length && !includePageImages) {
+    if (!corpus.length && !includePageImages && !includePageImagesForLowText) {
       throw new Error("AULIA pudo abrir el PDF, pero no encontró unidades de contenido recuperables.");
     }
 
     return {
       corpus,
-      aiPages: includePageImages ? pages.map((page) => ({
+      aiPages: (includePageImages || includeAIPageText || includePageImagesForLowText) ? pages.map((page) => ({
         pageNumber: page.pageNumber,
-        extractedText: (page.readingLines || page.lines || [])
+        extractedText: (page.readingLines?.length ? page.readingLines : page.lines || [])
           .map((line) => typeof line === "string" ? line : line?.text || "")
           .filter(Boolean)
           .join("\n")
           .trim(),
         imageDataUrl: page.imageDataUrl || "",
+        needsVisualAnalysis: Boolean(page.needsVisualAnalysis),
       })) : undefined,
       bibliography: [],
       sourceName: file.name,
@@ -543,12 +587,12 @@ async function readDocx(file) {
   };
 }
 
-export async function readMaterialFile(file, { includePageImages = false, onProgress = () => {} } = {}) {
+export async function readMaterialFile(file, { includePageImages = false, includeAIPageText = false, includePageImagesForLowText = false, onProgress = () => {} } = {}) {
   const name = file.name || "material";
   const ext = name.toLowerCase().split(".").pop();
   const documentId = makeDocumentId(name);
 
-  if (ext === "pdf") return readPdf(file, { includePageImages, onProgress });
+  if (ext === "pdf") return readPdf(file, { includePageImages, includeAIPageText, includePageImagesForLowText, onProgress });
   if (ext === "docx") return readDocx(file);
 
   if (!["txt", "md", "markdown", "json"].includes(ext)) {
@@ -793,11 +837,13 @@ export function applyAIMultimodalAnalysis(material, pageResults, model = "qwen/q
         content: pageContent,
         sourcePageStart: pageNumber,
         sourcePageEnd: pageNumber,
-        segmentationSource: "ai-multimodal",
+        segmentationSource: (String(provider || "").includes("texto primero") || String(provider || "").includes("análisis textual")) ? "ai-text-first" : "ai-multimodal",
         confidence,
         confidenceTotal: confidence,
         confidenceCount: 1,
-        evidence: ["Segmentación semántica y lectura visual mediante " + model],
+        evidence: [(String(provider || "").includes("texto primero") || String(provider || "").includes("análisis textual"))
+          ? "Segmentación semántica mediante " + model + "; visión utilizada solo en páginas seleccionadas por imágenes integradas o poco texto extraíble."
+          : "Segmentación semántica y lectura visual mediante " + model],
         visualElementCount: visualElements.length,
         needsReview,
         reviewNotes: reviewNote,
@@ -826,8 +872,10 @@ export function applyAIMultimodalAnalysis(material, pageResults, model = "qwen/q
   const analysis = {
     ...baseAnalysis,
     version: 3,
-    method: "ai-multimodal",
-    documentType: "documento analizado con IA multimodal",
+    method: (String(provider || "").includes("texto primero") || String(provider || "").includes("análisis textual")) ? "ai-text-first-selective-vision" : "ai-multimodal",
+    documentType: (String(provider || "").includes("texto primero") || String(provider || "").includes("análisis textual"))
+      ? "documento analizado primero mediante texto extraído y visión selectiva"
+      : "documento analizado con IA multimodal",
     confidence,
     pageCount: sourcePages.length,
     sectionCount: cleanSections.length,
@@ -865,7 +913,7 @@ export function applyAIMultimodalAnalysis(material, pageResults, model = "qwen/q
     aiAnalysis: {
       provider,
       model,
-      method: "multimodal-page-analysis",
+      method: (String(provider || "").includes("texto primero") || String(provider || "").includes("análisis textual")) ? "text-first-selective-vision" : "multimodal-page-analysis",
       pagesProcessed: pageResults.length,
       pagesTotal: sourcePages.length,
       needsReview: warnings.length > 0,
