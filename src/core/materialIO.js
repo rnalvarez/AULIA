@@ -3,7 +3,7 @@ import { groupPdfItems, analyzePdfStructure } from "./pdfStructure.js";
 function slugify(value) {
   return String(value ?? "")
     .normalize("NFD")
-    .replace(/[\\u0300-\\u036f]/g, "")
+    .replace(/[\u0300-\u036f]/g, "")
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-|-$/g, "")
@@ -15,33 +15,33 @@ const OVERLAP_CHARS = 320;
 
 function normalizeWhitespace(value) {
   return String(value ?? "")
-    .replace(/\\u00ad/g, "")
-    .replace(/[ \\t]+/g, " ")
-    .replace(/ *\\n */g, "\\n")
-    .replace(/\\n{3,}/g, "\\n\\n")
+    .replace(/\u00ad/g, "")
+    .replace(/[ \t]+/g, " ")
+    .replace(/ *\n */g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
     .trim();
 }
 
 function cleanPdfLine(value) {
   return String(value ?? "")
-    .replace(/\\u00ad/g, "")
-    .replace(/\\s+/g, " ")
+    .replace(/\u00ad/g, "")
+    .replace(/\s+/g, " ")
     .trim();
 }
 
 function repairHyphenation(value) {
   return String(value ?? "")
-    .replace(/([A-Za-zÁÉÍÓÚÜÑáéíóúüñ])[-‐‑]\\s+([a-záéíóúüñ])/g, "$1$2");
+    .replace(/([A-Za-zÁÉÍÓÚÜÑáéíóúüñ])[-‐‑]\s+([a-záéíóúüñ])/g, "$1$2");
 }
 
 function normalizedKey(value) {
   return cleanPdfLine(value)
     .toLowerCase()
     .normalize("NFD")
-    .replace(/[\\u0300-\\u036f]/g, "")
-    .replace(/\\d+/g, "#")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/\d+/g, "#")
     .replace(/[^a-z0-9# ]+/g, " ")
-    .replace(/\\s+/g, " ")
+    .replace(/\s+/g, " ")
     .trim();
 }
 
@@ -50,8 +50,8 @@ function isNoiseLine(line, repeatedKeys = new Set()) {
   if (!clean) return true;
   const key = normalizedKey(clean);
   if (repeatedKeys.has(key)) return true;
-  if (/^(?:page|p[aá]gina)\\s+\\d+$/i.test(clean)) return true;
-  if (/^[-–—]?\\s*\\d+\\s*[-–—]?$/.test(clean)) return true;
+  if (/^(?:page|p[aá]gina)\s+\d+$/i.test(clean)) return true;
+  if (/^[-–—]?\s*\d+\s*[-–—]?$/.test(clean)) return true;
   return false;
 }
 
@@ -60,7 +60,7 @@ function splitAtNaturalBoundaries(text, maxChars = MAX_UNIT_CHARS) {
   if (!clean) return [];
   if (clean.length <= maxChars) return [clean];
 
-  const paragraphs = clean.split(/\\n{2,}/).map((item) => item.trim()).filter(Boolean);
+  const paragraphs = clean.split(/\n{2,}/).map((item) => item.trim()).filter(Boolean);
   const pieces = [];
   let current = "";
 
@@ -77,7 +77,7 @@ function splitAtNaturalBoundaries(text, maxChars = MAX_UNIT_CHARS) {
     }
 
     if ((current.length + 2 + paragraph.length) <= maxChars) {
-      current += "\\n\\n" + paragraph;
+      current += "\n\n" + paragraph;
       continue;
     }
 
@@ -88,7 +88,7 @@ function splitAtNaturalBoundaries(text, maxChars = MAX_UNIT_CHARS) {
       continue;
     }
 
-    const sentences = paragraph.match(/[^.!?]+[.!?]+(?:\\s|$)|[^.!?]+$/g) || [paragraph];
+    const sentences = paragraph.match(/[^.!?]+[.!?]+(?:\s|$)|[^.!?]+$/g) || [paragraph];
     for (const sentenceRaw of sentences) {
       const sentence = sentenceRaw.trim();
       if (!sentence) continue;
@@ -112,7 +112,7 @@ function splitAtNaturalBoundaries(text, maxChars = MAX_UNIT_CHARS) {
     if (index === 0) return piece;
     const previous = pieces[index - 1];
     const tail = previous.slice(Math.max(0, previous.length - OVERLAP_CHARS)).trim();
-    return tail ? tail + "\\n\\n" + piece : piece;
+    return tail ? tail + "\n\n" + piece : piece;
   });
 }
 
@@ -250,14 +250,14 @@ function makeDocumentId(sourceName) {
 }
 
 function buildTextSections(text, sourceName, markdown = false) {
-  const lines = String(text ?? "").replace(/\\r/g, "").split("\\n");
+  const lines = String(text ?? "").replace(/\r/g, "").split("\n");
   const sections = [];
   let path = [];
   let current = null;
 
   function flush() {
     if (!current) return;
-    const content = normalizeWhitespace(repairHyphenation(current.lines.join("\\n")));
+    const content = normalizeWhitespace(repairHyphenation(current.lines.join("\n")));
     if (content) {
       sections.push({
         title: current.title || path[path.length - 1] || "Material general",
@@ -278,7 +278,7 @@ function buildTextSections(text, sourceName, markdown = false) {
 
     let heading = null;
     if (markdown) {
-      const md = line.match(/^(#{1,6})\\s+(.+)$/);
+      const md = line.match(/^(#{1,6})\s+(.+)$/);
       if (md) heading = { title: md[2].trim(), level: md[1].length };
     }
     heading ||= headingInfo(line);
@@ -513,7 +513,7 @@ async function readDocx(file) {
 
   function flush() {
     if (!current) return;
-    const content = normalizeWhitespace(repairHyphenation(current.lines.join("\\n")));
+    const content = normalizeWhitespace(repairHyphenation(current.lines.join("\n")));
     if (content) {
       sections.push({
         title: current.title || path[path.length - 1] || "Material general",
@@ -526,7 +526,7 @@ async function readDocx(file) {
   }
 
   for (const node of Array.from(doc.body.querySelectorAll("h1,h2,h3,h4,h5,h6,p,li"))) {
-    const text = node.textContent?.replace(/\\s+/g, " ").trim();
+    const text = node.textContent?.replace(/\s+/g, " ").trim();
     if (!text) continue;
 
     const heading = /^H([1-6])$/i.test(node.tagName)
@@ -841,21 +841,21 @@ export function applySelectiveVisualAnalysis(material, pageResults, model = "qwe
         "[Elemento visual: " + kind + (title ? " · " + title : "") + " · página " + pageNumber + "]",
         description,
         labels ? "Texto, etiquetas o valores visibles: " + labels : "",
-        table ? "Tabla reconstruida a partir de la página:\\n" + table : "",
-      ].filter(Boolean).join("\\n");
+        table ? "Tabla reconstruida a partir de la página:\n" + table : "",
+      ].filter(Boolean).join("\n");
     }).filter(Boolean);
 
     const bodyParts = [];
     if (needsOcr) {
       const recoveredText = transcription || rawText;
-      if (recoveredText) bodyParts.push("TEXTO RECUPERADO POR LECTURA VISUAL · PÁGINA " + pageNumber + "\\n" + recoveredText);
+      if (recoveredText) bodyParts.push("TEXTO RECUPERADO POR LECTURA VISUAL · PÁGINA " + pageNumber + "\n" + recoveredText);
     } else if (transcription && transcription !== rawText) {
-      bodyParts.push("TRANSCRIPCIÓN ALTERNATIVA PROPUESTA POR IA · VERIFICAR CON EL TEXTO EXTRAÍDO · PÁGINA " + pageNumber + "\\n" + transcription);
+      bodyParts.push("TRANSCRIPCIÓN ALTERNATIVA PROPUESTA POR IA · VERIFICAR CON EL TEXTO EXTRAÍDO · PÁGINA " + pageNumber + "\n" + transcription);
       warnings.push("Página " + pageNumber + ": la lectura visual propuso una transcripción distinta del texto extraído; ambas versiones se conservan para revisión.");
     }
 
-    if (visualText.length) bodyParts.push("LECTURA VISUAL ASISTIDA POR IA · PÁGINA " + pageNumber + "\\n" + visualText.join("\\n\\n"));
-    const content = bodyParts.join("\\n\\n").trim();
+    if (visualText.length) bodyParts.push("LECTURA VISUAL ASISTIDA POR IA · PÁGINA " + pageNumber + "\n" + visualText.join("\n\n"));
+    const content = bodyParts.join("\n\n").trim();
     const reviewNote = String(analysis.reviewNotes || "").trim();
     const needsReview = Boolean(analysis.needsReview || (!content && needsOcr) || (transcription && transcription !== rawText && !needsOcr));
 
