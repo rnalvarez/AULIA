@@ -354,8 +354,8 @@ async function readPdf(file, { includePageImages = false, includeAIPageText = fa
         .filter(Boolean)
         .join("\n")
         .trim();
-      const alphanumericCount = (pageTextForImageDecision.match(/[\\p{L}\\p{N}]/gu) || []).length;
-      const replacementCount = (pageTextForImageDecision.match(/\\uFFFD/g) || []).length;
+      const alphanumericCount = (pageTextForImageDecision.match(/[\p{L}\p{N}]/gu) || []).length;
+      const replacementCount = (pageTextForImageDecision.match(/\uFFFD/g) || []).length;
       const textLooksUnreliable = pageTextForImageDecision.length < 100 ||
         (pageTextForImageDecision.length > 0 && alphanumericCount / pageTextForImageDecision.length < 0.23) ||
         replacementCount > Math.max(2, pageTextForImageDecision.length * 0.01);
