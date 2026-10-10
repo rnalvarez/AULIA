@@ -194,7 +194,7 @@ function makeApiError(status, message, response, errorCode = "") {
   const resetRequestsMs = parseWaitMs(response?.headers?.get("x-ratelimit-reset-requests"));
   const resetTokensMs = parseWaitMs(response?.headers?.get("x-ratelimit-reset-tokens"));
   error.retryAfterMs = error.isDailyLimit
-    ? (resetRequestsMs || parseWaitMs(response?.headers?.get("retry-after")) || waitFromMessage(text))
+    ? (waitFromMessage(text) || parseWaitMs(response?.headers?.get("retry-after")) || resetRequestsMs)
     : (parseWaitMs(response?.headers?.get("retry-after")) || resetTokensMs || waitFromMessage(text));
   if (status === 401) error.message = "La clave de Groq no es válida. Revisá la clave docente en Studio.";
   if (status === 413) error.message = "La tanda de texto superó el tamaño admitido. AULIA conservó el avance; reanudá para continuar con tandas más pequeñas.";
