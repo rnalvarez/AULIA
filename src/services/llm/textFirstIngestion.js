@@ -165,7 +165,7 @@ function parseWaitMs(value) {
   if (!text) return 0;
   if (/^\d+(?:\.\d+)?$/.test(text)) return Number(text) * 1000;
   let milliseconds = 0;
-  const minute = text.match(/([\d.]+)\s*m/i);
+  const minute = text.match(/([\d.]+)\s*m(?!s)/i);
   const second = text.match(/([\d.]+)\s*s/i);
   const millis = text.match(/([\d.]+)\s*ms/i);
   if (minute) milliseconds += Number(minute[1]) * 60000;
@@ -199,7 +199,7 @@ function makeApiError(status, message, response, errorCode = "") {
   return error;
 }
 
-async function requestBatch({ apiKey, courseTitle, pages, batchNumber, previousPages, signal }) {
+async function requestBatch({ apiKey, courseTitle, pages, batchNumber, previousPages, signal, onRateWait = () => {}, processed = 0, total = 0 }) {
   const prompt = promptForBatch(courseTitle, pages, batchNumber, previousPages);
   let lastError;
   for (let attempt = 0; attempt < 4; attempt += 1) {
@@ -230,6 +230,14 @@ async function requestBatch({ apiKey, courseTitle, pages, batchNumber, previousP
       if (response.status === 429 && !error.isDailyLimit && attempt < 3) {
         lastError = error;
         const waitMs = Math.max(1000, Math.min(error.retryAfterMs || (4000 * (attempt + 1)), 60000));
+        onRateWait({
+          phase: "rate-wait",
+          processed,
+          total,
+          model: MODEL,
+          activePageNumbers: pages.map(page => Number(page.pageNumber)),
+          message: "Límite temporal de Groq. Reintentando esta misma tanda en " + Math.ceil(waitMs / 1000) + " segundos; las páginas anteriores están guardadas.",
+        });
         await new Promise(resolve => setTimeout(resolve, waitMs));
         continue;
       }
@@ -359,12 +367,12 @@ export async function analyzePdfTextFirst(material, {
     let result;
     try {
       result = await requestBatch({
-        apiKey, courseTitle, pages: batch, batchNumber: batchIndex, previousPages, signal,
+        apiKey, courseTitle, pages: batch, batchNumber: batchIndex, previousPages, signal,\n        processed: Object.keys(pageResults).length,\n        total: textPages.length,\n        onRateWait: progress => onProgress(progress),
       });
     } catch (error) {
       if (error?.code === "AULIA_INVALID_BATCH" && batch.length > 1) {
         const middle = Math.ceil(batch.length / 2);
-        batches.unshift(batch.slice(middle), batch.slice(0, middle));
+        batches.unshift(batch.slice(0, middle), batch.slice(middle));
         batchIndex -= 1;
         continue;
       }
