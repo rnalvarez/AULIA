@@ -61,9 +61,9 @@ Esto evita almacenar grandes corpus dentro de celdas de la Sheet y mantiene sepa
 
 La propuesta pedagógica automática no es lo mismo que el índice de conocimiento del chatbot. Para que cada cátedra pueda recuperar conceptos expresados con sinónimos, paráfrasis y relaciones entre ideas, Studio permite construir una **base de conocimiento conceptual** desde todos los pasajes activos de la bibliografía.
 
-En el paso **Bibliografía**, Studio reúne la carga del material, la preparación del índice conceptual y la revisión del alcance/prioridad docente. Para los PDF, si el docente configura su clave personal de Groq antes de subirlos, AULIA renderiza cada página y combina la imagen con el texto extraído: el modelo multimodal `qwen/qwen3.8-27b` propone la jerarquía semántica, transcribe páginas escaneadas cuando puede, reconstruye tablas y describe gráficos, diagramas y fórmulas. Esa lectura se convierte en secciones y fragmentos consultables antes de construir la base conceptual. DOCX/TXT/Markdown conservan por ahora la extracción local; el análisis conceptual posterior sigue disponible para todos los formatos.
+En el paso **Bibliografía**, Studio reúne la carga del material, la preparación del índice conceptual y la revisión del alcance/prioridad docente. Para PDF, el flujo de Groq es **texto primero**: PDF.js extrae localmente el texto completo y el modelo `qwen/qwen3.8-27b` recibe muestras compactas por página para proponer la jerarquía semántica. AULIA conserva el texto completo extraído en el corpus y envía imágenes únicamente para páginas con poco texto recuperable o con imágenes rasterizadas integradas detectables. Esto reduce el gasto de tokens, aunque gráficos vectoriales y errores de extracción aún pueden exigir revisión docente. DOCX/TXT/Markdown conservan por ahora la extracción local; el análisis conceptual posterior sigue disponible para todos los formatos.
 
-El trabajo interno con Groq es incremental: Studio guarda el avance en el borrador local tras cada lote y puede continuar si hay límites temporales. La clave permanece en la sesión del docente; no se guarda en el course pack ni se envía a Google Sheets. La firma de la base conceptual corresponde al contenido e identidad de todos los pasajes, pero no a los controles de alcance y prioridad; por eso el docente puede cambiar esas decisiones después del análisis sin regenerar el índice.
+El trabajo interno con Groq es incremental: Studio guarda cada tanda textual validada en IndexedDB y mantiene el PDF pendiente para reanudar. Los errores temporales de cuota pueden reintentarse; si se alcanza un límite diario, se detiene sin marcar páginas como completas y el docente puede reanudar más tarde. La clave permanece en el almacenamiento de la sesión docente; no se guarda en el course pack ni se envía a Google Sheets. La firma de la base conceptual corresponde al contenido e identidad de todos los pasajes, pero no a los controles de alcance y prioridad.
 
 **Incluido**, **Referencial** y **Excluir** se aplican durante la recuperación de información del chatbot. AULIA no recupera entradas cuyo soporte bibliográfico incluya material excluido; para ser conservadora, una entrada conceptual con referencias mezcladas entre material excluido y activo también queda fuera de la recuperación. La prioridad Central/Complementario/Contexto ajusta el orden de recuperación, sin eliminar contenido por sí sola.
 
@@ -109,18 +109,21 @@ Si otro editor modificó la cátedra, el backend rechaza el guardado y Studio so
 
 ## IA docente
 
-### Lectura multimodal durante la carga de PDF
+### Análisis de PDF con Groq: texto primero y visión selectiva
 
-Cuando se configura una clave personal de Groq antes de cargar un PDF, AULIA renderiza sus páginas en imágenes de trabajo y envía al modelo multimodal, junto con el texto extraído de cada página, tandas consecutivas para analizar:
+Al cargar un PDF con una clave personal de Groq, AULIA sigue este flujo:
 
-- Jerarquía semántica de capítulos y secciones, sin asumir que cada página sea una unidad pedagógica.
-- Texto de páginas escaneadas que no tengan capa de texto recuperable.
-- Tablas en formato estructurado y descripciones de gráficos, diagramas, fórmulas y otros elementos visuales.
-- Confianza estimada y advertencias que requieren cotejo docente.
+1. **Extracción local.** PDF.js obtiene el texto de cada página sin consumir tokens de Groq y guarda referencias a la página original.
+2. **Selección local de páginas visuales.** AULIA genera imágenes solo de páginas con menos de 100 caracteres de texto recuperable o con objetos de imagen rasterizada detectados en el PDF. Las páginas normales no se rasterizan para enviarlas al modelo.
+3. **Análisis textual por tandas.** El modelo recibe extractos compactos de cada página para identificar capítulo, sección y ruta jerárquica. El texto completo extraído permanece en el corpus local; la IA no debe volver a transcribirlo en la respuesta.
+4. **Lectura visual selectiva.** Las páginas seleccionadas se analizan con la ruta multimodal para intentar leer escaneos y recuperar información de imágenes, tablas o gráficos incrustados.
+5. **Validación y cobertura.** AULIA comprueba que cada página tenga un resultado válido, guarda las tandas en IndexedDB y no incorpora el documento si falta una página.
 
-El resultado pasa a ser el texto consultable y la organización del corpus de ese PDF. Si la IA ofrece una transcripción alternativa, Studio conserva también el texto extraído original para comparación. Las referencias de página se mantienen; no se incluye la imagen de la página ni la API key en el course pack. Las salidas visuales pueden contener errores, por lo que las secciones marcadas para revisar deben cotejarse con el documento antes de publicar.
+Esta estrategia reduce el consumo comparada con enviar las 236 imágenes de un documento de 236 páginas. La cantidad final de tokens depende de la extensión real del texto, de cuántas páginas requieran visión y de los límites configurados para la cuenta Groq. Una página con gráficos vectoriales que no estén representados como imágenes rasterizadas puede no activarse automáticamente para visión; revisá el documento y las advertencias antes de publicar.
 
-El modelo procesa hasta dos páginas digitales por petición y una página escaneada por petición para reservar más capacidad de salida para OCR. La cuota gratuita de Groq puede detener el análisis a mitad del archivo. Studio muestra el progreso por página y guarda el PDF pendiente en IndexedDB, junto con los resultados de páginas completadas. Si se interrumpe, aparece la acción «Reanudar análisis guardado»: el docente no necesita seleccionar el PDF otra vez. El archivo solo podrá recuperarse en el mismo navegador/perfil y mientras no se borre el almacenamiento del sitio. No se garantiza que un libro extenso pueda completarse en un mismo día.
+La lectura visual u OCR asistido puede equivocarse. Las páginas con poca confianza o marcadas para revisión deben cotejarse con el PDF original. La verificación automática de cobertura confirma que haya un resultado por página, no que cada interpretación semántica sea perfecta.
+
+El modelo agrupa varias páginas de texto por petición y reduce automáticamente el tamaño de las tandas si una respuesta queda mal formada. Los límites temporales se reintentan con espera; un límite diario detiene el trabajo y conserva el avance ya validado. Studio muestra el progreso y permite **«Reanudar análisis guardado»** sin volver a seleccionar el PDF. El archivo solo podrá recuperarse en el mismo navegador/perfil y mientras no se borre el almacenamiento del sitio.
 
 ### Análisis del PDF con una IA externa
 
@@ -133,13 +136,15 @@ Este recorrido analiza el PDF original. Es distinto de la opción de IA externa 
 ```text
 PDF + clave personal Groq
     ↓
-texto extraído + imágenes de las páginas
+extracción de texto local por página
     ↓
-IA multimodal: OCR asistido + jerarquía + tablas/gráficos
+IA textual por tandas → jerarquía y rutas semánticas
+    ↓
+visión solo en páginas seleccionadas
     ↓
 validación de cobertura y trazabilidad
     ↓
-corpus con secciones semánticas
+corpus con texto completo y secciones
     ↓
 base conceptual por lotes (Groq o IA externa)
     ↓
@@ -148,7 +153,7 @@ revisión docente
 course pack
 ```
 
-Para DOCX/TXT/Markdown/JSON, o cuando no hay clave Groq configurada, se conserva por ahora la extracción disponible. La alternativa de IA externa sigue funcionando para construir el índice conceptual a partir del paquete de pasajes, pero todavía no reemplaza la lectura visual durante la carga.
+Para DOCX/TXT/Markdown/JSON, o cuando no hay clave Groq configurada, se conserva por ahora la extracción disponible. La IA externa puede analizar el PDF original por tandas e importar sus JSON; esa ruta no depende de la cuota de Groq.
 
 La clave de la IA docente se mantiene en `sessionStorage` y no forma parte del course pack.
 
