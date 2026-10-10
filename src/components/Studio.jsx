@@ -11,6 +11,7 @@ import { buildKnowledgeBase, buildKnowledgePassages, isSupportedKnowledgeExcerpt
 import { createExternalKnowledgePackage, createExternalKnowledgePrompt, downloadJsonFile, downloadTextFile, EXTERNAL_KNOWLEDGE_OUTPUT_FORMAT } from "../core/externalKnowledgeBaseIO.js";
 import { KNOWLEDGE_BASE_VERSION, isKnowledgeBaseCurrent, summarizeKnowledgeBase, knowledgeCorpusSignature, legacyKnowledgeCorpusSignature } from "../core/knowledgeBase.js";
 import { clearStudioApiKey, isGroqApiKey, loadStudioApiKey, saveStudioApiKey } from "../utils/studioStorage.js";
+import { storeOriginalPdfInDrive } from "../services/auth/studioAccess.js";
 import LegalNotice from "./LegalNotice.jsx";
 
 const STORAGE_PREFIX = "aulia:studio:";
@@ -695,6 +696,7 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
         const useVision = ext === "pdf" && Boolean(studioApiKey) && (forceVision || ingestionProvider === "groq");
         let pendingId = resumePendingId || "";
         let lastProgress = { processed: 0, total: 0 };
+        let originalPdfStorage = null;
         try {
           if (useVision) {
             if (!pendingId) {
@@ -726,6 +728,37 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
               setStatus(message);
               continue;
             }
+          }
+
+          if (ext === "pdf") {
+            setStatus("Guardando el PDF original en Google Drive privado…");
+            originalPdfStorage = await storeOriginalPdfInDrive(
+              courseMeta?.courseId || course.id,
+              file,
+              progress => setUploadProgress({
+                fileName: file.name,
+                phase: "storing-original",
+                processed: progress.processed || 0,
+                total: progress.total || 1,
+                message: progress.alreadyStored
+                  ? "Este PDF ya está guardado en la carpeta privada de Drive. Se reutilizará, sin subir otra copia."
+                  : progress.complete
+                    ? "PDF original guardado en Drive. Ahora AULIA preparará el texto y el índice de consulta."
+                    : "Guardando el PDF original en Drive · parte " + (progress.processed || 0) + " de " + (progress.total || 1) + ".",
+                error: "",
+                pendingId,
+              })
+            );
+            setUploadProgress({
+              fileName: file.name,
+              phase: "storing-original",
+              processed: 1,
+              total: 1,
+              message: "PDF original conservado en la carpeta privada de Google Drive de esta cátedra.",
+              error: "",
+              pendingId,
+              originalPdfUrl: originalPdfStorage.fileUrl || "",
+            });
           }
 
           setStatus("Preparando " + file.name + "…");
@@ -935,10 +968,24 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
           }
 
           const material = materialToCorpus(prepared, workingDraft.corpus || []);
+          const materialDocument = material.document && originalPdfStorage?.fileId
+            ? {
+                ...material.document,
+                originalPdf: {
+                  fileId: originalPdfStorage.fileId,
+                  fileUrl: originalPdfStorage.fileUrl,
+                  fileName: originalPdfStorage.fileName || file.name,
+                  fileSize: Number(originalPdfStorage.fileSize || file.size),
+                  lastModified: Number(originalPdfStorage.lastModified || file.lastModified || 0),
+                  storedAt: String(originalPdfStorage.storedAt || new Date().toISOString()),
+                  storage: "Google Drive privado",
+                },
+              }
+            : material.document;
           workingDraft = {
             ...workingDraft,
             corpus: [...(workingDraft.corpus || []), ...material.corpus],
-            documents: mergeImportedDocuments(workingDraft.documents || [], material.document ? [material.document] : []),
+            documents: mergeImportedDocuments(workingDraft.documents || [], materialDocument ? [materialDocument] : []),
             bibliography: mergeImportedBibliography(workingDraft.bibliography || [], material.bibliography || []),
             knowledgeBase: null,
           };
@@ -961,9 +1008,10 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
             processed: useVision ? extracted.aiPages.length : 1,
             total: useVision ? extracted.aiPages.length : 1,
             model: prepared.aiAnalysis?.model || "",
-            message: useVision
+            message: (useVision
               ? "Documento incorporado. Se analizó el texto y solo se enviaron imágenes de páginas seleccionadas por contener imágenes integradas, gráficos vectoriales complejos o poco texto extraíble."
-              : "Documento incorporado al corpus.",
+              : "Documento incorporado al corpus.") +
+              (originalPdfStorage?.fileId ? " El PDF original quedó conservado en la carpeta privada de Drive de esta cátedra." : ""),
             error: "",
             pendingId: "",
           });
@@ -1007,6 +1055,7 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
             pendingId,
             blockedUntil,
             isDailyLimit,
+            originalPdfUrl: originalPdfStorage?.fileUrl || "",
           });
           if (pendingId) {
             try { setPendingPdfs(await listPendingPdfs(course.id)); } catch {}
@@ -2140,15 +2189,16 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
           </div>}
 
           {uploadProgress && <div className={"studio-wf-ai-report " + (uploadProgress.phase === "complete" ? "ok" : uploadProgress.phase === "paused" || uploadProgress.phase === "quota-wait" || uploadProgress.phase === "error" ? "error" : "")}>
-            <strong>{uploadProgress.phase === "complete" ? "✓ Carga completada" : uploadProgress.phase === "paused" ? "Análisis pausado; el trabajo está guardado" : uploadProgress.phase === "quota-wait" ? "Cuota de Groq agotada; reanudación controlada" : uploadProgress.phase === "error" ? "No se pudo completar la carga" : uploadProgress.phase === "rate-wait" ? "Esperando renovación de cuota…" : uploadProgress.phase === "restoring" ? "Recuperando la preparación guardada…" : uploadProgress.phase === "processing" || uploadProgress.phase === "processing-batch" ? "IA analizando el documento…" : uploadProgress.phase === "rendering" ? "Preparando solo las páginas visuales…" : "Preparando documento…"}</strong>
+            <strong>{uploadProgress.phase === "complete" ? "✓ Carga completada" : uploadProgress.phase === "paused" ? "Análisis pausado; el trabajo está guardado" : uploadProgress.phase === "quota-wait" ? "Cuota de Groq agotada; reanudación controlada" : uploadProgress.phase === "error" ? "No se pudo completar la carga" : uploadProgress.phase === "rate-wait" ? "Esperando renovación de cuota…" : uploadProgress.phase === "restoring" ? "Recuperando la preparación guardada…" : uploadProgress.phase === "processing" || uploadProgress.phase === "processing-batch" ? "IA analizando el documento…" : uploadProgress.phase === "rendering" ? "Preparando solo las páginas visuales…" : uploadProgress.phase === "storing-original" ? "Guardando PDF original en Google Drive…" : "Preparando documento…"}</strong>
             {uploadProgress.fileName && <span>{uploadProgress.fileName}</span>}
             {Number(uploadProgress.total) > 0 && <>
-              <span>{uploadProgress.processed || 0} de {uploadProgress.total} {uploadProgress.phase === "restoring" ? "páginas recuperadas" : uploadProgress.phase === "rendering" ? "páginas preparadas" : uploadProgress.phase === "extracting" ? "páginas leídas" : "páginas analizadas"}{uploadProgress.activePages?.length ? " · analizando ahora: " + uploadProgress.activePages.join(", ") : ""}</span>
+              <span>{uploadProgress.processed || 0} de {uploadProgress.total} {uploadProgress.phase === "storing-original" ? "partes enviadas" : uploadProgress.phase === "restoring" ? "páginas recuperadas" : uploadProgress.phase === "rendering" ? "páginas preparadas" : uploadProgress.phase === "extracting" ? "páginas leídas" : "páginas analizadas"}{uploadProgress.activePages?.length ? " · analizando ahora: " + uploadProgress.activePages.join(", ") : ""}</span>
               <progress className="studio-wf-progress" max={uploadProgress.total} value={Math.min(uploadProgress.processed || 0, uploadProgress.total)}/>
             </>}
             {uploadProgress.message && <small>{uploadProgress.message}</small>}
             {uploadProgress.model && <small>Modelo: {uploadProgress.model}</small>}
             {uploadProgress.error && <small>{uploadProgress.error}</small>}
+            {uploadProgress.originalPdfUrl && <small><a href={uploadProgress.originalPdfUrl} target="_blank" rel="noreferrer">Abrir PDF original conservado en Drive</a></small>}
             {(uploadProgress.phase === "paused" || uploadProgress.phase === "quota-wait") && uploadProgress.pendingId && <button className="primary" type="button" onClick={() => resumePendingPdf({ id: uploadProgress.pendingId, fileName: uploadProgress.fileName })} disabled={!canEdit || busy || Boolean(uploadProgress.blockedUntil && Date.parse(uploadProgress.blockedUntil) > rateLimitClock)}>{uploadProgress.blockedUntil && Date.parse(uploadProgress.blockedUntil) > rateLimitClock ? "Esperar restablecimiento de Groq" : "Reanudar desde el avance guardado"}</button>}
           </div>}
 
@@ -2264,6 +2314,16 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
                 {!knowledgeBaseCurrent && <small>Antes de publicar, completá el análisis de todos los pasajes para que las respuestas puedan rastrearse hasta la bibliografía.</small>}
               </div>
             </section>
+
+            {(draft.documents || []).filter(document => document?.originalPdf?.fileUrl).map(document => (
+              <div className="studio-wf-structure-note" key={"original-pdf-" + document.id}>
+                <strong>PDF original conservado en Google Drive privado:</strong>{" "}
+                <a href={document.originalPdf.fileUrl} target="_blank" rel="noreferrer">
+                  Abrir {document.originalPdf.fileName || document.sourceName || document.title || "PDF original"}
+                </a>
+                <span> · {(Number(document.originalPdf.fileSize || 0) / (1024 * 1024)).toFixed(1)} MB</span>
+              </div>
+            ))}
 
             <div className="studio-wf-material-documents">
               {materialDocumentGroups.map((documentGroup, documentIndex) => (
