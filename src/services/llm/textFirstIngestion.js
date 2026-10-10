@@ -169,7 +169,7 @@ function parseWaitMs(value) {
   const second = text.match(/([\d.]+)\s*s/i);
   const millis = text.match(/([\d.]+)\s*ms/i);
   if (minute) milliseconds += Number(minute[1]) * 60000;
-  if (second && !/ms/i.test(text)) milliseconds += Number(second[1]) * 1000;
+  if (second) milliseconds += Number(second[1]) * 1000;
   if (millis) milliseconds += Number(millis[1]);
   return milliseconds;
 }
@@ -367,7 +367,10 @@ export async function analyzePdfTextFirst(material, {
     let result;
     try {
       result = await requestBatch({
-        apiKey, courseTitle, pages: batch, batchNumber: batchIndex, previousPages, signal,\n        processed: Object.keys(pageResults).length,\n        total: textPages.length,\n        onRateWait: progress => onProgress(progress),
+        apiKey, courseTitle, pages: batch, batchNumber: batchIndex, previousPages, signal,
+        processed: Object.keys(pageResults).length,
+        total: textPages.length,
+        onRateWait: progress => onProgress(progress),
       });
     } catch (error) {
       if (error?.code === "AULIA_INVALID_BATCH" && batch.length > 1) {
