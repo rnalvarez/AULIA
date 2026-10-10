@@ -354,7 +354,24 @@ async function readPdf(file, { includePageImages = false, includeAIPageText = fa
         .filter(Boolean)
         .join("\n")
         .trim();
-      const renderPageImage = includePageImages || (includePageImagesForLowText && pageTextForImageDecision.length < 100);
+      let hasEmbeddedImage = false;
+      if (includePageImagesForLowText && !includePageImages) {
+        try {
+          const operatorList = await page.getOperatorList();
+          const imageOps = new Set([
+            pdfjsLib.OPS?.paintImageXObject,
+            pdfjsLib.OPS?.paintInlineImageXObject,
+            pdfjsLib.OPS?.paintImageMaskXObject,
+            pdfjsLib.OPS?.paintImageMaskXObjectGroup,
+          ].filter(value => typeof value === "number"));
+          hasEmbeddedImage = operatorList.fnArray.some(operator => imageOps.has(operator));
+        } catch {
+          hasEmbeddedImage = false;
+        }
+      }
+      const needsVisualAnalysis = includePageImages ||
+        (includePageImagesForLowText && (pageTextForImageDecision.length < 100 || hasEmbeddedImage));
+      const renderPageImage = needsVisualAnalysis;
       let imageDataUrl = "";
       if (renderPageImage) {
         let canvas = null;
@@ -385,6 +402,7 @@ async function readPdf(file, { includePageImages = false, includeAIPageText = fa
         lines,
         structHeadings,
         imageDataUrl,
+        needsVisualAnalysis,
       });
 
       onProgress({ phase: includePageImages ? "rendering" : "extracting", processed: pageNumber, total: pageCount, pageNumber });
@@ -418,12 +436,13 @@ async function readPdf(file, { includePageImages = false, includeAIPageText = fa
       corpus,
       aiPages: (includePageImages || includeAIPageText || includePageImagesForLowText) ? pages.map((page) => ({
         pageNumber: page.pageNumber,
-        extractedText: (page.readingLines || page.lines || [])
+        extractedText: (page.readingLines?.length ? page.readingLines : page.lines || [])
           .map((line) => typeof line === "string" ? line : line?.text || "")
           .filter(Boolean)
           .join("\n")
           .trim(),
         imageDataUrl: page.imageDataUrl || "",
+        needsVisualAnalysis: Boolean(page.needsVisualAnalysis),
       })) : undefined,
       bibliography: [],
       sourceName: file.name,
