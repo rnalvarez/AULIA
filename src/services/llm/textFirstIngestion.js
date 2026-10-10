@@ -185,14 +185,16 @@ function makeApiError(status, message, response, errorCode = "") {
   const combined = (text + " " + errorCode).toLowerCase();
   const error = new Error("Groq no pudo analizar el texto (" + status + ")" + (text ? ": " + text : "."));
   error.status = status;
-  error.retryAfterMs = parseWaitMs(response?.headers?.get("retry-after")) ||
-    parseWaitMs(response?.headers?.get("x-ratelimit-reset-tokens")) ||
-    waitFromMessage(text);
   error.isDailyLimit = /tokens per day|requests per day|daily limit|daily quota|per day \(t[dp]d\)|limit.*per day/.test(combined);
+  const resetRequestsMs = parseWaitMs(response?.headers?.get("x-ratelimit-reset-requests"));
+  const resetTokensMs = parseWaitMs(response?.headers?.get("x-ratelimit-reset-tokens"));
+  error.retryAfterMs = error.isDailyLimit
+    ? (resetRequestsMs || parseWaitMs(response?.headers?.get("retry-after")) || waitFromMessage(text))
+    : (parseWaitMs(response?.headers?.get("retry-after")) || resetTokensMs || waitFromMessage(text));
   if (status === 401) error.message = "La clave de Groq no es válida. Revisá la clave docente en Studio.";
   if (status === 413) error.message = "La tanda de texto superó el tamaño admitido. AULIA conservó el avance; reanudá para continuar con tandas más pequeñas.";
   if (status === 429 && error.isDailyLimit) {
-    error.message = "Groq alcanzó el límite diario de esta cuenta. AULIA conservó las tandas terminadas; reanudá cuando se renueve la cuota. No hace falta volver a cargar el PDF.";
+    error.message = "Groq alcanzó el límite diario de esta cuenta. AULIA conservó las tandas terminadas y la preparación del PDF; no vuelvas a intentar hasta que venza el bloqueo indicado.";
   } else if (status === 429) {
     error.message = "Groq alcanzó temporalmente el límite de solicitudes o tokens por minuto.";
   }
