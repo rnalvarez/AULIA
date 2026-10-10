@@ -22,6 +22,19 @@ function cleanText(value, max = 6000) {
   return text.length <= max ? text : text.slice(0, max) + "\n[Texto extraído truncado para el análisis visual]";
 }
 
+function parseRateReset(value) {
+  const text = String(value || "").trim();
+  if (!text) return 0;
+  if (/^\d+(?:\.\d+)?$/.test(text)) return Number(text) * 1000;
+  const minutes = text.match(/([\d.]+)\s*m(?!s)/i);
+  const seconds = text.match(/([\d.]+)\s*s/i);
+  const milliseconds = text.match(/([\d.]+)\s*ms/i);
+  return (minutes ? Number(minutes[1]) * 60000 : 0) +
+    (seconds ? Number(seconds[1]) * 1000 : 0) +
+    (milliseconds ? Number(milliseconds[1]) : 0);
+}
+
+
 function normalisePage(page, expectedNumber) {
   const number = Number(page?.pageNumber);
   if (!Number.isFinite(number) || number !== expectedNumber) {
@@ -166,12 +179,21 @@ async function requestBatch({ apiKey, courseTitle, pages, batchNumber, signal })
     }
     if (!response.ok) {
       const error = new Error("Groq no pudo analizar las páginas (" + response.status + ")" + (message ? ": " + message : "."));
+      const combined = (message + " " + String(data?.error?.code || "")).toLowerCase();
       error.status = response.status;
+      error.isDailyLimit = /tokens per day|requests per day|daily limit|daily quota|per day \(t[dp]d\)|limit.*per day/.test(combined);
+      const resetRequestsMs = parseRateReset(response.headers.get("x-ratelimit-reset-requests"));
+      const resetTokensMs = parseRateReset(response.headers.get("x-ratelimit-reset-tokens"));
+      error.retryAfterMs = error.isDailyLimit
+        ? (resetRequestsMs || parseRateReset(response.headers.get("retry-after")))
+        : (parseRateReset(response.headers.get("retry-after")) || resetTokensMs);
       error.retryAfter = response.headers.get("retry-after") || "";
       if (response.status === 401) error.message = "La API key de Groq no es válida. Revisá la clave docente en Studio.";
       if (response.status === 413) error.message = "La tanda de imágenes supera el tamaño admitido por Groq. El archivo queda guardado; usá «Reanudar análisis» para continuar.";
-      if (response.status === 429) {
-        error.message = "Groq alcanzó un límite temporal o de cuota durante el análisis multimodal. Se conservó el avance de las páginas terminadas; usá «Reanudar análisis» cuando se restablezca el límite.";
+      if (response.status === 429 && error.isDailyLimit) {
+        error.message = "Groq agotó la cuota diaria para este modelo. Se conserva la preparación y el avance; no hace falta volver a leer el PDF. Reintentá cuando se restablezca el límite indicado.";
+      } else if (response.status === 429) {
+        error.message = "Groq alcanzó un límite temporal de solicitudes o tokens por minuto. AULIA conservará la preparación y el avance.";
       }
       throw error;
     }
