@@ -823,7 +823,7 @@ export function applyAIMultimodalAnalysis(material, pageResults, model = "qwen/q
         confidenceTotal: confidence,
         confidenceCount: 1,
         evidence: [(String(provider || "").includes("texto primero") || String(provider || "").includes("análisis textual"))
-          ? "Segmentación semántica mediante " + model + "; visión utilizada solo en páginas con poco texto extraíble."
+          ? "Segmentación semántica mediante " + model + "; visión utilizada solo en páginas seleccionadas por imágenes integradas o poco texto extraíble."
           : "Segmentación semántica y lectura visual mediante " + model],
         visualElementCount: visualElements.length,
         needsReview,
@@ -894,7 +894,7 @@ export function applyAIMultimodalAnalysis(material, pageResults, model = "qwen/q
     aiAnalysis: {
       provider,
       model,
-      method: "multimodal-page-analysis",
+      method: (String(provider || "").includes("texto primero") || String(provider || "").includes("análisis textual")) ? "text-first-selective-vision" : "multimodal-page-analysis",
       pagesProcessed: pageResults.length,
       pagesTotal: sourcePages.length,
       needsReview: warnings.length > 0,
