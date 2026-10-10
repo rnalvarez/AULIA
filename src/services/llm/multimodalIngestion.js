@@ -26,12 +26,19 @@ function parseRateReset(value) {
   const text = String(value || "").trim();
   if (!text) return 0;
   if (/^\d+(?:\.\d+)?$/.test(text)) return Number(text) * 1000;
-  const minutes = text.match(/([\d.]+)\s*m(?!s)/i);
-  const seconds = text.match(/([\d.]+)\s*s/i);
-  const milliseconds = text.match(/([\d.]+)\s*ms/i);
-  return (minutes ? Number(minutes[1]) * 60000 : 0) +
-    (seconds ? Number(seconds[1]) * 1000 : 0) +
-    (milliseconds ? Number(milliseconds[1]) : 0);
+  const clock = text.match(/^(\d+):(\d{1,2})(?::(\d{1,2}(?:\.\d+)?))?$/);
+  if (clock) {
+    if (clock[3] !== undefined) return (Number(clock[1]) * 3600 + Number(clock[2]) * 60 + Number(clock[3])) * 1000;
+    return (Number(clock[1]) * 60 + Number(clock[2])) * 1000;
+  }
+  let milliseconds = 0;
+  const parts = /([\d.]+)\s*(ms|d|h|m|s)/gi;
+  let match;
+  while ((match = parts.exec(text))) {
+    const unit = match[2].toLowerCase();
+    milliseconds += Number(match[1]) * (unit === "d" ? 86400000 : unit === "h" ? 3600000 : unit === "m" ? 60000 : unit === "s" ? 1000 : 1);
+  }
+  return milliseconds;
 }
 
 
