@@ -217,9 +217,11 @@ async function requestBatch({
       error.isDailyLimit = /tokens per day|requests per day|daily limit|daily quota|per day \(t[dp]d\)|limit.*per day/.test(combined);
       const resetRequestsMs = parseRateReset(response.headers.get("x-ratelimit-reset-requests"));
       const resetTokensMs = parseRateReset(response.headers.get("x-ratelimit-reset-tokens"));
+      const explicitRetryMs = retryFromMessage(message) || parseRateReset(response.headers.get("retry-after"));
+      const dailyRequestsLimit = /requests per day|\\brpd\\b/i.test(combined);
       error.retryAfterMs = error.isDailyLimit
-        ? (retryFromMessage(message) || parseRateReset(response.headers.get("retry-after")) || resetRequestsMs)
-        : (parseRateReset(response.headers.get("retry-after")) || resetTokensMs || retryFromMessage(message));
+        ? (explicitRetryMs || (dailyRequestsLimit ? resetRequestsMs : 0))
+        : (parseRateReset(response.headers.get("retry-after")) || resetTokensMs || explicitRetryMs);
       error.retryAfter = response.headers.get("retry-after") || "";
       if (response.status === 401) error.message = "La API key de Groq no es válida. Revisá la clave docente en Studio.";
       if (response.status === 413) error.message = "La tanda de imágenes supera el tamaño admitido por Groq. El archivo queda guardado; usá «Reanudar análisis» para continuar.";
