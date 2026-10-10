@@ -12,6 +12,9 @@ function doPost(e) {
       case "get-course": return studioJson(handleStudioGetCourse(body));
       case "create-course": return studioJson(handleStudioCreateCourse(body));
       case "save-course": return studioJson(handleStudioSaveCourse(body));
+      case "start-original-pdf-upload": return studioJson(handleStartOriginalPdfUpload(body));
+      case "upload-original-pdf-chunk": return studioJson(handleUploadOriginalPdfChunk(body));
+      case "finalize-original-pdf-upload": return studioJson(handleFinalizeOriginalPdfUpload(body));
       case "publish-course": return studioJson(handleStudioPublishCourse(body));
       case "prepare-delete-course": return studioJson(handleStudioPrepareDeleteCourse(body));
       case "delete-course": return studioJson(handleStudioDeleteCourse(body));
