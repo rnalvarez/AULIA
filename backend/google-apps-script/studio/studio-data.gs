@@ -353,18 +353,18 @@ function studioReadPack(course) {
  * JSON request to Apps Script. The pilot deliberately limits each PDF to 35 MiB
  * because Apps Script has to assemble the bytes before creating the final file.
  */
-const STUDIO_ORIGINAL_PDF_MARKER = "AULIA_ORIGINAL_PDF_V1\\n";
+const STUDIO_ORIGINAL_PDF_MARKER = "AULIA_ORIGINAL_PDF_V1\n";
 const STUDIO_ORIGINAL_PDF_CHUNK_BYTES = 2 * 1024 * 1024;
 const STUDIO_ORIGINAL_PDF_MAX_BYTES = 35 * 1024 * 1024;
 
 function studioOriginalPdfSafeName(value) {
   let name = String(value || "material.pdf")
-    .replace(/[\\\\/:*?"<>|]/g, "_")
-    .replace(/[\\r\\n]/g, " ")
+    .replace(/[^a-zA-Z0-9\u00C0-\u024F._ -]/g, "_")
+    .replace(/\s+/g, " ")
     .trim()
     .slice(0, 180);
   if (!name) name = "material.pdf";
-  if (!/\\.pdf$/i.test(name)) name += ".pdf";
+  if (!/\.pdf$/i.test(name)) name += ".pdf";
   return name;
 }
 
