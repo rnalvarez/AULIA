@@ -744,7 +744,7 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
               phase: "processing",
               processed: 0,
               total: allPages.length,
-              message: "Primero se analiza el texto. Groq recibirá imágenes solo de páginas con imágenes integradas o poco texto extraíble.",
+              message: "Primero se analiza el texto. Groq recibirá imágenes solo de páginas con imágenes integradas, gráficos vectoriales complejos o poco texto extraíble.",
               error: "",
               pendingId,
             });
@@ -858,7 +858,7 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
             total: useVision ? extracted.aiPages.length : 1,
             model: prepared.aiAnalysis?.model || "",
             message: useVision
-              ? "Documento incorporado. Se analizó el texto y solo se enviaron imágenes de páginas seleccionadas por contener imágenes integradas o poco texto extraíble."
+              ? "Documento incorporado. Se analizó el texto y solo se enviaron imágenes de páginas seleccionadas por contener imágenes integradas, gráficos vectoriales complejos o poco texto extraíble."
               : "Documento incorporado al corpus.",
             error: "",
             pendingId: "",
@@ -1913,11 +1913,11 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
         <Panel
           eyebrow="IA PARA LA CARGA"
           title="Elegí cómo analizar el documento"
-          description="Groq analiza primero el texto extraído localmente y usa visión solo en páginas con imágenes integradas detectables o poco texto recuperable. Los gráficos vectoriales pueden requerir revisión docente. El progreso se guarda y puede reanudarse."
+          description="Groq analiza primero el texto extraído localmente y usa visión solo en páginas con imágenes integradas, gráficos vectoriales complejos detectables o poco texto recuperable. Los gráficos vectoriales pueden requerir revisión docente. El progreso se guarda y puede reanudarse."
         >
           <div className="studio-wf-knowledge-provider">
             <button type="button" className={ingestionProvider === "groq" ? "active" : ""} onClick={() => setIngestionProvider("groq")} disabled={!canEdit || busy} aria-pressed={ingestionProvider === "groq"}>
-              <strong>IA interna · Groq</strong><span>Analizar texto primero; usar visión para páginas con imágenes o poco texto</span>
+              <strong>IA interna · Groq</strong><span>Analizar texto primero; visión para páginas con imágenes, gráficos o poco texto</span>
             </button>
             <button type="button" className={ingestionProvider === "external" ? "active" : ""} onClick={() => setIngestionProvider("external")} disabled={!canEdit || busy} aria-pressed={ingestionProvider === "external"}>
               <strong>IA externa</strong><span>Usar ChatGPT, Claude, Gemini u otro servicio</span>
@@ -1931,7 +1931,7 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
             {studioApiKey
               ? <div className="studio-wf-ai-ready"><span>● IA de texto primero lista</span><small>AULIA analizará el texto por tandas y reservará las imágenes para páginas con imágenes integradas o poco texto. El avance se guarda en este navegador.</small><button className="ghost" type="button" onClick={() => setShowStudioKey(true)} disabled={busy}>Cambiar clave</button></div>
               : <div className="studio-wf-ai-setup">
-                  <div><strong>Clave personal de Groq</strong><span>Ingresala para analizar texto por tandas y usar visión solo en páginas con imágenes integradas o poco texto extraíble.</span></div>
+                  <div><strong>Clave personal de Groq</strong><span>Ingresala para analizar texto por tandas y usar visión solo en páginas con imágenes integradas, gráficos vectoriales complejos o poco texto extraíble.</span></div>
                   <div className="studio-wf-ai-key-row">
                     <input type="password" value={studioKeyInput} placeholder="gsk_…" autoComplete="off" onChange={(event) => setStudioKeyInput(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") saveTeacherKey(); }}/>
                     <button className="ghost" type="button" onClick={saveTeacherKey} disabled={!studioKeyInput.trim() || !canEdit || busy}>Guardar clave</button>
