@@ -936,22 +936,50 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
           });
         } catch (error) {
           failedCount += 1;
+          const isRateLimit = Number(error?.status) === 429;
+          const isDailyLimit = Boolean(error?.isDailyLimit);
+          const waitMs = Math.max(0, Number(error?.retryAfterMs || 0));
+          const blockedUntil = isRateLimit && waitMs > 0
+            ? new Date(Date.now() + waitMs + 1500).toISOString()
+            : "";
+          let pauseMessage = "El análisis se interrumpió. AULIA conservó el PDF y la preparación local para reanudar sin volver a extraer todo el documento.";
+          if (isRateLimit && isDailyLimit) {
+            pauseMessage = blockedUntil
+              ? "Se agotó la cuota diaria de Groq. La preparación y las tandas completadas están guardadas. Reanudar se habilitará después de " +
+                new Date(blockedUntil).toLocaleString("es-AR", { dateStyle: "short", timeStyle: "short" }) + "."
+              : "Se agotó la cuota diaria de Groq. La preparación y las tandas completadas están guardadas. No vuelvas a intentar hasta que se restablezca la cuota; el servicio no indicó la hora de renovación.";
+          } else if (isRateLimit) {
+            pauseMessage = blockedUntil
+              ? "Límite temporal de Groq. La preparación está guardada; se puede reanudar después de " +
+                new Date(blockedUntil).toLocaleTimeString("es-AR", { hour: "2-digit", minute: "2-digit" }) + "."
+              : "Límite temporal de Groq. La preparación y las tandas completadas están guardadas para reanudar.";
+          }
+          if (pendingId) {
+            try {
+              await updatePendingPdfStatus(pendingId, {
+                blockedUntil,
+                pauseReason: isRateLimit ? (isDailyLimit ? "daily-quota" : "temporary-rate-limit") : "",
+                lastError: error?.message || "Error desconocido durante la carga.",
+                isDailyLimit,
+              });
+            } catch {}
+          }
           setUploadProgress({
             fileName: file.name,
-            phase: pendingId ? "paused" : "error",
+            phase: isRateLimit ? "quota-wait" : pendingId ? "paused" : "error",
             processed: lastProgress.processed,
             total: lastProgress.total,
-            message: pendingId
-              ? "El análisis se pausó. AULIA conservó el PDF y las páginas ya analizadas en este navegador."
-              : "No se pudo completar la carga de este archivo.",
+            message: pendingId ? pauseMessage : "No se pudo completar la carga de este archivo.",
             error: error?.message || "Error desconocido durante la carga.",
             pendingId,
+            blockedUntil,
+            isDailyLimit,
           });
           if (pendingId) {
             try { setPendingPdfs(await listPendingPdfs(course.id)); } catch {}
           }
           setStatus(pendingId
-            ? "Análisis pausado para " + file.name + ". Usá «Reanudar análisis»; no hace falta seleccionar el archivo otra vez."
+            ? pauseMessage + (error?.message ? " Detalle: " + error.message : "")
             : (error?.message || "No se pudo cargar el material."));
         }
       }
