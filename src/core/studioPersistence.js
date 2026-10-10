@@ -141,9 +141,9 @@ function preparedPdfCacheId(id) {
 }
 
 /**
- * Persist parsed text and PDF structure separately from the temporary original PDF.
- * The potentially large JPEG data URLs are intentionally removed; when resuming,
- * only pages selected for visual analysis need to be rendered again.
+ * Persist the locally extracted corpus and compact per-page text needed for
+ * selective OCR/vision. Images are omitted to avoid storing large data URLs;
+ * on resume, only still-pending visual pages need to be rendered again.
  */
 export async function savePreparedPdf(id, file, material) {
   const aiPages = (material?.aiPages || []).map(page => ({
