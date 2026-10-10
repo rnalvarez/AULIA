@@ -913,8 +913,9 @@ export function applySelectiveVisualAnalysis(material, pageResults, model = "qwe
   }
 
   const uniqueWarnings = Array.from(new Set(warnings));
+  const { sections: _sourceSections, ...baseAnalysis } = material?.analysis || {};
   const analysisSummary = {
-    ...(material?.analysis || {}),
+    ...baseAnalysis,
     method: pageResults?.length ? "local-structure-selective-vision" : (material?.analysis?.method || "pdf-local-structure"),
     documentType: pageResults?.length
       ? "texto extraído y estructura detectada localmente, con lectura visual selectiva"
