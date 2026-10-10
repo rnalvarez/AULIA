@@ -53,7 +53,11 @@ El backend vuelve a comprobar el permiso en cada lectura y guardado. El frontend
 El backend de Teacher Studio utiliza:
 
 - Google Sheet administrativa: docentes, cátedras, permisos y auditoría.
-- Google Drive privado: course packs JSON.
+- Google Drive privado: course packs JSON y originales PDF de bibliografía, en una subcarpeta por cátedra.
+
+Al importar un PDF, Studio conserva primero el original en Drive mediante partes de 2 MiB. La carga se realiza antes del procesamiento con IA, por lo que el archivo no depende de que Groq termine el análisis. Los intentos posteriores reutilizan el archivo ya guardado en vez de crear copias. Para esta primera prueba, el límite del archivo original es de 35 MiB; los PDF de mayor tamaño se rechazan con un aviso antes de consumir cuota de Groq.
+
+La carpeta de originales cuelga de `COURSE_PACK_FOLDER_ID`, creada por `setupStudio()` en el Drive de la identidad con la que se ejecuta Apps Script. No se habilita el acceso público. Los metadatos y enlaces internos a los PDF se conservan en el borrador docente, pero se eliminan del Course Pack publicado a estudiantes. Al borrar una cátedra, su carpeta de originales también se envía a la papelera; la planilla de alumnos se conserva.
 
 Esto evita almacenar grandes corpus dentro de celdas de la Sheet y mantiene separados contenido y control administrativo.
 
@@ -111,9 +115,10 @@ Si otro editor modificó la cátedra, el backend rechaza el guardado y Studio so
 
 ### Análisis de PDF con Groq: texto primero y visión selectiva
 
-Al cargar un PDF con una clave personal de Groq, AULIA sigue este flujo:
+Al cargar un PDF, AULIA sigue este flujo:
 
-1. **Extracción local.** PDF.js obtiene el texto de cada página sin consumir tokens de Groq y guarda referencias a la página original.
+1. **Conservar el original en Drive privado.** El PDF se sube por partes antes de iniciar el análisis, con comprobaciones de integridad y deduplicación. Para esta primera prueba se aceptan originales de hasta 35 MiB.
+2. **Extracción local.** PDF.js obtiene el texto de cada página sin consumir tokens de Groq y guarda referencias a la página original.
 2. **Selección local de páginas visuales.** AULIA genera imágenes solo de páginas con menos de 100 caracteres de texto recuperable, objetos de imagen rasterizada o suficientes operaciones de dibujo vectorial detectables. Las páginas normales no se rasterizan para enviarlas al modelo.
 3. **Análisis textual por tandas.** El modelo recibe extractos compactos de cada página para identificar capítulo, sección y ruta jerárquica. El texto completo extraído permanece en el corpus local; la IA no debe volver a transcribirlo en la respuesta.
 4. **Lectura visual selectiva.** Las páginas seleccionadas se analizan con la ruta multimodal para intentar leer escaneos y recuperar información de imágenes, tablas o gráficos incrustados.
@@ -156,6 +161,8 @@ course pack
 Para DOCX/TXT/Markdown/JSON, o cuando no hay clave Groq configurada, se conserva por ahora la extracción disponible. La IA externa puede analizar el PDF original por tandas e importar sus JSON; esa ruta no depende de la cuota de Groq.
 
 La clave de la IA docente se mantiene en `sessionStorage` y no forma parte del course pack.
+
+**Activación del almacenamiento de originales:** además de publicar el frontend de GitHub Pages, hay que copiar las versiones actuales de `backend/google-apps-script/studio/Code.gs` y `backend/google-apps-script/studio/studio-data.gs` al proyecto Apps Script de Studio y volver a implementar el Web App. La carga utiliza el permiso de Drive ya concedido a ese backend y la carpeta identificada por `COURSE_PACK_FOLDER_ID`; verificá que la implementación ejecute como la cuenta propietaria del backend si querés que los archivos queden en tu Drive.
 
 La IA estudiantil sigue siendo independiente: cada alumno introduce su propia API key en la aplicación de estudiante.
 
