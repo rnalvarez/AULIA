@@ -4,9 +4,9 @@ const MODEL = "qwen/qwen3.8-27b";
 const ENDPOINT = "https://api.groq.com/openai/v1/chat/completions";
 const CACHE_PREFIX = "aulia:text-first-ingestion:v1:";
 const MIN_TEXT_CHARS = 100;
-const MAX_COMPACT_CHARS_PER_PAGE = 1700;
+const MAX_COMPACT_CHARS_PER_PAGE = 1300;
 const MAX_BATCH_PAGES = 8;
-const MAX_BATCH_CHARS = 9300;
+const MAX_BATCH_CHARS = 9000;
 const MAX_OUTPUT_TOKENS = 1200;
 
 function hashString(value) {
@@ -45,11 +45,11 @@ function compactPageText(rawText) {
     if (seen.has(key)) continue;
     seen.add(key);
     headings.push(line);
-    if (headings.join("\n").length > 520) break;
+    if (headings.join("\n").length > 380) break;
   }
 
-  const beginning = text.slice(0, 820);
-  const ending = text.slice(-300);
+  const beginning = text.slice(0, 560);
+  const ending = text.slice(-180);
   const compacted = [
     headings.length ? "TÍTULOS POSIBLES DETECTADOS LOCALMENTE:\n" + headings.join("\n") : "",
     "INICIO DE PÁGINA:\n" + beginning,
