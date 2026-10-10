@@ -36,6 +36,32 @@ function isBoldFont(fontName) {
   return /(?:bold|black|heavy|demi|semibold|medium|bd|negrita)/i.test(String(fontName || ""));
 }
 
+function joinPdfTextItems(parts) {
+  let text = "";
+  let previous = null;
+
+  for (const item of parts || []) {
+    const currentText = String(item?.text || "");
+    if (!currentText) continue;
+
+    if (previous) {
+      const gap = Number(item.x || 0) - (Number(previous.x || 0) + Number(previous.width || 0));
+      const fontSize = Math.max(1, Number(previous.fontSize || item.fontSize || 10));
+      const threshold = Math.max(1.15, Math.min(2.8, fontSize * 0.15));
+      const startsWithClosingPunctuation = /^[,.;:!?%\)\]\}»”’]/u.test(currentText);
+      const endsWithOpeningPunctuation = /[(\[\{«“‘]$/u.test(text);
+      if (gap > threshold && !startsWithClosingPunctuation && !endsWithOpeningPunctuation && !/\s$/.test(text)) {
+        text += " ";
+      }
+    }
+
+    text += currentText;
+    previous = item;
+  }
+
+  return text.replace(/\s+/g, " ").trim();
+}
+
 function groupPdfItems(items, pageWidth = 0) {
   const normalized = [];
   for (const item of items || []) {
@@ -102,7 +128,9 @@ function groupPdfItems(items, pageWidth = 0) {
     flush();
 
     for (const parts of groups) {
-      const text = parts.map((part) => part.text).join(" ").replace(/\s+/g, " ").trim();
+      // PDF engines can split a word into several positioned glyph fragments.
+      // Insert spaces only when the measured horizontal gap indicates a word boundary.
+      const text = joinPdfTextItems(parts);
       if (!text) continue;
       const xMin = parts[0].x;
       const xMax = parts.reduce((max, part) => Math.max(max, part.x + part.width), xMin);

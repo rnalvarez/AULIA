@@ -321,9 +321,9 @@ function buildMaterialStructure(course) {
     for (const section of document.sections || []) {
       const path = Array.isArray(section.path) ? section.path : [];
       const titleKey = slug(section.title || "");
-      const sectionId = section.id || document.id + "-" + sections.length;
+      const declaredSectionId = String(section.id || "");
       const matches = documentChunks.filter((chunk) => {
-        if (chunk.sectionId === sectionId) return true;
+        if (declaredSectionId && chunk.sectionId === declaredSectionId) return true;
 
         // Legacy corpus without sectionId: keep the fallback strictly inside
         // the same document and same structural path. Never match by title
@@ -347,7 +347,7 @@ function buildMaterialStructure(course) {
       const preview = ordered.map((item) => String(item?.content || "")).join(" ").trim();
 
       sections.push({
-        id: sectionId,
+        id: section.id || first.sectionId || first.unitId || (document.id + "-" + sections.length),
         documentId: document.id,
         documentTitle: document.title || document.sourceName || "Material",
         title: section.title || path[path.length - 1] || "Sección",
@@ -682,31 +682,73 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
       setValidation({ valid: false, errors: [err.message] }); setStatus("No se pudo importar el course pack.");
     }
   }
-  function updateMaterialSection(sectionId, patch) {
+  function updateMaterialSection(sectionOrId, patch) {
+    const reference = sectionOrId && typeof sectionOrId === "object" ? sectionOrId : null;
+    const sectionId = String(reference?.id || sectionOrId || "");
+
+    const samePath = (left, right) =>
+      Array.isArray(left) && Array.isArray(right) &&
+      left.length === right.length &&
+      left.every((value, index) => String(value || "") === String(right[index] || ""));
+
+    const overlapsPages = (leftStart, leftEnd, rightStart, rightEnd) => {
+      const a = Number(leftStart || 0);
+      const b = Number(leftEnd || leftStart || 0);
+      const c = Number(rightStart || 0);
+      const d = Number(rightEnd || rightStart || 0);
+      return a > 0 && b > 0 && c > 0 && d > 0 && a <= d && c <= b;
+    };
+
     mutate((current) => {
       const documents = (current.documents || []).map((document) => ({
         ...document,
-        sections: (document.sections || []).map((section) =>
-          section.id === sectionId ? { ...section, ...patch } : section
-        ),
+        sections: (document.sections || []).map((section) => {
+          const directMatch = String(section.id || "") === sectionId;
+          const sameDocument = !reference?.documentId || String(document.id || "") === String(reference.documentId);
+          const sameTitle = slug(section.title || "") === slug(reference?.title || "");
+          const sameStructuralPath = samePath(section.path, reference?.path);
+          const samePageRange = overlapsPages(
+            section.sourcePageStart, section.sourcePageEnd,
+            reference?.sourcePageStart, reference?.sourcePageEnd
+          );
+          const fallbackMatch = Boolean(reference && sameDocument && sameTitle && (
+            sameStructuralPath || samePageRange
+          ));
+          return directMatch || fallbackMatch
+            ? { ...section, id: section.id || sectionId, ...patch }
+            : section;
+        }),
       }));
 
-      // Scope, priority and teacher focus belong to one structural section.
-      // They must never cascade to sibling or descendant sections.
-      const corpus = (current.corpus || []).map((chunk) =>
-        chunk.sectionId === sectionId ? { ...chunk, ...patch, sectionId } : chunk
-      );
+      // Prefer stable section IDs. For older/imported course packs that lack
+      // matching IDs, resolve the same section by document, page range and path.
+      const hasExactCorpusMatch = (current.corpus || []).some(chunk => String(chunk.sectionId || "") === sectionId);
+      const corpus = (current.corpus || []).map((chunk) => {
+        const directMatch = String(chunk.sectionId || "") === sectionId;
+        const sameDocument = !reference?.documentId || String(chunk.documentId || "") === String(reference.documentId);
+        const pathsMatch = samePath(chunk.sectionPath, reference?.path);
+        const samePageRange = overlapsPages(
+          chunk.sourcePageStart || chunk.sourcePage, chunk.sourcePageEnd || chunk.sourcePageStart || chunk.sourcePage,
+          reference?.sourcePageStart, reference?.sourcePageEnd
+        );
+        const sameTitle = slug(String(chunk.title || "").replace(/ · parte \d+$/i, "")) === slug(reference?.title || "");
+        const fallbackMatch = Boolean(reference && !hasExactCorpusMatch && sameDocument && sameTitle && (
+          samePageRange || pathsMatch
+        ));
+        if (!directMatch && !fallbackMatch) return chunk;
+        return { ...chunk, ...patch, sectionId: chunk.sectionId || sectionId };
+      });
 
       return { ...current, documents, corpus };
     });
   }
 
-  function setMaterialScope(sectionId, scope) {
-    updateMaterialSection(sectionId, { scope });
+  function setMaterialScope(section, scope) {
+    updateMaterialSection(section, { scope });
   }
 
-  function setMaterialPriority(sectionId, priority) {
-    updateMaterialSection(sectionId, { priority });
+  function setMaterialPriority(section, priority) {
+    updateMaterialSection(section, { priority });
   }
 
   async function processMaterialFiles(files, { forceVision = false, resumePendingId = "" } = {}) {
@@ -1633,10 +1675,15 @@ async function importExternalKnowledge(e) {
       setStatus("Base conceptual completa: " + (result.entries?.length || 0) +
         " entradas con referencias a la bibliografía. Guardá la cátedra y después publicá la versión actualizada.");
     } catch (err) {
-      const isRateLimit = Number(err?.status) === 429;
+      const errorText = String(err?.message || "");
+      const isDailyLimit = Boolean(err?.isDailyLimit ||
+        /tokens per day|requests per day|daily quota|daily limit|\bTPD\b|\bRPD\b/i.test(errorText));
+      const quotaMessage = /rate.?limit|quota|too many requests|tokens per minute|tokens per day|requests per minute|requests per day|\bTPM\b|\bTPD\b|\bRPD\b|l[ií]mite temporal de groq|cuota de groq/i.test(errorText);
+      const isRateLimit = Number(err?.status) === 429 ||
+        (quotaMessage && !err?.isPayloadTooLarge && Number(err?.status) !== 413);
       if (isRateLimit) {
         const retryDelayMs = Math.max(0, Number(err?.retryAfterMs || 0));
-        const fallbackDelayMs = err?.isDailyLimit ? 24 * 60 * 60 * 1000 : 30 * 1000;
+        const fallbackDelayMs = isDailyLimit ? 24 * 60 * 60 * 1000 : 60 * 1000;
         const retryAt = new Date(Date.now() + (retryDelayMs > 0 ? retryDelayMs + 1500 : fallbackDelayMs)).toISOString();
         localStorage.setItem(knowledgeRetryStorageKey, retryAt);
         setKnowledgeRetryAt(retryAt);
@@ -2110,7 +2157,7 @@ async function importExternalKnowledge(e) {
                                 key={value}
                                 className={"studio-wf-scope-btn " + ((section.scope || "included") === value ? "active" : "")}
                                 type="button"
-                                onClick={() => setMaterialScope(section.id, value)}
+                                onClick={() => setMaterialScope(section, value)}
                                 disabled={!canEdit || busy}
                               >
                                 {label}
@@ -2143,7 +2190,7 @@ async function importExternalKnowledge(e) {
                                 key={value}
                                 className={"studio-wf-priority-btn " + ((section.priority || "normal") === value ? "active" : "")}
                                 type="button"
-                                onClick={() => setMaterialPriority(section.id, value)}
+                                onClick={() => setMaterialPriority(section, value)}
                                 disabled={!canEdit || busy}
                               >
                                 {label}
@@ -2155,9 +2202,9 @@ async function importExternalKnowledge(e) {
                         <details className="studio-wf-material-focus">
                           <summary>Definir foco docente</summary>
                           <div className="studio-wf-grid">
-                            <Field label="Tema" value={section.teacherTopic} onChange={(v) => updateMaterialSection(section.id, { teacherTopic: v })} placeholder="Ej. Escucha audiovisual" />
-                            <Field label="Conceptos" value={(section.teacherConcepts || []).join(", ")} onChange={(v) => updateMaterialSection(section.id, { teacherConcepts: list(v) })} placeholder="Ej. escucha, imagen, sincronismo" />
-                            <Field label="Límite / indicación docente" value={section.teacherLimit} onChange={(v) => updateMaterialSection(section.id, { teacherLimit: v })} placeholder="Qué abordar, qué dejar en segundo plano o qué evitar" multiline />
+                            <Field label="Tema" value={section.teacherTopic} onChange={(v) => updateMaterialSection(section, { teacherTopic: v })} placeholder="Ej. Escucha audiovisual" />
+                            <Field label="Conceptos" value={(section.teacherConcepts || []).join(", ")} onChange={(v) => updateMaterialSection(section, { teacherConcepts: list(v) })} placeholder="Ej. escucha, imagen, sincronismo" />
+                            <Field label="Límite / indicación docente" value={section.teacherLimit} onChange={(v) => updateMaterialSection(section, { teacherLimit: v })} placeholder="Qué abordar, qué dejar en segundo plano o qué evitar" multiline />
                           </div>
                         </details>
                       </article>

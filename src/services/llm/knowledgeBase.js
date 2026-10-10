@@ -410,6 +410,9 @@ async function requestIndexBatch({ apiKey, endpoint, models, course, batch, batc
       if (response.status === 429 || response.status === 413) {
         error.message = "Groq limitó el análisis por volumen o frecuencia de tokens. El avance ya quedó guardado en el borrador. Detalle: " + message;
       }
+      if (response.status === 413) {
+        error.isPayloadTooLarge = true;
+      }
       throw error;
     }
 
@@ -645,7 +648,7 @@ export async function buildKnowledgeBase({
     return { ...current, cached: true, requestCount: 0 };
   }
 
-  const batches = makeBatches(passages);
+  let batches = makeBatches(passages);
   const passageIds = passages.map(item => item.passageId);
   const processed = new Set(
     current && Array.isArray(current.processedPassageIds) ? current.processedPassageIds.filter(id => passageIds.includes(id)) : []
@@ -725,6 +728,33 @@ export async function buildKnowledgeBase({
       progressIndex.model = model;
       onProgress({ index: progressIndex, processed: processed.size, total: passages.length, entries: entries.length, requests: requestCount, model });
     } catch (error) {
+      // A 413 can mean the request is too large for the provider's current budget.
+      // Split a multi-passage batch and retry the smaller units without losing work.
+      if (Number(error?.status) === 413 && batch.length > 1) {
+        const midpoint = Math.ceil(batch.length / 2);
+        batches.splice(i, 1, batch.slice(0, midpoint), batch.slice(midpoint));
+        i -= 1;
+        progressIndex = makeIndex({
+          sourceSignature,
+          totalPassages: passages.length,
+          processedPassageIds: Array.from(processed),
+          entries,
+          status: "processing",
+          requestCount,
+        });
+        progressIndex.model = model;
+        onProgress({
+          index: progressIndex,
+          processed: processed.size,
+          total: passages.length,
+          entries: entries.length,
+          requests: requestCount,
+          model,
+          message: "El proveedor rechazó una tanda grande. AULIA la dividió en tandas menores y continuará sin repetir los pasajes ya procesados.",
+        });
+        continue;
+      }
+
       progressIndex = makeIndex({
         sourceSignature,
         totalPassages: passages.length,
