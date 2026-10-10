@@ -90,7 +90,7 @@ export async function getPendingPdf(id) {
   if (!record || record.kind !== "pending-pdf" || !record.blob) return null;
   return new File([record.blob], record.fileName, {
     type: record.fileType || "application/pdf",
-    lastModified: record.lastModified || Date.now(),
+    lastModified: Number.isFinite(Number(record.lastModified)) ? Number(record.lastModified) : Date.now(),
   });
 }
 
