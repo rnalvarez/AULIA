@@ -1005,6 +1005,7 @@ function handleStudioDeleteCourse(body) {
     String(course.publishedFileId || ""),
   ].filter(Boolean)));
   const fileStates = [];
+  let originalPdfFolderState = null;
 
   try {
     fileIds.forEach(function(fileId) {
@@ -1013,13 +1014,15 @@ function handleStudioDeleteCourse(body) {
       fileStates.push({ id: fileId, wasTrashed: wasTrashed });
       if (!wasTrashed) file.setTrashed(true);
     });
+    originalPdfFolderState = studioTrashCourseOriginalPdfFolder(courseId);
   } catch (err) {
     fileStates.slice().reverse().forEach(function(state) {
       if (state.wasTrashed) return;
       try { DriveApp.getFileById(state.id).setTrashed(false); } catch (restoreErr) {}
     });
-    studioAudit(session.teacher.email, "delete-course", courseId, "error", "no se pudo retirar el Course Pack: " + String(err && err.message || err));
-    throw new Error("No se pudo enviar las versiones de la cátedra a la papelera. No se eliminó el registro. " + String(err && err.message || err));
+    studioRestoreCourseOriginalPdfFolder(originalPdfFolderState);
+    studioAudit(session.teacher.email, "delete-course", courseId, "error", "no se pudo retirar el Course Pack o los PDF originales: " + String(err && err.message || err));
+    throw new Error("No se pudieron retirar los archivos de Drive. No se eliminó el registro. " + String(err && err.message || err));
   }
 
   try {
@@ -1029,7 +1032,8 @@ function handleStudioDeleteCourse(body) {
       if (state.wasTrashed) return;
       try { DriveApp.getFileById(state.id).setTrashed(false); } catch (restoreErr) {}
     });
-    throw new Error("No se pudo quitar la cátedra del registro. Las versiones de Drive se restauraron cuando fue posible. " + String(err && err.message || err));
+    studioRestoreCourseOriginalPdfFolder(originalPdfFolderState);
+    throw new Error("No se pudo quitar la cátedra del registro. Los archivos de Drive se restauraron cuando fue posible. " + String(err && err.message || err));
   }
 
   // Limpiar permisos asociados para no dejar referencias huérfanas.
@@ -1147,6 +1151,16 @@ function handleStudioSaveCourse(body) {
   };
 }
 
+function studioPublicCoursePack(sourcePack) {
+  const pack = JSON.parse(JSON.stringify(sourcePack || {}));
+  (pack.documents || []).forEach(function(document) {
+    // The original lives in the teacher's private Drive and is not part of
+    // the student-facing course pack.
+    delete document.originalPdf;
+  });
+  return pack;
+}
+
 function handleStudioPublishCourse(body) {
   const session = requireTeacherSession(body);
   const courseId = String(body.courseId || "").trim();
@@ -1189,7 +1203,7 @@ function handleStudioPublishCourse(body) {
   // Se guarda primero como borrador para asegurar que Studio y la versión publicada
   // parten exactamente del mismo contenido.
   const draftResult = studioWritePack(access.course, pack);
-  const serialized = JSON.stringify(draftResult.pack, null, 2);
+  const serialized = JSON.stringify(studioPublicCoursePack(draftResult.pack), null, 2);
 
   let publishedFileId = access.course.publishedFileId;
   if (publishedFileId) {
@@ -1230,7 +1244,7 @@ function handleStudioPublishCourse(body) {
   // Mantener el publicSlug dentro de ambos archivos evita que una exportación pierda el vínculo.
   const finalSerialized = JSON.stringify(pack, null, 2);
   DriveApp.getFileById(access.course.fileId).setContent(finalSerialized);
-  DriveApp.getFileById(publishedFileId).setContent(finalSerialized);
+  DriveApp.getFileById(publishedFileId).setContent(JSON.stringify(studioPublicCoursePack(pack), null, 2));
 
   studioAudit(session.teacher.email, "publish-course", courseId, "ok", publicSlug);
 
@@ -1259,7 +1273,7 @@ function handlePublicCourse(body) {
     pack.publicSlug = course.publicSlug;
     return {
       success: true,
-      course: pack,
+      course: studioPublicCoursePack(pack),
       meta: {
         courseId: course.courseId,
         publicSlug: course.publicSlug,
