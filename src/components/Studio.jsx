@@ -1055,6 +1055,7 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
             pendingId,
             blockedUntil,
             isDailyLimit,
+            originalPdfUrl: originalPdfStorage?.fileUrl || "",
           });
           if (pendingId) {
             try { setPendingPdfs(await listPendingPdfs(course.id)); } catch {}
@@ -2197,6 +2198,7 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
             {uploadProgress.message && <small>{uploadProgress.message}</small>}
             {uploadProgress.model && <small>Modelo: {uploadProgress.model}</small>}
             {uploadProgress.error && <small>{uploadProgress.error}</small>}
+            {uploadProgress.originalPdfUrl && <small><a href={uploadProgress.originalPdfUrl} target="_blank" rel="noreferrer">Abrir PDF original conservado en Drive</a></small>}
             {(uploadProgress.phase === "paused" || uploadProgress.phase === "quota-wait") && uploadProgress.pendingId && <button className="primary" type="button" onClick={() => resumePendingPdf({ id: uploadProgress.pendingId, fileName: uploadProgress.fileName })} disabled={!canEdit || busy || Boolean(uploadProgress.blockedUntil && Date.parse(uploadProgress.blockedUntil) > rateLimitClock)}>{uploadProgress.blockedUntil && Date.parse(uploadProgress.blockedUntil) > rateLimitClock ? "Esperar restablecimiento de Groq" : "Reanudar desde el avance guardado"}</button>}
           </div>}
 
