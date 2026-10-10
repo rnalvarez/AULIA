@@ -1,4 +1,5 @@
 import { readStudioRecord, writeStudioRecord } from "../../core/studioPersistence.js";
+import { estimateGroqRequestTokens, waitForGroqCapacity, recordGroqUsage } from "./groqRateLimiter.js";
 
 const MODEL = "qwen/qwen3.8-27b";
 const ENDPOINT = "https://api.groq.com/openai/v1/chat/completions";
@@ -336,26 +337,12 @@ export async function analyzePdfTextFirst(material, {
   const pageResults = await readCache(cacheKey, signature);
   const missing = textPages.filter(page => !pageResults[String(page.pageNumber)]);
   const batches = makeBatches(missing);
-  let previousBudget = null;
   let batchIndex = 0;
 
   while (batches.length) {
     const batch = batches.shift();
     batchIndex += 1;
     const activePageNumbers = batch.map(page => Number(page.pageNumber));
-    const estimate = Math.ceil(promptForBatch(courseTitle, batch, batchIndex, []).length / 3) + 500;
-
-    if (previousBudget &&
-        Number.isFinite(previousBudget.remainingTokens) &&
-        previousBudget.remainingTokens >= 0 &&
-        previousBudget.remainingTokens < estimate &&
-        previousBudget.resetTokensMs > 0) {
-      const waitMs = Math.min(previousBudget.resetTokensMs + 350, 65000);
-      await emitQuotaWait(
-        onProgress, pageResults, textPages.length, activePageNumbers, MODEL, waitMs,
-        "Esperando que se liberen tokens por minuto de Groq. El avance está guardado y la siguiente tanda continuará automáticamente."
-      );
-    }
 
     onProgress({
       phase: "processing-batch",
@@ -371,6 +358,22 @@ export async function analyzePdfTextFirst(material, {
       .sort((a, b) => Number(b.pageNumber) - Number(a.pageNumber))
       .slice(0, 6)
       .reverse();
+    const prompt = promptForBatch(courseTitle, batch, batchIndex, previousPages);
+    const estimatedTokens = estimateGroqRequestTokens({
+      promptText: prompt,
+      maxCompletionTokens: MAX_OUTPUT_TOKENS,
+    });
+    await waitForGroqCapacity({
+      model: MODEL,
+      estimatedTokens,
+      onProgress,
+      progress: {
+        processed: Object.keys(pageResults).length,
+        total: textPages.length,
+        model: MODEL,
+        activePageNumbers,
+      },
+    });
     let result;
     try {
       result = await requestBatch({
@@ -391,10 +394,7 @@ export async function analyzePdfTextFirst(material, {
 
     for (const page of result.pages) pageResults[String(page.pageNumber)] = page;
     await saveCache(cacheKey, signature, pageResults);
-    previousBudget = {
-      remainingTokens: result.remainingTokens,
-      resetTokensMs: result.resetTokensMs,
-    };
+    recordGroqUsage(MODEL, estimatedTokens, result.usage?.total_tokens);
     onProgress({
       phase: "processing",
       processed: Object.keys(pageResults).length,

@@ -1,11 +1,12 @@
 import { readStudioRecord, writeStudioRecord } from "../../core/studioPersistence.js";
+import { estimateGroqRequestTokens, waitForGroqCapacity, recordGroqUsage, MAX_GROQ_REQUEST_TOKENS } from "./groqRateLimiter.js";
 
 const DEFAULT_MODELS = ["qwen/qwen3.8-27b"];
 const ENDPOINT = "https://api.groq.com/openai/v1/chat/completions";
 const CACHE_PREFIX = "aulia:multimodal-ingestion:v2:";
 const DIGITAL_BATCH_SIZE = 2;
 const MAX_DIGITAL_OUTPUT_TOKENS = 1500;
-const MAX_OCR_OUTPUT_TOKENS = 4500;
+const MAX_OCR_OUTPUT_TOKENS = 4000;
 
 function hashString(value) {
   let hash = 2166136261;
@@ -143,8 +144,12 @@ function pagePrompt(courseTitle, pages, batchNumber) {
   ].join("\n\n");
 }
 
-async function requestBatch({ apiKey, courseTitle, pages, batchNumber, signal }) {
-  const content = [{ type: "text", text: pagePrompt(courseTitle, pages, batchNumber) }];
+async function requestBatch({
+  apiKey, courseTitle, pages, batchNumber, signal,
+  onProgress = () => {}, processed = 0, total = 0,
+}) {
+  const promptText = pagePrompt(courseTitle, pages, batchNumber);
+  const content = [{ type: "text", text: promptText }];
   for (const page of pages) {
     content.push({ type: "text", text: "La siguiente imagen corresponde a la página " + page.pageNumber + " del documento." });
     content.push({
@@ -155,9 +160,25 @@ async function requestBatch({ apiKey, courseTitle, pages, batchNumber, signal })
 
   const containsScannedPage = pages.some(page => String(page.extractedText || "").trim().length < 100);
   const outputTokens = containsScannedPage ? MAX_OCR_OUTPUT_TOKENS : MAX_DIGITAL_OUTPUT_TOKENS;
+  const estimatedTokens = estimateGroqRequestTokens({
+    promptText,
+    maxCompletionTokens: outputTokens,
+    imageCount: pages.length,
+  });
+  if (estimatedTokens > MAX_GROQ_REQUEST_TOKENS && pages.length > 1) {
+    const error = new Error("La tanda visual supera el presupuesto seguro de tokens por minuto. AULIA la dividirá en páginas individuales sin perder el avance.");
+    error.code = "AULIA_BATCH_TOO_LARGE";
+    throw error;
+  }
   let lastError = null;
 
   for (const model of DEFAULT_MODELS) {
+    await waitForGroqCapacity({
+      model,
+      estimatedTokens,
+      onProgress,
+      progress: { processed, total, model, activePageNumbers: pages.map(page => page.pageNumber) },
+    });
     const response = await fetch(ENDPOINT, {
       method: "POST",
       headers: {
@@ -210,6 +231,8 @@ async function requestBatch({ apiKey, courseTitle, pages, batchNumber, signal })
       throw error;
     }
 
+    // Count the successful API call even if its JSON is truncated or invalid.
+    recordGroqUsage(model, estimatedTokens, data?.usage?.total_tokens);
     const choice = data?.choices?.[0] || {};
     const raw = String(choice?.message?.content || "").trim();
     if (!raw) throw new Error("Groq devolvió una respuesta vacía para las páginas " + pages.map(page => page.pageNumber).join(", ") + ".");
@@ -318,10 +341,13 @@ export async function analyzePdfWithVision(material, {
         pages: batch,
         batchNumber: Math.floor(Object.keys(pageResults).length / DIGITAL_BATCH_SIZE) + 1,
         signal,
+        onProgress,
+        processed: Object.keys(pageResults).length,
+        total,
       });
     } catch (error) {
-      // If a pair of rich pages overflows the JSON response, retry the pages separately.
-      if (error?.code !== "AULIA_OUTPUT_TRUNCATED" || batch.length < 2) throw error;
+      // Split a pair when either its output is truncated or its token reservation is too large.
+      if (!["AULIA_OUTPUT_TRUNCATED", "AULIA_BATCH_TOO_LARGE"].includes(error?.code) || batch.length < 2) throw error;
       for (const singlePage of batch) {
         const singleResult = await requestBatch({
           apiKey,
@@ -329,6 +355,9 @@ export async function analyzePdfWithVision(material, {
           pages: [singlePage],
           batchNumber: Math.floor(Object.keys(pageResults).length / DIGITAL_BATCH_SIZE) + 1,
           signal,
+          onProgress,
+          processed: Object.keys(pageResults).length,
+          total,
         });
         model = singleResult.model || model;
         for (const page of singleResult.pages) pageResults[String(page.pageNumber)] = page;
