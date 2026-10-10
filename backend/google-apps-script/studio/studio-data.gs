@@ -344,6 +344,283 @@ function studioReadPack(course) {
   return studioReadPackFile(course.fileId);
 }
 
+
+/**
+ * Original bibliography PDFs live in a private per-course folder under the
+ * configured COURSE_PACK_FOLDER_ID. No public sharing is enabled.
+ *
+ * Uploads use small Drive-backed chunks so a PDF is not sent as one enormous
+ * JSON request to Apps Script. The pilot deliberately limits each PDF to 35 MiB
+ * because Apps Script has to assemble the bytes before creating the final file.
+ */
+const STUDIO_ORIGINAL_PDF_MARKER = "AULIA_ORIGINAL_PDF_V1\\n";
+const STUDIO_ORIGINAL_PDF_CHUNK_BYTES = 2 * 1024 * 1024;
+const STUDIO_ORIGINAL_PDF_MAX_BYTES = 35 * 1024 * 1024;
+
+function studioOriginalPdfSafeName(value) {
+  let name = String(value || "material.pdf")
+    .replace(/[\\\\/:*?"<>|]/g, "_")
+    .replace(/[\\r\\n]/g, " ")
+    .trim()
+    .slice(0, 180);
+  if (!name) name = "material.pdf";
+  if (!/\\.pdf$/i.test(name)) name += ".pdf";
+  return name;
+}
+
+function studioOriginalPdfFolderName(courseId) {
+  const safeId = String(courseId || "").replace(/[^a-zA-Z0-9_-]/g, "-").slice(0, 100);
+  return "AULIA - Bibliografía original - " + safeId;
+}
+
+function studioFindCourseOriginalPdfFolder(courseId) {
+  const folders = studioDriveFolder().getFoldersByName(studioOriginalPdfFolderName(courseId));
+  return folders.hasNext() ? folders.next() : null;
+}
+
+function studioEnsureCourseOriginalPdfFolder(courseId) {
+  return studioFindCourseOriginalPdfFolder(courseId) ||
+    studioDriveFolder().createFolder(studioOriginalPdfFolderName(courseId));
+}
+
+function studioOriginalPdfMetadataFromFile(file) {
+  const description = String(file.getDescription() || "");
+  if (!description.startsWith(STUDIO_ORIGINAL_PDF_MARKER)) return null;
+  try {
+    const metadata = JSON.parse(description.slice(STUDIO_ORIGINAL_PDF_MARKER.length));
+    return metadata && metadata.kind === "aulia-original-pdf" ? metadata : null;
+  } catch (err) {
+    return null;
+  }
+}
+
+function studioOriginalPdfResult(file, metadata) {
+  return {
+    alreadyStored: true,
+    fileId: file.getId(),
+    fileUrl: file.getUrl(),
+    fileName: String(metadata.fileName || file.getName()),
+    fileSize: Number(metadata.fileSize || file.getSize()),
+    lastModified: Number(metadata.lastModified || 0),
+    storedAt: String(metadata.storedAt || ""),
+  };
+}
+
+function studioFindMatchingOriginalPdf(folder, identity) {
+  const files = folder.getFiles();
+  while (files.hasNext()) {
+    const file = files.next();
+    if (file.isTrashed() || file.getMimeType() !== MimeType.PDF) continue;
+    const metadata = studioOriginalPdfMetadataFromFile(file);
+    if (!metadata) continue;
+    if (String(metadata.courseId || "") !== String(identity.courseId || "")) continue;
+    if (String(metadata.fileName || "") !== String(identity.fileName || "")) continue;
+    if (Number(metadata.fileSize) !== Number(identity.fileSize)) continue;
+    if (Number(metadata.lastModified || 0) !== Number(identity.lastModified || 0)) continue;
+    return { file, metadata };
+  }
+  return null;
+}
+
+function studioOriginalPdfStageName(uploadId) {
+  return ".aulia-upload-" + String(uploadId || "");
+}
+
+function studioFindOriginalPdfStage(folder, uploadId) {
+  const stages = folder.getFoldersByName(studioOriginalPdfStageName(uploadId));
+  return stages.hasNext() ? stages.next() : null;
+}
+
+function studioOriginalPdfManifest(stageFolder) {
+  const matches = stageFolder.getFilesByName("_aulia_upload_manifest.json");
+  if (!matches.hasNext()) throw new Error("La carga del PDF no tiene manifiesto de recuperación.");
+  try {
+    return JSON.parse(matches.next().getBlob().getDataAsString("UTF-8"));
+  } catch (err) {
+    throw new Error("El manifiesto de carga del PDF no se pudo leer.");
+  }
+}
+
+function studioRequireOriginalPdfUpload(body) {
+  const session = requireTeacherSession(body);
+  const courseId = String(body.courseId || "").trim();
+  if (!courseId) throw new Error("Falta identificar la cátedra para guardar el PDF original.");
+  const access = studioRequireCourseAccess(session.teacher.email, courseId, true);
+  return { session, courseId, course: access.course };
+}
+
+function handleStartOriginalPdfUpload(body) {
+  const context = studioRequireOriginalPdfUpload(body);
+  const fileName = studioOriginalPdfSafeName(body.fileName);
+  const fileSize = Number(body.fileSize);
+  const lastModified = Number(body.lastModified || 0);
+  const requestedChunks = Number(body.chunkCount);
+  const mimeType = "application/pdf";
+
+  if (!(fileSize > 0) || !Number.isFinite(fileSize)) {
+    throw new Error("El PDF está vacío o su tamaño no es válido.");
+  }
+  if (fileSize > STUDIO_ORIGINAL_PDF_MAX_BYTES) {
+    throw new Error("Para esta prueba, cada PDF debe pesar como máximo 35 MB. El archivo original no se subió.");
+  }
+  const expectedChunks = Math.ceil(fileSize / STUDIO_ORIGINAL_PDF_CHUNK_BYTES);
+  if (!Number.isInteger(requestedChunks) || requestedChunks !== expectedChunks) {
+    throw new Error("La cantidad de partes de carga no coincide con el tamaño del PDF.");
+  }
+
+  const parentFolder = studioEnsureCourseOriginalPdfFolder(context.courseId);
+  const identity = {
+    courseId: context.courseId,
+    fileName,
+    fileSize,
+    lastModified: Number.isFinite(lastModified) ? lastModified : 0,
+  };
+
+  const existing = studioFindMatchingOriginalPdf(parentFolder, identity);
+  if (existing) return Object.assign({ success: true }, studioOriginalPdfResult(existing.file, existing.metadata));
+
+  const uploadId = studioHash([
+    identity.courseId, identity.fileName, identity.fileSize, identity.lastModified,
+  ].join("|")).slice(0, 32);
+  let stageFolder = studioFindOriginalPdfStage(parentFolder, uploadId);
+  if (!stageFolder) stageFolder = parentFolder.createFolder(studioOriginalPdfStageName(uploadId));
+
+  // A retry restarts deterministically: clear old chunks but retain the same
+  // stage folder so interruptions do not create a new folder on every attempt.
+  const oldFiles = stageFolder.getFiles();
+  while (oldFiles.hasNext()) oldFiles.next().setTrashed(true);
+
+  const manifest = {
+    kind: "aulia-original-pdf-upload",
+    version: 1,
+    uploadId,
+    courseId: context.courseId,
+    fileName,
+    fileSize,
+    lastModified: identity.lastModified,
+    mimeType,
+    chunkSize: STUDIO_ORIGINAL_PDF_CHUNK_BYTES,
+    chunkCount: expectedChunks,
+    createdAt: new Date().toISOString(),
+  };
+  stageFolder.createFile(
+    "_aulia_upload_manifest.json",
+    JSON.stringify(manifest),
+    MimeType.PLAIN_TEXT
+  );
+
+  return {
+    success: true,
+    alreadyStored: false,
+    uploadId,
+    fileName,
+    fileSize,
+    chunkSize: STUDIO_ORIGINAL_PDF_CHUNK_BYTES,
+    chunkCount: expectedChunks,
+  };
+}
+
+function handleUploadOriginalPdfChunk(body) {
+  const context = studioRequireOriginalPdfUpload(body);
+  const uploadId = String(body.uploadId || "");
+  if (!/^[a-f0-9]{32}$/.test(uploadId)) throw new Error("La sesión de carga del PDF no es válida.");
+  const parentFolder = studioFindCourseOriginalPdfFolder(context.courseId);
+  const stageFolder = parentFolder && studioFindOriginalPdfStage(parentFolder, uploadId);
+  if (!stageFolder) throw new Error("La carga temporal del PDF ya no existe. Iniciá nuevamente el almacenamiento.");
+  const manifest = studioOriginalPdfManifest(stageFolder);
+  if (String(manifest.courseId) !== context.courseId || String(manifest.uploadId) !== uploadId) {
+    throw new Error("La carga temporal no corresponde a esta cátedra.");
+  }
+
+  const chunkIndex = Number(body.chunkIndex);
+  const chunkCount = Number(body.chunkCount);
+  const encoded = String(body.chunkBase64 || "");
+  if (!Number.isInteger(chunkIndex) || chunkIndex < 0 || chunkIndex >= Number(manifest.chunkCount)) {
+    throw new Error("El número de parte del PDF no es válido.");
+  }
+  if (chunkCount !== Number(manifest.chunkCount)) {
+    throw new Error("La cantidad de partes no coincide con el manifiesto.");
+  }
+  if (!encoded || encoded.length > 3 * 1024 * 1024) {
+    throw new Error("La parte del PDF está vacía o supera el tamaño admitido.");
+  }
+
+  const chunkName = "part-" + String(chunkIndex).padStart(5, "0") + ".bin";
+  const previous = stageFolder.getFilesByName(chunkName);
+  while (previous.hasNext()) previous.next().setTrashed(true);
+
+  const bytes = Utilities.base64Decode(encoded);
+  const expectedSize = chunkIndex < chunkCount - 1
+    ? Number(manifest.chunkSize)
+    : Number(manifest.fileSize) - (chunkIndex * Number(manifest.chunkSize));
+  if (bytes.length !== expectedSize) throw new Error("La parte " + (chunkIndex + 1) + " llegó incompleta.");
+
+  stageFolder.createFile(Utilities.newBlob(bytes, "application/octet-stream", chunkName));
+  return { success: true, chunkIndex, receivedBytes: bytes.length };
+}
+
+function handleFinalizeOriginalPdfUpload(body) {
+  const context = studioRequireOriginalPdfUpload(body);
+  const uploadId = String(body.uploadId || "");
+  if (!/^[a-f0-9]{32}$/.test(uploadId)) throw new Error("La sesión de carga del PDF no es válida.");
+  const parentFolder = studioFindCourseOriginalPdfFolder(context.courseId);
+  const stageFolder = parentFolder && studioFindOriginalPdfStage(parentFolder, uploadId);
+  if (!stageFolder) throw new Error("No se encontró la carga temporal del PDF.");
+  const manifest = studioOriginalPdfManifest(stageFolder);
+  if (String(manifest.courseId) !== context.courseId || String(manifest.uploadId) !== uploadId) {
+    throw new Error("La carga temporal no corresponde a esta cátedra.");
+  }
+
+  const chunkCount = Number(manifest.chunkCount);
+  if (Number(body.chunkCount) !== chunkCount) throw new Error("La cantidad de partes recibidas no coincide.");
+  const mergedBytes = [];
+  for (let index = 0; index < chunkCount; index += 1) {
+    const chunkName = "part-" + String(index).padStart(5, "0") + ".bin";
+    const matches = stageFolder.getFilesByName(chunkName);
+    if (!matches.hasNext()) {
+      throw new Error("Falta la parte " + (index + 1) + " de " + chunkCount + ". La carga no se finalizó.");
+    }
+    const bytes = matches.next().getBlob().getBytes();
+    const expectedSize = index < chunkCount - 1
+      ? Number(manifest.chunkSize)
+      : Number(manifest.fileSize) - (index * Number(manifest.chunkSize));
+    if (bytes.length !== expectedSize) throw new Error("La parte " + (index + 1) + " está incompleta.");
+    for (let position = 0; position < bytes.length; position += 1) mergedBytes.push(bytes[position]);
+  }
+  if (mergedBytes.length !== Number(manifest.fileSize)) {
+    throw new Error("El PDF reconstruido no coincide con el tamaño original.");
+  }
+
+  const blob = Utilities.newBlob(mergedBytes, manifest.mimeType || MimeType.PDF, manifest.fileName);
+  const file = parentFolder.createFile(blob);
+  const metadata = {
+    kind: "aulia-original-pdf",
+    version: 1,
+    courseId: context.courseId,
+    fileName: manifest.fileName,
+    fileSize: Number(manifest.fileSize),
+    lastModified: Number(manifest.lastModified || 0),
+    storedAt: new Date().toISOString(),
+  };
+  file.setDescription(STUDIO_ORIGINAL_PDF_MARKER + JSON.stringify(metadata));
+
+  try { stageFolder.setTrashed(true); } catch (err) {}
+  return Object.assign({ success: true }, studioOriginalPdfResult(file, metadata), { alreadyStored: false });
+}
+
+function studioTrashCourseOriginalPdfFolder(courseId) {
+  const folder = studioFindCourseOriginalPdfFolder(courseId);
+  if (!folder) return null;
+  const wasTrashed = folder.isTrashed();
+  if (!wasTrashed) folder.setTrashed(true);
+  return { folder, wasTrashed };
+}
+
+function studioRestoreCourseOriginalPdfFolder(state) {
+  if (!state || state.wasTrashed) return;
+  try { state.folder.setTrashed(false); } catch (err) {}
+}
+
 function studioWritePack(course, pack) {
   if (!pack || typeof pack !== "object") throw new Error("Course pack inválido.");
   if (String(pack.id || "") !== String(course.courseId)) {
