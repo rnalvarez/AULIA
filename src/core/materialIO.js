@@ -354,23 +354,42 @@ async function readPdf(file, { includePageImages = false, includeAIPageText = fa
         .filter(Boolean)
         .join("\n")
         .trim();
+      const alphanumericCount = (pageTextForImageDecision.match(/[\\p{L}\\p{N}]/gu) || []).length;
+      const replacementCount = (pageTextForImageDecision.match(/\\uFFFD/g) || []).length;
+      const textLooksUnreliable = pageTextForImageDecision.length < 100 ||
+        (pageTextForImageDecision.length > 0 && alphanumericCount / pageTextForImageDecision.length < 0.23) ||
+        replacementCount > Math.max(2, pageTextForImageDecision.length * 0.01);
       let hasEmbeddedImage = false;
+      let hasComplexVectorGraphics = false;
       if (includePageImagesForLowText && !includePageImages) {
         try {
           const operatorList = await page.getOperatorList();
+          const ops = pdfjsLib.OPS || {};
           const imageOps = new Set([
-            pdfjsLib.OPS?.paintImageXObject,
-            pdfjsLib.OPS?.paintInlineImageXObject,
-            pdfjsLib.OPS?.paintImageMaskXObject,
-            pdfjsLib.OPS?.paintImageMaskXObjectGroup,
+            ops.paintImageXObject,
+            ops.paintInlineImageXObject,
+            ops.paintImageMaskXObject,
+            ops.paintImageMaskXObjectGroup,
+          ].filter(value => typeof value === "number"));
+          const drawingOps = new Set([
+            ops.constructPath,
+            ops.stroke,
+            ops.fill,
+            ops.eoFill,
+            ops.fillStroke,
+            ops.eoFillStroke,
+            ops.shadingFill,
           ].filter(value => typeof value === "number"));
           hasEmbeddedImage = operatorList.fnArray.some(operator => imageOps.has(operator));
+          const drawingCount = operatorList.fnArray.reduce((count, operator) => count + (drawingOps.has(operator) ? 1 : 0), 0);
+          hasComplexVectorGraphics = drawingCount >= 24;
         } catch {
           hasEmbeddedImage = false;
+          hasComplexVectorGraphics = false;
         }
       }
       const needsVisualAnalysis = includePageImages ||
-        (includePageImagesForLowText && (pageTextForImageDecision.length < 100 || hasEmbeddedImage));
+        (includePageImagesForLowText && (textLooksUnreliable || hasEmbeddedImage || hasComplexVectorGraphics));
       const renderPageImage = needsVisualAnalysis;
       let imageDataUrl = "";
       if (renderPageImage) {
