@@ -1069,7 +1069,7 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
           const isDailyLimit = Boolean(error?.isDailyLimit);
           const waitMs = Math.max(0, Number(error?.retryAfterMs || 0));
           // When Groq omits a reset hint, make a bounded retry instead of requiring a manual click.
-          const scheduledWaitMs = waitMs > 0 ? waitMs + 1500 : (isDailyLimit ? 60 * 60 * 1000 : 30 * 1000);
+          const scheduledWaitMs = waitMs > 0 ? waitMs + 1500 : (isDailyLimit ? 24 * 60 * 60 * 1000 : 30 * 1000);
           const blockedUntil = isRateLimit
             ? new Date(Date.now() + scheduledWaitMs).toISOString()
             : "";
@@ -1077,7 +1077,7 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
           if (isRateLimit && isDailyLimit) {
             pauseMessage = "Se agotó la cuota diaria de Groq. La preparación y las tandas completadas están guardadas. AULIA intentará reanudar automáticamente después de " +
               new Date(blockedUntil).toLocaleString("es-AR", { dateStyle: "short", timeStyle: "short" }) +
-              (waitMs > 0 ? ", según la indicación del servicio." : "; como Groq no informó una hora exacta, volverá a comprobar la cuota aproximadamente cada hora.");
+              (waitMs > 0 ? ", según la indicación del servicio." : "; como Groq no informó una hora exacta, esperará 24 horas antes de comprobarla otra vez para evitar reintentos diarios repetidos.");
           } else if (isRateLimit) {
             pauseMessage = "Límite temporal de Groq. La preparación está guardada; AULIA reintentará automáticamente a partir de " +
               new Date(blockedUntil).toLocaleTimeString("es-AR", { hour: "2-digit", minute: "2-digit" }) + ".";
@@ -1931,7 +1931,7 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
       const isRateLimit = Number(err?.status) === 429;
       if (isRateLimit) {
         const retryDelayMs = Math.max(0, Number(err?.retryAfterMs || 0));
-        const fallbackDelayMs = err?.isDailyLimit ? 60 * 60 * 1000 : 30 * 1000;
+        const fallbackDelayMs = err?.isDailyLimit ? 24 * 60 * 60 * 1000 : 30 * 1000;
         const retryAt = new Date(Date.now() + (retryDelayMs > 0 ? retryDelayMs + 1500 : fallbackDelayMs)).toISOString();
         localStorage.setItem(knowledgeRetryStorageKey, retryAt);
         setKnowledgeRetryAt(retryAt);
@@ -1961,7 +1961,7 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
       const retryAtMs = Date.parse(localStorage.getItem(knowledgeRetryStorageKey) || "");
       const scheduledMessage = isRateLimit && Number.isFinite(retryAtMs)
         ? " AULIA reanudará automáticamente alrededor de " + new Date(retryAtMs).toLocaleString("es-AR", { dateStyle: "short", timeStyle: "short" }) +
-          (err?.isDailyLimit && !(Number(err?.retryAfterMs) > 0) ? ". Groq no informó la hora exacta; la cuota se comprobará aproximadamente cada hora." : ".")
+          (err?.isDailyLimit && !(Number(err?.retryAfterMs) > 0) ? ". Groq no informó la hora exacta; para evitar reintentos repetidos, la volverá a comprobar en 24 horas." : ".")
         : " El avance se conservó en el borrador local y se puede reanudar sin reprocesar los pasajes ya completados.";
       setStatus((err?.message || "No se pudo completar el índice conceptual.") + scheduledMessage);
     } finally {
