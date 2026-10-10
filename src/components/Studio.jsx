@@ -289,8 +289,9 @@ function materialSegmentationLabel(value) {
     case "pdf-outline": return "Marcadores internos del PDF";
     case "pdf-hybrid-heuristic": return "Tipografía + geometría + consistencia";
     case "pdf-conservative": return "Segmentación conservadora";
-    case "ai-multimodal": return "IA multimodal · lectura visual y segmentación semántica";
+    case "ai-multimodal": return "IA multimodal · lectura visual";
     case "ai-text-first": return "IA semántica sobre texto extraído · visión selectiva";
+    case "local-structure-selective-vision": return "Estructura local + OCR/visión selectiva";
     default: return "Estructura detectada localmente";
   }
 }
@@ -1873,7 +1874,7 @@ remove obsolete external page-analysis handlers  async function importExternalKn
       </>}
 
       {step === "material" && <>
-        <div className="studio-wf-hero"><div className="eyebrow">PASO 02 · BIBLIOGRAFÍA</div><h1>Una sola carga para preparar la base de conocimiento.</h1><p>Primero cargá los documentos y analizá toda la bibliografía con Groq o una IA externa. Después revisá las secciones detectadas y decidí qué podrá consultar el chatbot y con qué prioridad pedagógica.</p></div>
+        <div className="studio-wf-hero"><div className="eyebrow">PASO 02 · BIBLIOGRAFÍA</div><h1>Una sola carga para preparar la base de conocimiento.</h1><p>Primero cargá los documentos: AULIA extrae el texto y detecta capítulos y secciones localmente. Después generá el índice conceptual con Groq o una IA externa, y revisá qué podrá consultar el chatbot.</p></div>
         <details className="studio-wf-source-details">
           <summary>Datos bibliográficos opcionales <span>· título, autor, editorial y año</span></summary>
           <Panel eyebrow="BIBLIOGRAFÍA" title="Referencias de la cátedra" description="Estos datos ayudan a identificar las fuentes, pero no hace falta completarlos para empezar a cargar y analizar los documentos." actions={<button className="ghost" type="button" onClick={addBibliography} disabled={!canEdit}>+ Agregar fuente</button>}>
