@@ -61,15 +61,25 @@ export function pendingPdfId(courseId, fileName) {
 
 export async function savePendingPdf(courseId, file) {
   const id = pendingPdfId(courseId, file.name);
+  const existing = await readStudioRecord(id);
+  const sameFile = existing?.kind === "pending-pdf" &&
+    Number(existing.fileSize) === Number(file.size) &&
+    Number(existing.lastModified) === Number(file.lastModified || 0);
   const record = {
+    ...(sameFile ? existing : {}),
     id,
     kind: "pending-pdf",
     courseId: String(courseId || ""),
     fileName: file.name || "material.pdf",
     fileType: file.type || "application/pdf",
-    lastModified: Number(file.lastModified || Date.now()),
+    fileSize: Number(file.size || 0),
+    lastModified: Number(file.lastModified || 0),
     blob: file,
     updatedAt: new Date().toISOString(),
+    blockedUntil: sameFile ? String(existing.blockedUntil || "") : "",
+    pauseReason: sameFile ? String(existing.pauseReason || "") : "",
+    lastError: sameFile ? String(existing.lastError || "") : "",
+    isDailyLimit: sameFile ? Boolean(existing.isDailyLimit) : false,
   };
   await withStore("readwrite", store => store.put(record));
   return record;
@@ -86,18 +96,97 @@ export async function getPendingPdf(id) {
 
 export async function listPendingPdfs(courseId) {
   const records = await withStore("readonly", store => store.getAll());
+  const preparedIds = new Set(
+    (records || []).filter(record => record.kind === "prepared-pdf").map(record => record.id)
+  );
   return (records || [])
     .filter(record => record.kind === "pending-pdf" && record.courseId === String(courseId || ""))
     .map(record => ({
       id: record.id,
       fileName: record.fileName,
       updatedAt: record.updatedAt,
+      blockedUntil: String(record.blockedUntil || ""),
+      pauseReason: String(record.pauseReason || ""),
+      lastError: String(record.lastError || ""),
+      isDailyLimit: Boolean(record.isDailyLimit),
+      prepared: preparedIds.has(preparedPdfCacheId(record.id)),
     }))
     .sort((a, b) => String(a.updatedAt).localeCompare(String(b.updatedAt)));
 }
 
 export async function deletePendingPdf(id) {
-  await withStore("readwrite", store => store.delete(id));
+  await withStore("readwrite", store => {
+    store.delete(id);
+    store.delete(preparedPdfCacheId(id));
+  });
+}
+
+function preparedPdfCacheId(id) {
+  return "prepared-pdf::" + String(id || "");
+}
+
+/**
+ * Persist parsed text and PDF structure separately from the temporary original PDF.
+ * The potentially large JPEG data URLs are intentionally removed; when resuming,
+ * only pages selected for visual analysis need to be rendered again.
+ */
+export async function savePreparedPdf(id, file, material) {
+  const aiPages = (material?.aiPages || []).map(page => ({
+    pageNumber: Number(page.pageNumber),
+    extractedText: String(page.extractedText || ""),
+    needsVisualAnalysis: Boolean(page.needsVisualAnalysis),
+  }));
+  const payload = {
+    sourceName: String(material?.sourceName || file?.name || "material.pdf"),
+    pages: Number(material?.pages || aiPages.length || 0),
+    document: material?.document || null,
+    analysis: material?.analysis || null,
+    bibliography: Array.isArray(material?.bibliography) ? material.bibliography : [],
+    warnings: Array.isArray(material?.warnings) ? material.warnings : [],
+    aiPages,
+  };
+  const record = {
+    id: preparedPdfCacheId(id),
+    kind: "prepared-pdf",
+    sourceId: String(id || ""),
+    fileName: String(file?.name || ""),
+    fileSize: Number(file?.size || 0),
+    lastModified: Number(file?.lastModified || 0),
+    payload,
+    updatedAt: new Date().toISOString(),
+  };
+  await withStore("readwrite", store => store.put(record));
+  return record;
+}
+
+export async function getPreparedPdf(id, file) {
+  const record = await readStudioRecord(preparedPdfCacheId(id));
+  if (!record || record.kind !== "prepared-pdf" || !record.payload) return null;
+  if (file && (
+    record.fileName !== String(file.name || "") ||
+    Number(record.fileSize) !== Number(file.size || 0) ||
+    Number(record.lastModified) !== Number(file.lastModified || 0)
+  )) return null;
+  return record.payload;
+}
+
+export async function updatePendingPdfStatus(id, {
+  blockedUntil = "",
+  pauseReason = "",
+  lastError = "",
+  isDailyLimit = false,
+} = {}) {
+  const record = await readStudioRecord(id);
+  if (!record || record.kind !== "pending-pdf") return false;
+  await writeStudioRecord({
+    ...record,
+    blockedUntil: String(blockedUntil || ""),
+    pauseReason: String(pauseReason || ""),
+    lastError: String(lastError || ""),
+    isDailyLimit: Boolean(isDailyLimit),
+    updatedAt: new Date().toISOString(),
+  });
+  return true;
 }
 
 export async function saveExternalAnalysisBatch(courseId, sourceName, batch) {
