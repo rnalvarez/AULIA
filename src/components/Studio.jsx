@@ -1913,7 +1913,7 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
         <Panel
           eyebrow="IA PARA LA CARGA"
           title="Elegí cómo analizar el documento"
-          description="Podés analizar los PDF con Groq desde AULIA o utilizar una IA externa. El progreso queda visible y los análisis interrumpidos se pueden reanudar sin seleccionar el PDF otra vez."
+          description="Groq analiza primero el texto extraído localmente y usa visión solo en páginas con imágenes integradas detectables o poco texto recuperable. Los gráficos vectoriales pueden requerir revisión docente. El progreso se guarda y puede reanudarse."
         >
           <div className="studio-wf-knowledge-provider">
             <button type="button" className={ingestionProvider === "groq" ? "active" : ""} onClick={() => setIngestionProvider("groq")} disabled={!canEdit || busy} aria-pressed={ingestionProvider === "groq"}>
@@ -2015,7 +2015,7 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
         <Panel
           eyebrow="MATERIAL"
           title="Bibliografía y corpus de la cátedra"
-          description="Si configuraste Groq, los PDF se analizan visual y semánticamente durante la carga. La IA identifica secciones, reconstruye tablas y describe gráficos; luego podés revisar las secciones, su alcance y prioridad."
+          description="Con Groq, AULIA conserva el texto extraído y analiza la jerarquía semántica por tandas. Envía imágenes solo de páginas seleccionadas por poco texto o imágenes integradas detectables; después podés revisar las secciones, el alcance y la prioridad."
           actions={ingestionProvider === "external" ? <span className="studio-wf-security-note">En modo externo, importá arriba el JSON que generó la otra IA.</span> : <label className={"primary studio-wf-file-btn" + (busy || (ingestionProvider === "groq" && !studioApiKey) ? " disabled" : "")}>{busy ? "Procesando…" : ingestionProvider === "groq" ? (studioApiKey ? "Cargar PDF y analizar con IA" : "Configurá Groq para continuar") : "Cargar material (extracción local)"}<input type="file" accept={ingestionProvider === "groq" ? ".pdf,application/pdf" : ".txt,.md,.markdown,.json,.pdf,.docx,text/plain,text/markdown,application/json,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document"} multiple onChange={importMaterial} disabled={busy || (ingestionProvider === "groq" && !studioApiKey)}/></label>}
         >
           {materialSections.length ? <>
