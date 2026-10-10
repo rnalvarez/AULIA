@@ -410,6 +410,9 @@ async function requestIndexBatch({ apiKey, endpoint, models, course, batch, batc
       if (response.status === 429 || response.status === 413) {
         error.message = "Groq limitó el análisis por volumen o frecuencia de tokens. El avance ya quedó guardado en el borrador. Detalle: " + message;
       }
+      if (response.status === 413) {
+        error.isPayloadTooLarge = true;
+      }
       throw error;
     }
 
