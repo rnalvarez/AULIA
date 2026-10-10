@@ -4,7 +4,7 @@ import { downloadCoursePack, readCoursePackFile } from "../core/coursePackIO.js"
 import { readMaterialFile, renderPdfPageImages, materialToCorpus, mergeImportedBibliography, mergeImportedDocuments, applyAIMultimodalAnalysis } from "../core/materialIO.js";
 import { savePendingPdf, getPendingPdf, getPendingPdfStatus, savePreparedPdf, getPreparedPdf, updatePendingPdfStatus, listPendingPdfs, deletePendingPdf, saveExternalAnalysisBatch, listExternalAnalysisBatches, getExternalAnalysisBatch, deleteExternalAnalysisBatch } from "../core/studioPersistence.js";
 import { createExternalDocumentAnalysisPrompt, EXTERNAL_DOCUMENT_ANALYSIS_FORMAT, EXTERNAL_DOCUMENT_ANALYSIS_VERSION } from "../core/externalDocumentAnalysis.js";
-import { analyzePdfWithVision } from "../services/llm/multimodalIngestion.js";
+import { analyzePdfWithVision, getCachedVisionPageNumbers } from "../services/llm/multimodalIngestion.js";
 import { analyzePdfTextFirst } from "../services/llm/textFirstIngestion.js";
 import { requestTeacherProposal } from "../services/llm/teacherProposal.js";
 import { buildKnowledgeBase, buildKnowledgePassages, isSupportedKnowledgeExcerpt, normalizeExternalKnowledgeEntries, mergeKnowledgeBaseEntries } from "../services/llm/knowledgeBase.js";
@@ -852,7 +852,16 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
             }
 
             if (visualPages.length) {
-              const missingImages = visualPages.filter(page => !String(page.imageDataUrl || "").startsWith("data:image/"));
+              const visionMaterial = {
+                ...extracted,
+                sourceFingerprint: [pendingId || course.id, file.name, file.size, file.lastModified].join("::"),
+                aiPages: visualPages,
+              };
+              const cachedVisionPages = await getCachedVisionPageNumbers(visionMaterial);
+              const missingImages = visualPages.filter(page =>
+                !cachedVisionPages.has(Number(page.pageNumber)) &&
+                !String(page.imageDataUrl || "").startsWith("data:image/")
+              );
               if (missingImages.length) {
                 setUploadProgress({
                   fileName: file.name,
@@ -892,7 +901,7 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
                 throw new Error("No se pudieron preparar las imágenes de las páginas " + visionImagesStillMissing.map(page => page.pageNumber).join(", ") + ". AULIA conservó el texto y no incorporó un corpus incompleto.");
               }
               const visionResult = await analyzePdfWithVision(
-                { ...extracted, aiPages: visualPages },
+                visionMaterial,
                 {
                   apiKey: studioApiKey,
                   courseTitle: workingDraft.title,
