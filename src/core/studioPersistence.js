@@ -141,9 +141,9 @@ function preparedPdfCacheId(id) {
 }
 
 /**
- * Persist parsed text and PDF structure separately from the temporary original PDF.
- * The potentially large JPEG data URLs are intentionally removed; when resuming,
- * only pages selected for visual analysis need to be rendered again.
+ * Persist the locally extracted corpus and compact per-page text needed for
+ * selective OCR/vision. Images are omitted to avoid storing large data URLs;
+ * on resume, only still-pending visual pages need to be rendered again.
  */
 export async function savePreparedPdf(id, file, material) {
   const aiPages = (material?.aiPages || []).map(page => ({
@@ -156,11 +156,12 @@ export async function savePreparedPdf(id, file, material) {
     sourceName: String(material?.sourceName || file?.name || "material.pdf"),
     pages: Number(material?.pages || aiPages.length || 0),
     document: material?.document || null,
-    // The final AI analysis rebuilds section records from validated page results.
-    // Do not store the heuristic section bodies twice in IndexedDB.
     analysis: compactAnalysis,
     bibliography: Array.isArray(material?.bibliography) ? material.bibliography : [],
     warnings: Array.isArray(material?.warnings) ? material.warnings : [],
+    // Persist the complete locally extracted corpus, not just page previews.
+    // This is the authoritative text needed to resume OCR/indexing after a quota pause.
+    corpus: Array.isArray(material?.corpus) ? material.corpus : [],
     aiPages,
   };
   const record = {
@@ -206,54 +207,6 @@ export async function updatePendingPdfStatus(id, {
   });
   return true;
 }
-
-export async function saveExternalAnalysisBatch(courseId, sourceName, batch) {
-  const id = "external-analysis::" + safePart(courseId) + "::" + safePart(sourceName) + "::" + stableHash(sourceName);
-  const current = await withStore("readonly", store => store.get(id));
-  if (current && current.kind === "external-analysis" && current.sourceName === sourceName && Number(current.totalPages) !== Number(batch.totalPages)) {
-    throw new Error("El total de páginas no coincide con las tandas externas que ya guardaste para este documento. Revisá totalPages antes de importar otra tanda.");
-  }
-  const sameDocument = current &&
-    current.kind === "external-analysis" &&
-    Number(current.totalPages) === Number(batch.totalPages) &&
-    current.sourceName === sourceName;
-  const pages = sameDocument && current.pages ? { ...current.pages } : {};
-  for (const page of batch.pages || []) pages[String(page.pageNumber)] = page;
-  const record = {
-    id,
-    kind: "external-analysis",
-    courseId: String(courseId || ""),
-    sourceName,
-    totalPages: Number(batch.totalPages),
-    pages,
-    updatedAt: new Date().toISOString(),
-  };
-  await withStore("readwrite", store => store.put(record));
-  const pageNumbers = Object.keys(pages).map(Number).sort((a, b) => a - b);
-  return { id, pageNumbers, processed: pageNumbers.length, totalPages: record.totalPages };
-}
-
-export async function listExternalAnalysisBatches(courseId) {
-  const records = await withStore("readonly", store => store.getAll());
-  return (records || [])
-    .filter(record => record.kind === "external-analysis" && record.courseId === String(courseId || ""))
-    .map(record => ({
-      id: record.id,
-      sourceName: record.sourceName,
-      processed: Object.keys(record.pages || {}).length,
-      totalPages: Number(record.totalPages || 0),
-      updatedAt: record.updatedAt,
-    }));
-}
-
-export async function getExternalAnalysisBatch(id) {
-  return withStore("readonly", store => store.get(id));
-}
-
-export async function deleteExternalAnalysisBatch(id) {
-  await withStore("readwrite", store => store.delete(id));
-}
-
 
 export async function readStudioRecord(id) {
   return withStore("readonly", store => store.get(id));

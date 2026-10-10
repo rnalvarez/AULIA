@@ -430,7 +430,7 @@ async function readPdf(file, { includePageImages = false, includeAIPageText = fa
 
     const hasExtractableText = pages.some((page) => page.lines.length);
     if (!hasExtractableText && !includePageImages && !includePageImagesForLowText) {
-      throw new Error("Este PDF parece ser un escaneo sin texto extraíble. Activá IA interna · Groq para analizar visualmente las páginas que no tienen texto.");
+      throw new Error("Este PDF parece ser un escaneo sin texto extraíble. Elegí «OCR y visión selectiva · Groq» para recuperar el texto de sus páginas.");
     }
 
     const analysis = await analyzePdfStructure({
@@ -812,164 +812,145 @@ export function mergeImportedDocuments(existing, incoming) {
 }
 
 
-export function applyAIMultimodalAnalysis(material, pageResults, model = "qwen/qwen3.8-27b", provider = "Groq") {
-  const sourcePages = (material?.aiPages || []).slice().sort((a, b) => Number(a.pageNumber) - Number(b.pageNumber));
-  const byNumber = new Map((pageResults || []).map(page => [Number(page.pageNumber), page]));
-  if (!sourcePages.length || sourcePages.some(page => !byNumber.has(Number(page.pageNumber)))) {
-    throw new Error("El análisis multimodal no cubrió todas las páginas. No se incorporó una segmentación parcial.");
-  }
-
-  const sections = [];
-  const warnings = [];
+export function applySelectiveVisualAnalysis(material, pageResults, model = "qwen/qwen3.8-27b") {
+  const sourcePages = new Map((material?.aiPages || []).map(page => [Number(page.pageNumber), page]));
+  const existingCorpus = Array.isArray(material?.corpus) ? material.corpus : [];
   const sourceDocumentId = material?.document?.id || makeDocumentId(material?.sourceName || "material");
-  const confidenceValues = [];
+  const usedIds = new Set(existingCorpus.map(item => String(item?.id || "")));
+  const visualChunks = [];
+  const warnings = [...(material?.warnings || [])];
 
-  for (const sourcePage of sourcePages) {
-    const pageNumber = Number(sourcePage.pageNumber);
-    const analysis = byNumber.get(pageNumber) || {};
+  for (const analysis of pageResults || []) {
+    const pageNumber = Number(analysis?.pageNumber);
+    const sourcePage = sourcePages.get(pageNumber);
+    if (!sourcePage || !Number.isInteger(pageNumber) || pageNumber < 1) {
+      throw new Error("La lectura visual devolvió una página que no pertenece al PDF original.");
+    }
+
     const rawText = normalizeWhitespace(sourcePage.extractedText || "");
     const transcription = normalizeWhitespace(analysis.transcription || "");
-    const primaryText = transcription || rawText;
+    const needsOcr = rawText.length < 100;
     const visualElements = Array.isArray(analysis.visualElements) ? analysis.visualElements : [];
     const visualText = visualElements.map(element => {
       const kind = String(element.kind || "elemento visual").trim();
       const title = String(element.title || "").trim();
       const description = String(element.description || "").trim();
       const table = String(element.tableMarkdown || "").trim();
-      const transcriptionText = String(element.transcribedText || "").trim();
+      const labels = String(element.transcribedText || "").trim();
       return [
         "[Elemento visual: " + kind + (title ? " · " + title : "") + " · página " + pageNumber + "]",
         description,
-        transcriptionText ? "Texto, etiquetas o valores visibles: " + transcriptionText : "",
-        table ? "Tabla reconstruida a partir de la página:\n" + table : "",
-      ].filter(Boolean).join("\n");
+        labels ? "Texto, etiquetas o valores visibles: " + labels : "",
+        table ? "Tabla reconstruida a partir de la página:\\n" + table : "",
+      ].filter(Boolean).join("\\n");
     }).filter(Boolean);
 
-    const body = [
-      primaryText,
-      visualText.length ? "LECTURA VISUAL ASISTIDA POR IA\n" + visualText.join("\n\n") : "",
-    ].filter(Boolean).join("\n\n").trim();
+    const bodyParts = [];
+    if (needsOcr) {
+      const recoveredText = transcription || rawText;
+      if (recoveredText) bodyParts.push("TEXTO RECUPERADO POR LECTURA VISUAL · PÁGINA " + pageNumber + "\\n" + recoveredText);
+    } else if (transcription && transcription !== rawText) {
+      bodyParts.push("TRANSCRIPCIÓN ALTERNATIVA PROPUESTA POR IA · VERIFICAR CON EL TEXTO EXTRAÍDO · PÁGINA " + pageNumber + "\\n" + transcription);
+      warnings.push("Página " + pageNumber + ": la lectura visual propuso una transcripción distinta del texto extraído; ambas versiones se conservan para revisión.");
+    }
 
-    const sectionTitle = String(analysis.sectionTitle || analysis.sectionPath?.slice(-1)?.[0] || "Material general").trim();
-    const sectionPath = Array.isArray(analysis.sectionPath) && analysis.sectionPath.length
-      ? analysis.sectionPath.map(value => String(value || "").trim()).filter(Boolean)
-      : [sectionTitle || "Material general"];
-    const key = sectionPath.join(" › ") + "::" + sectionTitle;
-    const confidence = Math.max(0, Math.min(1, Number(analysis.confidence ?? 0.5) || 0));
-    confidenceValues.push(confidence);
-    const needsReview = Boolean(analysis.needsReview || (!primaryText && visualText.length === 0));
+    if (visualText.length) bodyParts.push("LECTURA VISUAL ASISTIDA POR IA · PÁGINA " + pageNumber + "\\n" + visualText.join("\\n\\n"));
+    const content = bodyParts.join("\\n\\n").trim();
     const reviewNote = String(analysis.reviewNotes || "").trim();
+    const needsReview = Boolean(analysis.needsReview || (!content && needsOcr) || (transcription && transcription !== rawText && !needsOcr));
 
-    if (needsReview) {
-      warnings.push("Página " + pageNumber + (reviewNote ? ": " + reviewNote : ": requiere revisión docente de la lectura visual."));
+    if (!content) {
+      if (needsReview) warnings.push("Página " + pageNumber + (reviewNote ? ": " + reviewNote : ": la lectura visual no recuperó contenido utilizable; requiere revisión."));
+      continue;
     }
 
-    const pageContent = body || "[Página " + pageNumber + ": la IA no pudo recuperar texto legible. Requiere revisión docente.]";
-    const previous = sections[sections.length - 1];
-    if (previous && previous._key === key && Number(previous.sourcePageEnd) === pageNumber - 1) {
-      previous.content += "\n\n" + pageContent;
-      previous.sourcePageEnd = pageNumber;
-      previous.confidenceTotal += confidence;
-      previous.confidenceCount += 1;
-      previous.confidence = previous.confidenceTotal / previous.confidenceCount;
-      previous.needsReview = previous.needsReview || needsReview;
-      previous.visualElementCount += visualElements.length;
-      if (rawText && transcription && rawText !== transcription) {
-        previous.sourceTextOriginal = (previous.sourceTextOriginal ? previous.sourceTextOriginal + "\n\n" : "") +
-          "[Página " + pageNumber + "]\n" + rawText;
-        previous.reviewNotes = [previous.reviewNotes, "Página " + pageNumber + ": se conservó la extracción original porque la IA propuso una transcripción alternativa; cotejar ambas versiones."].filter(Boolean).join("\n");
-        previous.needsReview = true;
-      }
-      if (reviewNote) previous.reviewNotes = [previous.reviewNotes, "Página " + pageNumber + ": " + reviewNote].filter(Boolean).join("\n");
-    } else {
-      sections.push({
-        _key: key,
-        title: sectionTitle || "Material general",
-        level: Math.max(1, sectionPath.length),
-        sectionPath,
-        content: pageContent,
-        sourcePageStart: pageNumber,
-        sourcePageEnd: pageNumber,
-        segmentationSource: (String(provider || "").includes("texto primero") || String(provider || "").includes("análisis textual")) ? "ai-text-first" : "ai-multimodal",
-        confidence,
-        confidenceTotal: confidence,
-        confidenceCount: 1,
-        evidence: [(String(provider || "").includes("texto primero") || String(provider || "").includes("análisis textual"))
-          ? "Segmentación semántica mediante " + model + "; visión utilizada solo en páginas seleccionadas por imágenes integradas o poco texto extraíble."
-          : "Segmentación semántica y lectura visual mediante " + model],
-        visualElementCount: visualElements.length,
-        needsReview,
-        reviewNotes: reviewNote,
-        ...(rawText && transcription && rawText !== transcription ? {
-          sourceTextOriginal: "[Página " + pageNumber + "]\n" + rawText,
-          reviewNotes: [reviewNote, "La IA propuso una transcripción alternativa; cotejarla con la extracción original."].filter(Boolean).join("\n"),
-          needsReview: true,
-        } : {}),
-        scope: "included",
-        priority: "normal",
-        teacherTopic: "",
-        teacherConcepts: [],
-        teacherLimit: "",
-      });
-    }
+    const localSection = existingCorpus.find(item =>
+      item?.documentId === sourceDocumentId &&
+      Number(item?.sourcePageStart || item?.sourcePage || 0) <= pageNumber &&
+      Number(item?.sourcePageEnd || item?.sourcePageStart || item?.sourcePage || 0) >= pageNumber
+    ) || existingCorpus.find(item => item?.documentId === sourceDocumentId);
+    const localSectionMeta = (material?.document?.sections || []).find(section =>
+      Number(section?.sourcePageStart || 0) <= pageNumber &&
+      Number(section?.sourcePageEnd || section?.sourcePageStart || 0) >= pageNumber
+    ) || (material?.document?.sections || [])[0];
+    const sectionPath = Array.isArray(localSection?.sectionPath) && localSection.sectionPath.length
+      ? localSection.sectionPath
+      : Array.isArray(localSectionMeta?.path) && localSectionMeta.path.length
+        ? localSectionMeta.path
+        : (Array.isArray(analysis.sectionPath) && analysis.sectionPath.length
+            ? analysis.sectionPath
+            : [String(analysis.sectionTitle || "Material sin sección identificada")]);
+    const sectionTitle = String(localSection?.title || localSectionMeta?.title || sectionPath[sectionPath.length - 1] || "Lectura visual").trim();
+    const baseId = slugify(sourceDocumentId + "-lectura-visual-pagina-" + pageNumber);
+    let id = baseId;
+    let suffix = 1;
+    while (usedIds.has(id)) id = baseId + "-" + suffix++;
+    usedIds.add(id);
+
+    visualChunks.push({
+      id,
+      unitId: id,
+      sectionId: localSection?.sectionId || localSectionMeta?.id || slugify(sourceDocumentId + "-" + sectionPath.join("-")),
+      title: sectionTitle + " · lectura visual p. " + pageNumber,
+      chapter: sectionPath.join(" › "),
+      sectionPath: [...sectionPath],
+      sectionLevel: Number(localSection?.sectionLevel || sectionPath.length || 1),
+      content,
+      source: material?.sourceName || sourcePage.sourceName || "Bibliografía de la cátedra",
+      sourcePage: pageNumber,
+      sourcePageStart: pageNumber,
+      sourcePageEnd: pageNumber,
+      sourcePageCount: Number(material?.pages || sourcePages.size || 0),
+      documentId: sourceDocumentId,
+      segmentationSource: "vision-selective",
+      confidence: Math.max(0, Math.min(1, Number(analysis.confidence ?? 0.5) || 0)),
+      scope: localSection?.scope || localSectionMeta?.scope || "included",
+      priority: localSection?.priority || localSectionMeta?.priority || "normal",
+      teacherTopic: localSection?.teacherTopic || localSectionMeta?.teacherTopic || "",
+      teacherConcepts: Array.isArray(localSection?.teacherConcepts)
+        ? localSection.teacherConcepts
+        : (Array.isArray(localSectionMeta?.teacherConcepts) ? localSectionMeta.teacherConcepts : []),
+      teacherLimit: localSection?.teacherLimit || localSectionMeta?.teacherLimit || "",
+      visualElementCount: visualElements.length,
+      ...(needsReview ? { needsReview: true } : {}),
+      ...(reviewNote ? { reviewNotes: reviewNote } : {}),
+      structureEvidence: ["La estructura del documento se conservó desde la extracción local; la IA se usó solo para recuperar texto o interpretar elementos visuales de esta página."],
+    });
+
+    if (needsReview) warnings.push("Página " + pageNumber + (reviewNote ? ": " + reviewNote : ": requiere revisión de la lectura visual."));
   }
 
-  const cleanSections = sections.map(section => {
-    const { _key, confidenceTotal, confidenceCount, ...clean } = section;
-    return clean;
-  });
-  const confidence = confidenceValues.length
-    ? confidenceValues.reduce((sum, value) => sum + value, 0) / confidenceValues.length
-    : 0;
-  const baseAnalysis = material.analysis || {};
-  const analysis = {
+  const uniqueWarnings = Array.from(new Set(warnings));
+  const { sections: _sourceSections, ...baseAnalysis } = material?.analysis || {};
+  const analysisSummary = {
     ...baseAnalysis,
-    version: 3,
-    method: (String(provider || "").includes("texto primero") || String(provider || "").includes("análisis textual")) ? "ai-text-first-selective-vision" : "ai-multimodal",
-    documentType: (String(provider || "").includes("texto primero") || String(provider || "").includes("análisis textual"))
-      ? "documento analizado primero mediante texto extraído y visión selectiva"
-      : "documento analizado con IA multimodal",
-    confidence,
-    pageCount: sourcePages.length,
-    sectionCount: cleanSections.length,
-    lowConfidenceSections: cleanSections.filter(section => section.confidence < 0.62 || section.needsReview).length,
-    warnings,
-    model,
-    aiAnalyzedPages: pageResults.length,
+    method: pageResults?.length ? "local-structure-selective-vision" : (material?.analysis?.method || "pdf-local-structure"),
+    documentType: pageResults?.length
+      ? "texto extraído y estructura detectada localmente, con lectura visual selectiva"
+      : (material?.analysis?.documentType || "documento procesado localmente"),
+    model: pageResults?.length ? model : (material?.analysis?.model || ""),
+    aiAnalyzedPages: Number(pageResults?.length || 0),
+    warnings: uniqueWarnings,
   };
-  const corpus = buildSectionFragments({
-    sections: cleanSections,
-    sourceName: material.sourceName,
-    documentId: sourceDocumentId,
-    sourcePageCount: sourcePages.length,
-  });
-  if (!corpus.length) {
-    throw new Error("La IA no produjo unidades consultables. No se incorporó el documento.");
-  }
-
-  const document = buildDocumentMeta({
-    file: { name: material.sourceName || "Material.pdf" },
-    documentId: sourceDocumentId,
-    sections: cleanSections,
-    pages: sourcePages.length,
-    format: "pdf",
-    analysis,
-  });
 
   return {
     ...material,
-    corpus,
-    document,
-    analysis,
-    warnings,
+    corpus: [...existingCorpus, ...visualChunks],
+    warnings: uniqueWarnings,
+    analysis: analysisSummary,
+    document: material?.document ? {
+      ...material.document,
+      analysis: analysisSummary,
+      sections: material.document.sections || [],
+    } : material?.document,
     aiPages: undefined,
-    aiAnalysis: {
-      provider,
+    aiAnalysis: pageResults?.length ? {
+      provider: "Groq · OCR y visión selectiva",
       model,
-      method: (String(provider || "").includes("texto primero") || String(provider || "").includes("análisis textual")) ? "text-first-selective-vision" : "multimodal-page-analysis",
+      method: "local-structure-selective-vision",
       pagesProcessed: pageResults.length,
-      pagesTotal: sourcePages.length,
-      needsReview: warnings.length > 0,
-    },
+      pagesTotal: sourcePages.size,
+      needsReview: uniqueWarnings.length > 0,
+    } : material?.aiAnalysis,
   };
 }

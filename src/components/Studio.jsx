@@ -1,14 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { cloneCourse, validateCourse } from "../core/courseContract.js";
 import { downloadCoursePack, readCoursePackFile } from "../core/coursePackIO.js";
-import { readMaterialFile, renderPdfPageImages, materialToCorpus, mergeImportedBibliography, mergeImportedDocuments, applyAIMultimodalAnalysis } from "../core/materialIO.js";
-import { savePendingPdf, getPendingPdf, getPendingPdfStatus, savePreparedPdf, getPreparedPdf, updatePendingPdfStatus, listPendingPdfs, deletePendingPdf, saveExternalAnalysisBatch, listExternalAnalysisBatches, getExternalAnalysisBatch, deleteExternalAnalysisBatch } from "../core/studioPersistence.js";
-import { createExternalDocumentAnalysisPrompt, EXTERNAL_DOCUMENT_ANALYSIS_FORMAT, EXTERNAL_DOCUMENT_ANALYSIS_VERSION } from "../core/externalDocumentAnalysis.js";
+import { readMaterialFile, renderPdfPageImages, materialToCorpus, mergeImportedBibliography, mergeImportedDocuments, applySelectiveVisualAnalysis } from "../core/materialIO.js";
+import { savePendingPdf, getPendingPdf, getPendingPdfStatus, savePreparedPdf, getPreparedPdf, updatePendingPdfStatus, listPendingPdfs, deletePendingPdf } from "../core/studioPersistence.js";
 import { analyzePdfWithVision, getCachedVisionPageNumbers } from "../services/llm/multimodalIngestion.js";
-import { analyzePdfTextFirst } from "../services/llm/textFirstIngestion.js";
 import { requestTeacherProposal } from "../services/llm/teacherProposal.js";
 import { buildKnowledgeBase, buildKnowledgePassages, isSupportedKnowledgeExcerpt, normalizeExternalKnowledgeEntries, mergeKnowledgeBaseEntries } from "../services/llm/knowledgeBase.js";
-import { createExternalKnowledgePackage, createExternalKnowledgePrompt, downloadJsonFile, downloadTextFile, EXTERNAL_KNOWLEDGE_OUTPUT_FORMAT } from "../core/externalKnowledgeBaseIO.js";
+import { createExternalKnowledgePackage, createExternalKnowledgePrompt, downloadJsonFile, EXTERNAL_KNOWLEDGE_OUTPUT_FORMAT } from "../core/externalKnowledgeBaseIO.js";
 import { KNOWLEDGE_BASE_VERSION, isKnowledgeBaseCurrent, summarizeKnowledgeBase, knowledgeCorpusSignature, legacyKnowledgeCorpusSignature } from "../core/knowledgeBase.js";
 import { clearStudioApiKey, isGroqApiKey, loadStudioApiKey, saveStudioApiKey } from "../utils/studioStorage.js";
 import LegalNotice from "./LegalNotice.jsx";
@@ -291,8 +289,9 @@ function materialSegmentationLabel(value) {
     case "pdf-outline": return "Marcadores internos del PDF";
     case "pdf-hybrid-heuristic": return "Tipografía + geometría + consistencia";
     case "pdf-conservative": return "Segmentación conservadora";
-    case "ai-multimodal": return "IA multimodal · lectura visual y segmentación semántica";
+    case "ai-multimodal": return "IA multimodal · lectura visual";
     case "ai-text-first": return "IA semántica sobre texto extraído · visión selectiva";
+    case "local-structure-selective-vision": return "Estructura local + OCR/visión selectiva";
     default: return "Estructura detectada localmente";
   }
 }
@@ -452,12 +451,10 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
   const [knowledgeBaseReport, setKnowledgeBaseReport] = useState(null);
   const [showExternalPrompt, setShowExternalPrompt] = useState(false);
   const [knowledgeProvider, setKnowledgeProvider] = useState("groq");
-  const [ingestionProvider, setIngestionProvider] = useState(() => loadStudioApiKey(course.id) ? "groq" : "external");
+  const [ingestionProvider, setIngestionProvider] = useState(() => loadStudioApiKey(course.id) ? "groq" : "local");
   const [uploadProgress, setUploadProgress] = useState(null);
   const [pendingPdfs, setPendingPdfs] = useState([]);
   const [rateLimitClock, setRateLimitClock] = useState(() => Date.now());
-  const [externalAnalysisBatches, setExternalAnalysisBatches] = useState([]);
-  const [externalDocumentProgress, setExternalDocumentProgress] = useState(null);
 
   useEffect(() => {
     setDraftReady(false);
@@ -516,30 +513,16 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
     setAnalysisReport(null);
     setKnowledgeBaseReport(null);
     setShowExternalPrompt(false);
-    setIngestionProvider(loadStudioApiKey(course.id) ? "groq" : "external");
+    setIngestionProvider(loadStudioApiKey(course.id) ? "groq" : "local");
     setUploadProgress(null);
-    setExternalDocumentProgress(null);
   }, [course.id]);
 
   useEffect(() => {
     let active = true;
-    Promise.all([
-      listPendingPdfs(course.id),
-      listExternalAnalysisBatches(course.id),
-    ]).then(([pending, external]) => {
+    listPendingPdfs(course.id).then(pending => {
       if (!active) return;
       setPendingPdfs(pending);
       setPendingPdfsCourseId(course.id);
-      setExternalAnalysisBatches(external);
-      const partial = external.find(item => item.processed < item.totalPages);
-      if (partial) {
-        setExternalDocumentProgress({
-          sourceName: partial.sourceName,
-          processed: partial.processed,
-          total: partial.totalPages,
-          status: "partial",
-        });
-      }
     }).catch(() => {
       if (active) setStatus("No se pudo consultar el trabajo guardado en este navegador. Verificá que el almacenamiento del sitio esté habilitado.");
     });
@@ -778,8 +761,13 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
 
           setStatus("Preparando " + file.name + "…");
           let extracted = null;
-          const cachedPreparation = useVision && pendingId
+          const cachedPreparationCandidate = useVision && pendingId
             ? await getPreparedPdf(pendingId, file)
+            : null;
+          // Older cache records did not persist the full extracted corpus. Re-extract
+          // those once rather than resuming with only page metadata and losing the book text.
+          const cachedPreparation = Array.isArray(cachedPreparationCandidate?.corpus)
+            ? cachedPreparationCandidate
             : null;
 
           if (cachedPreparation) {
@@ -839,67 +827,47 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
 
           if (useVision && Array.isArray(extracted.aiPages) && extracted.aiPages.length) {
             let allPages = extracted.aiPages.slice().sort((a, b) => Number(a.pageNumber) - Number(b.pageNumber));
-            let visualPages = allPages.filter(page => Boolean(page.needsVisualAnalysis) || String(page.extractedText || "").trim().length < 100);
-            const visualPageNumbers = new Set(visualPages.map(page => Number(page.pageNumber)));
-            const textPages = allPages.filter(page => !visualPageNumbers.has(Number(page.pageNumber)) && String(page.extractedText || "").trim().length >= 100);
-            const resultByPage = new Map();
-            let completedTextPages = 0;
-            let completedVisualPages = 0;
-            let modelName = "qwen/qwen3.8-27b";
-            lastProgress = { processed: 0, total: allPages.length };
-            setUploadProgress({
-              fileName: file.name,
-              phase: "processing",
-              processed: 0,
-              total: allPages.length,
-              message: "Primero se analiza el texto. Groq recibirá imágenes solo de páginas con imágenes integradas, gráficos vectoriales complejos o poco texto extraíble.",
-              error: "",
-              pendingId,
-            });
+            let visualPages = allPages.filter(page =>
+              Boolean(page.needsVisualAnalysis) || String(page.extractedText || "").trim().length < 100
+            );
 
-            const reportProgress = (progress, kind) => {
-              if (kind === "text") completedTextPages = Math.max(completedTextPages, Number(progress.processed || 0));
-              else completedVisualPages = Math.max(completedVisualPages, Number(progress.processed || 0));
-              const processed = Math.min(allPages.length, completedTextPages + completedVisualPages);
-              lastProgress = { processed, total: allPages.length };
-              const activePages = progress.phase === "processing-batch"
-                ? (progress.activePageNumbers || [])
-                : (progress.phase === "processing" ? (progress.pageNumbers || []) : []);
-              const message = progress.phase === "rate-wait"
-                ? (progress.message || "Esperando renovación de la cuota de Groq; el avance está guardado.")
-                : progress.phase === "processing-batch"
-                  ? (kind === "text"
-                    ? "Analizando texto de las páginas " + activePages.join(", ") + "…"
-                    : "Analizando visualmente las páginas con poco texto: " + activePages.join(", ") + "…")
-                  : (progress.message || (kind === "text" ? "Análisis semántico del texto en curso." : "Lectura visual selectiva en curso."));
+            if (visualPages.length) {
+              let modelName = "qwen/qwen3.8-27b";
+              lastProgress = { processed: 0, total: visualPages.length };
               setUploadProgress({
                 fileName: file.name,
-                phase: progress.phase || "processing",
-                processed,
-                total: allPages.length,
-                model: progress.model || modelName,
-                activePages,
-                message,
+                phase: "processing",
+                processed: 0,
+                total: visualPages.length,
+                message: "El texto y la estructura se extraen localmente. Groq leerá solo " +
+                  visualPages.length + " página(s) con poco texto o elementos visuales que requieren interpretación.",
                 error: "",
                 pendingId,
               });
-            };
 
-            if (textPages.length) {
-              const textResult = await analyzePdfTextFirst(
-                { ...extracted, aiPages: textPages },
-                {
-                  apiKey: studioApiKey,
-                  courseTitle: workingDraft.title,
-                  onProgress: progress => reportProgress(progress, "text"),
-                }
-              );
-              modelName = textResult.model || modelName;
-              completedTextPages = textResult.processed || textResult.pages.length;
-              for (const page of textResult.pages) resultByPage.set(Number(page.pageNumber), page);
-            }
+              const reportVisionProgress = progress => {
+                const processed = Number(progress.processed || 0);
+                lastProgress = { processed, total: visualPages.length };
+                const activePages = progress.phase === "processing-batch"
+                  ? (progress.activePageNumbers || [])
+                  : (progress.phase === "processing" ? (progress.pageNumbers || []) : []);
+                setUploadProgress({
+                  fileName: file.name,
+                  phase: progress.phase || "processing",
+                  processed,
+                  total: visualPages.length,
+                  model: progress.model || modelName,
+                  activePages,
+                  message: progress.phase === "rate-wait"
+                    ? (progress.message || "Esperando la ventana de cuota de Groq; la extracción local permanece guardada.")
+                    : progress.message || (progress.phase === "processing-batch"
+                      ? "Leyendo visualmente las páginas " + activePages.join(", ") + "…"
+                      : "Lectura visual selectiva en curso."),
+                  error: "",
+                  pendingId,
+                });
+              };
 
-            if (visualPages.length) {
               const visionMaterial = {
                 ...extracted,
                 sourceFingerprint: [pendingId || course.id, file.name, file.size, file.lastModified].join("::"),
@@ -910,13 +878,14 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
                 !cachedVisionPages.has(Number(page.pageNumber)) &&
                 !String(page.imageDataUrl || "").startsWith("data:image/")
               );
+
               if (missingImages.length) {
                 setUploadProgress({
                   fileName: file.name,
                   phase: "rendering",
-                  processed: completedTextPages,
-                  total: allPages.length,
-                  message: "El texto ya está preparado. Renderizando únicamente " + missingImages.length + " página(s) que requieren visión.",
+                  processed: 0,
+                  total: visualPages.length,
+                  message: "La extracción local ya está guardada. Renderizando únicamente " + missingImages.length + " página(s) visuales pendientes.",
                   error: "",
                   pendingId,
                 });
@@ -926,10 +895,10 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
                   progress => setUploadProgress({
                     fileName: file.name,
                     phase: "rendering",
-                    processed: completedTextPages,
-                    total: allPages.length,
+                    processed: 0,
+                    total: visualPages.length,
                     activePages: [progress.pageNumber],
-                    message: "Preparando solo las páginas visuales pendientes (" + progress.processed + " de " + progress.total + ").",
+                    message: "Preparando página visual " + progress.processed + " de " + progress.total + ".",
                     error: "",
                     pendingId,
                   })
@@ -941,36 +910,36 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
                     ? page.imageDataUrl
                     : (imageByPage.get(Number(page.pageNumber)) || ""),
                 }));
-                visualPages = allPages.filter(page => visualPageNumbers.has(Number(page.pageNumber)));
+                const pageSet = new Set(visualPages.map(page => Number(page.pageNumber)));
+                visualPages = allPages.filter(page => pageSet.has(Number(page.pageNumber)));
                 extracted = { ...extracted, aiPages: allPages };
               }
-              const visionImagesStillMissing = visualPages.filter(page => !cachedVisionPages.has(Number(page.pageNumber)) && !String(page.imageDataUrl || "").startsWith("data:image/"));
+
+              const visionImagesStillMissing = visualPages.filter(page =>
+                !cachedVisionPages.has(Number(page.pageNumber)) &&
+                !String(page.imageDataUrl || "").startsWith("data:image/")
+              );
               if (visionImagesStillMissing.length) {
-                throw new Error("No se pudieron preparar las imágenes de las páginas " + visionImagesStillMissing.map(page => page.pageNumber).join(", ") + ". AULIA conservó el texto y no incorporó un corpus incompleto.");
+                throw new Error("No se pudieron preparar las imágenes de las páginas " +
+                  visionImagesStillMissing.map(page => page.pageNumber).join(", ") +
+                  ". AULIA conservó la extracción y la estructura local; no se descartará el avance.");
               }
+
               const visionResult = await analyzePdfWithVision(
                 { ...visionMaterial, aiPages: visualPages },
                 {
                   apiKey: studioApiKey,
                   courseTitle: workingDraft.title,
-                  onProgress: progress => reportProgress(progress, "visual"),
+                  onProgress: reportVisionProgress,
                 }
               );
               modelName = visionResult.model || modelName;
-              completedVisualPages = visionResult.processed || visionResult.pages.length;
-              for (const page of visionResult.pages) resultByPage.set(Number(page.pageNumber), page);
+              prepared = applySelectiveVisualAnalysis(extracted, visionResult.pages, modelName);
+              multimodalDocuments += 1;
+              processedPages += visionResult.pages.length;
+            } else {
+              conventionalDocuments += 1;
             }
-
-            const pageResults = allPages.map(page => resultByPage.get(Number(page.pageNumber)));
-            if (pageResults.some(page => !page)) {
-              throw new Error("El análisis no cubrió todas las páginas. AULIA conservó los resultados validados y no incorporará un corpus incompleto.");
-            }
-            const provider = visualPages.length
-              ? (textPages.length ? "Groq · texto primero + visión selectiva" : "Groq · visión de páginas sin texto")
-              : "Groq · análisis textual";
-            prepared = applyAIMultimodalAnalysis(extracted, pageResults, modelName, provider);
-            multimodalDocuments += 1;
-            processedPages += pageResults.length;
           } else {
             conventionalDocuments += 1;
           }
@@ -978,7 +947,7 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
           if (!prepared.corpus?.length) {
             throw new Error(
               "No se pudo recuperar texto de " + file.name +
-              ". Para leer un PDF escaneado, elegí IA interna · Groq y configurá la clave antes de cargarlo."
+              ". Si es un PDF escaneado, seleccioná «Visión selectiva · Groq» y configurá una clave docente para recuperar el texto de las páginas sin capa de texto."
             );
           }
 
@@ -1068,9 +1037,9 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
       if (!failedCount) {
         setStatus(
           "Carga completada." +
-          (multimodalDocuments ? " " + multimodalDocuments + " PDF(s) analizados con IA multimodal (" + processedPages + " páginas)." : "") +
-          (conventionalDocuments ? " " + conventionalDocuments + " archivo(s) procesados por extracción local." : "") +
-          " Revisá las secciones y generá la base conceptual antes de publicar."
+          (multimodalDocuments ? " " + multimodalDocuments + " PDF(s) enriquecidos con lectura visual selectiva (" + processedPages + " páginas)." : "") +
+          (conventionalDocuments ? " " + conventionalDocuments + " archivo(s) segmentados localmente." : "") +
+          " Revisá las secciones y generá el índice conceptual antes de publicar."
         );
       } else if (files.length > 1) {
         setStatus(failedCount + " archivo(s) quedaron pendientes. Podés reanudarlos sin volver a seleccionarlos.");
@@ -1093,7 +1062,7 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
     if (!studioApiKey) {
       setIngestionProvider("groq");
       setShowStudioKey(true);
-      setStatus("El PDF está guardado. Configurá tu clave personal de Groq para reanudarlo; no hace falta volver a cargarlo.");
+      setStatus("La preparación local del PDF está guardada. Configurá tu clave de Groq para reanudar solo las páginas que requieren lectura visual; no hace falta volver a cargarlo.");
       return;
     }
     setIngestionProvider("groq");
@@ -1373,223 +1342,7 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
     }
   }
 
-  async function discardExternalAnalysis(batch) {
-    try {
-      await deleteExternalAnalysisBatch(batch.id);
-      const remaining = await listExternalAnalysisBatches(course.id);
-      setExternalAnalysisBatches(remaining);
-      const partial = remaining.find(item => item.processed < item.totalPages);
-      setExternalDocumentProgress(partial ? {
-        status: "partial",
-        sourceName: partial.sourceName,
-        processed: partial.processed,
-        total: partial.totalPages,
-        message: "Importá las tandas restantes del documento para continuar.",
-      } : null);
-      setStatus("Se descartaron las tandas guardadas de " + batch.sourceName + ".");
-    } catch (error) {
-      setStatus(error?.message || "No se pudieron descartar las tandas externas.");
-    }
-  }
-
-  function downloadExternalDocumentPrompt() {
-    downloadTextFile(
-      createExternalDocumentAnalysisPrompt(),
-      "instrucciones-aulia-analisis-documental-multimodal.txt"
-    );
-    setStatus("Instrucciones descargadas. Adjuntá ese TXT y el PDF original en la IA externa; luego importá el JSON resultante aquí.");
-  }
-
-  async function importExternalDocumentAnalysis(e) {
-    const files = Array.from(e.target.files || []);
-    e.target.value = "";
-    if (!files.length) return;
-
-    setBusy(true);
-    setExternalDocumentProgress({ status: "importing", message: "Validando resultados de la IA externa…" });
-    let workingDraft = cloneCourse(draft);
-    let completedDocuments = 0;
-    const failures = [];
-
-    try {
-      for (const file of files) {
-        try {
-          const raw = await file.text();
-          let parsed;
-          try {
-            parsed = JSON.parse(raw.replace(/^\uFEFF/, "").trim()
-              .replace(/^\x60{3}(?:json)?\s*/i, "")
-              .replace(/\s*\x60{3}$/, "").trim());
-          } catch {
-            throw new Error("El archivo no contiene JSON válido. Guardá la respuesta de la IA como .json sin texto adicional.");
-          }
-
-          if (parsed?.format !== EXTERNAL_DOCUMENT_ANALYSIS_FORMAT ||
-              Number(parsed?.version) !== EXTERNAL_DOCUMENT_ANALYSIS_VERSION) {
-            throw new Error("Este JSON no corresponde al análisis documental multimodal de AULIA. Descargá las instrucciones de Studio y usalas con el PDF original.");
-          }
-          const sourceName = String(parsed?.sourceName || "").trim();
-          const totalPages = Number(parsed?.totalPages);
-          const pages = Array.isArray(parsed?.pages) ? parsed.pages : [];
-          const declared = Array.isArray(parsed?.processedPageNumbers) ? parsed.processedPageNumbers.map(Number) : [];
-          if (!sourceName || !Number.isInteger(totalPages) || totalPages < 1 || totalPages > 20000) {
-            throw new Error("El JSON debe incluir sourceName y totalPages válidos.");
-          }
-          if (!pages.length || !declared.length) {
-            throw new Error("El JSON no declara páginas procesadas. Volvé a pedirle a la IA el formato exacto que indican las instrucciones.");
-          }
-
-          const seen = new Set();
-          const normalizedPages = pages.map(page => {
-            const pageNumber = Number(page?.pageNumber);
-            if (!Number.isInteger(pageNumber) || pageNumber < 1 || pageNumber > totalPages || seen.has(pageNumber)) {
-              throw new Error("El resultado contiene páginas duplicadas o números fuera del rango del PDF.");
-            }
-            seen.add(pageNumber);
-            return {
-              pageNumber,
-              originalText: String(page?.originalText || "").trim(),
-              sectionTitle: String(page?.sectionTitle || "").trim(),
-              sectionPath: Array.isArray(page?.sectionPath)
-                ? page.sectionPath.map(value => String(value || "").trim()).filter(Boolean).slice(0, 8)
-                : [],
-              transcription: String(page?.transcription || "").trim(),
-              visualElements: (Array.isArray(page?.visualElements) ? page.visualElements : []).slice(0, 12).map(item => ({
-                kind: String(item?.kind || "other"),
-                title: String(item?.title || ""),
-                description: String(item?.description || ""),
-                tableMarkdown: String(item?.tableMarkdown || ""),
-                transcribedText: String(item?.transcribedText || ""),
-              })),
-              confidence: Math.max(0, Math.min(1, Number(page?.confidence ?? 0.5) || 0)),
-              needsReview: Boolean(page?.needsReview),
-              reviewNotes: String(page?.reviewNotes || ""),
-            };
-          });
-          const uniqueDeclared = Array.from(new Set(declared));
-          if (uniqueDeclared.length !== declared.length ||
-              uniqueDeclared.length !== normalizedPages.length ||
-              normalizedPages.some(page => !uniqueDeclared.includes(page.pageNumber))) {
-            throw new Error("processedPageNumbers debe coincidir exactamente con las páginas incluidas en este JSON.");
-          }
-
-          const batchInfo = await saveExternalAnalysisBatch(course.id, sourceName, {
-            totalPages,
-            pages: normalizedPages,
-          });
-          const updatedBatches = await listExternalAnalysisBatches(course.id);
-          setExternalAnalysisBatches(updatedBatches);
-
-          if (batchInfo.processed < totalPages) {
-            setExternalDocumentProgress({
-              status: "partial",
-              sourceName,
-              processed: batchInfo.processed,
-              total: totalPages,
-              message: "Tanda importada. Faltan " + (totalPages - batchInfo.processed) + " páginas. Importá el siguiente JSON de este mismo PDF.",
-            });
-            continue;
-          }
-
-          const stored = await getExternalAnalysisBatch(batchInfo.id);
-          const allPages = Object.values(stored?.pages || {}).sort((a, b) => Number(a.pageNumber) - Number(b.pageNumber));
-          const complete = allPages.length === totalPages &&
-            allPages.every((page, index) => Number(page.pageNumber) === index + 1);
-          if (!complete) {
-            setExternalDocumentProgress({
-              status: "partial",
-              sourceName,
-              processed: allPages.length,
-              total: totalPages,
-              message: "AULIA detectó páginas faltantes o fuera de orden. Revisá los JSON antes de continuar.",
-            });
-            continue;
-          }
-
-          const documentId = "doc-" + slug(sourceName);
-          const importedMaterial = {
-            sourceName,
-            pages: totalPages,
-            document: {
-              id: documentId,
-              title: sourceName.replace(/\.[^.]+$/, ""),
-              sourceName,
-              format: "external-ai-multimodal",
-              pages: totalPages,
-              sections: [],
-              sectionCount: 0,
-            },
-            analysis: {
-              version: 3,
-              method: "external-ai-multimodal",
-              documentType: "documento analizado por IA externa",
-              pageCount: totalPages,
-              model: "IA externa",
-              aiAnalyzedPages: totalPages,
-              confidence: allPages.reduce((sum, page) => sum + Number(page.confidence || 0), 0) / totalPages,
-              warnings: allPages.filter(page => page.needsReview).map(page =>
-                "Página " + page.pageNumber + (page.reviewNotes ? ": " + page.reviewNotes : ": requiere revisión.")
-              ),
-              sectionCount: 0,
-              lowConfidenceSections: allPages.filter(page => page.needsReview || Number(page.confidence || 0) < 0.62).length,
-            },
-            aiPages: allPages.map(page => ({
-              pageNumber: page.pageNumber,
-              extractedText: page.originalText || "",
-              imageDataUrl: "external-ai-analysis",
-            })),
-          };
-          const prepared = applyAIMultimodalAnalysis(importedMaterial, allPages, "IA externa", "IA externa");
-          prepared.document.pages = totalPages;
-          prepared.document.analysis = { ...(prepared.document.analysis || {}), pageCount: totalPages, model: "IA externa" };
-          const portable = materialToCorpus(prepared, workingDraft.corpus || []);
-          workingDraft = {
-            ...workingDraft,
-            corpus: [...(workingDraft.corpus || []), ...portable.corpus],
-            documents: mergeImportedDocuments(workingDraft.documents || [], portable.document ? [portable.document] : []),
-            knowledgeBase: null,
-          };
-          setDraft(cloneCourse(workingDraft));
-          setValidation(null);
-          try {
-            localStorage.setItem(storageKey, JSON.stringify({
-              version: courseMeta?.updatedAt || "",
-              draft: workingDraft,
-            }));
-          } catch {}
-          await deleteExternalAnalysisBatch(batchInfo.id);
-          completedDocuments += 1;
-          setExternalDocumentProgress({
-            status: "complete",
-            sourceName,
-            processed: totalPages,
-            total: totalPages,
-            message: "Análisis externo completo: " + totalPages + " páginas incorporadas al corpus. Ahora podés generar la base conceptual desde Studio.",
-          });
-          setExternalAnalysisBatches(await listExternalAnalysisBatches(course.id));
-        } catch (error) {
-          failures.push(file.name + ": " + (error?.message || "No se pudo importar el resultado."));
-        }
-      }
-
-      if (failures.length) {
-        setStatus("No se pudieron importar " + failures.length + " archivo(s): " + failures.slice(0, 2).join(" · "));
-        setExternalDocumentProgress(current => ({
-          ...(current || {}),
-          status: "error",
-          error: failures.slice(0, 3).join("\n"),
-        }));
-      } else if (completedDocuments) {
-        setStatus("Se incorporó el análisis multimodal de " + completedDocuments + " documento(s) generado(s) por IA externa.");
-      } else {
-        setStatus("Resultados parciales guardados. Podés importar las siguientes tandas sin perder las anteriores.");
-      }
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function importExternalKnowledge(e) {
+async function importExternalKnowledge(e) {
     const files = Array.from(e.target.files || []);
     e.target.value = "";
     if (!files.length) return;
@@ -2121,7 +1874,7 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
       </>}
 
       {step === "material" && <>
-        <div className="studio-wf-hero"><div className="eyebrow">PASO 02 · BIBLIOGRAFÍA</div><h1>Una sola carga para preparar la base de conocimiento.</h1><p>Primero cargá los documentos y analizá toda la bibliografía con Groq o una IA externa. Después revisá las secciones detectadas y decidí qué podrá consultar el chatbot y con qué prioridad pedagógica.</p></div>
+        <div className="studio-wf-hero"><div className="eyebrow">PASO 02 · BIBLIOGRAFÍA</div><h1>Una sola carga para preparar la base de conocimiento.</h1><p>Primero cargá los documentos: AULIA extrae el texto y detecta capítulos y secciones localmente. Después generá el índice conceptual con Groq o una IA externa, y revisá qué podrá consultar el chatbot.</p></div>
         <details className="studio-wf-source-details">
           <summary>Datos bibliográficos opcionales <span>· título, autor, editorial y año</span></summary>
           <Panel eyebrow="BIBLIOGRAFÍA" title="Referencias de la cátedra" description="Estos datos ayudan a identificar las fuentes, pero no hace falta completarlos para empezar a cargar y analizar los documentos." actions={<button className="ghost" type="button" onClick={addBibliography} disabled={!canEdit}>+ Agregar fuente</button>}>
@@ -2131,27 +1884,24 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
           </Panel>
         </details>
         <Panel
-          eyebrow="IA PARA LA CARGA"
-          title="Elegí cómo analizar el documento"
-          description="Groq analiza primero el texto extraído localmente y usa visión solo en páginas con imágenes integradas, gráficos vectoriales complejos detectables o poco texto recuperable. Los gráficos vectoriales pueden requerir revisión docente. El progreso se guarda y puede reanudarse."
+          eyebrow="PREPARACIÓN DEL MATERIAL"
+          title="Extracción local y lectura visual selectiva"
+          description="AULIA extrae el texto y detecta capítulos y secciones localmente. Groq solo se usa, de forma opcional, para páginas escaneadas o elementos gráficos seleccionados; el índice conceptual se construye en un paso independiente."
         >
           <div className="studio-wf-knowledge-provider">
-            <button type="button" className={ingestionProvider === "groq" ? "active" : ""} onClick={() => setIngestionProvider("groq")} disabled={!canEdit || busy} aria-pressed={ingestionProvider === "groq"}>
-              <strong>IA interna · Groq</strong><span>Analizar texto primero; visión para páginas con imágenes, gráficos o poco texto</span>
-            </button>
-            <button type="button" className={ingestionProvider === "external" ? "active" : ""} onClick={() => setIngestionProvider("external")} disabled={!canEdit || busy} aria-pressed={ingestionProvider === "external"}>
-              <strong>IA externa</strong><span>Usar ChatGPT, Claude, Gemini u otro servicio</span>
-            </button>
             <button type="button" className={ingestionProvider === "local" ? "active" : ""} onClick={() => setIngestionProvider("local")} disabled={!canEdit || busy} aria-pressed={ingestionProvider === "local"}>
-              <strong>Extracción local</strong><span>Sin IA en la etapa de carga</span>
+              <strong>Extracción local</strong><span>Lectura y segmentación sin cuota de IA</span>
+            </button>
+            <button type="button" className={ingestionProvider === "groq" ? "active" : ""} onClick={() => setIngestionProvider("groq")} disabled={!canEdit || busy} aria-pressed={ingestionProvider === "groq"}>
+              <strong>OCR y visión selectiva · Groq</strong><span>Solo para páginas sin texto suficiente o gráficos relevantes</span>
             </button>
           </div>
 
           {ingestionProvider === "groq" && <>
             {studioApiKey
-              ? <div className="studio-wf-ai-ready"><span>● IA de texto primero lista</span><small>AULIA analizará el texto por tandas y reservará las imágenes para páginas con imágenes integradas o poco texto. El avance se guarda en este navegador.</small><button className="ghost" type="button" onClick={() => setShowStudioKey(true)} disabled={busy}>Cambiar clave</button></div>
+              ? <div className="studio-wf-ai-ready"><span>● Visión selectiva disponible</span><small>El texto, los títulos y la estructura principal se procesan localmente. Groq solo recibirá imágenes de páginas seleccionadas.</small><button className="ghost" type="button" onClick={() => setShowStudioKey(true)} disabled={busy}>Cambiar clave</button></div>
               : <div className="studio-wf-ai-setup">
-                  <div><strong>Clave personal de Groq</strong><span>Ingresala para analizar texto por tandas y usar visión solo en páginas con imágenes integradas, gráficos vectoriales complejos o poco texto extraíble.</span></div>
+                  <div><strong>Clave personal de Groq</strong><span>Necesaria únicamente si el PDF contiene páginas escaneadas o elementos visuales que requieren lectura asistida.</span></div>
                   <div className="studio-wf-ai-key-row">
                     <input type="password" value={studioKeyInput} placeholder="gsk_…" autoComplete="off" onChange={(event) => setStudioKeyInput(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") saveTeacherKey(); }}/>
                     <button className="ghost" type="button" onClick={saveTeacherKey} disabled={!studioKeyInput.trim() || !canEdit || busy}>Guardar clave</button>
@@ -2162,61 +1912,25 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
               <div className="studio-wf-ai-key-row">
                 <input type="password" value={studioKeyInput} placeholder="gsk_…" autoComplete="off" onChange={(event) => setStudioKeyInput(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") saveTeacherKey(); }}/>
                 <button className="ghost" type="button" onClick={saveTeacherKey} disabled={!studioKeyInput.trim() || !canEdit || busy}>Guardar clave</button>
-                <button className="ghost" type="button" onClick={() => { forgetTeacherKey(); setIngestionProvider("external"); }} disabled={busy}>Quitar</button>
+                <button className="ghost" type="button" onClick={() => { forgetTeacherKey(); setIngestionProvider("local"); }} disabled={busy}>Quitar</button>
               </div>
             </div>}
-            <p className="studio-wf-security-note">Aplicable a PDF. DOCX, TXT y Markdown conservan la extracción local y luego pueden indexarse con Groq o una IA externa.</p>
           </>}
-
-          {ingestionProvider === "external" && <div className="studio-wf-external-help">
-            <h3>Análisis del PDF con una IA externa</h3>
-            <p>En este recorrido, la IA externa lee directamente el PDF original. No necesitás subirlo primero a AULIA ni configurar una clave de Groq.</p>
-            <ol>
-              <li><strong>Descargá las instrucciones.</strong> El archivo explica cómo leer el documento y qué JSON debe producir la IA.</li>
-              <li><strong>Adjuntá dos archivos en ChatGPT, Claude, Gemini u otro servicio.</strong> El PDF original de la bibliografía y el TXT de instrucciones. Pedile que analice el documento con esas reglas.</li>
-              <li><strong>Si el documento es largo, trabajá por tandas.</strong> La IA debe conservar el mismo nombre del PDF y total de páginas en todos los JSON. Guardá cada tanda como un archivo .json independiente.</li>
-              <li><strong>Importá los resultados aquí.</strong> Podés seleccionar varias tandas juntas o importar una tanda ahora y continuar después. AULIA guarda la cobertura localmente y no incorpora el documento hasta que todas las páginas estén cubiertas.</li>
-            </ol>
-            <div className="studio-wf-tool-row">
-              <button className="primary" type="button" onClick={downloadExternalDocumentPrompt} disabled={!canEdit || busy}>1. Descargar instrucciones (.txt)</button>
-              <label className={"ghost studio-file" + (!canEdit || busy ? " disabled" : "")}>2. Importar análisis (.json)<input type="file" accept="application/json,.json,text/plain,.txt" multiple onChange={importExternalDocumentAnalysis} disabled={!canEdit || busy}/></label>
-            </div>
-            <small className="studio-wf-external-note">Los resultados parciales se almacenan en este navegador. Para completar el análisis, importá las tandas restantes del mismo PDF sin cambiar el nombre de origen ni el total de páginas.</small>
-            {externalDocumentProgress && <div className={"studio-wf-ai-report " + (externalDocumentProgress.status === "complete" ? "ok" : externalDocumentProgress.status === "error" ? "error" : "")}>
-              <strong>{externalDocumentProgress.status === "complete" ? "✓ Análisis externo completo" : externalDocumentProgress.status === "partial" ? "Análisis externo parcial" : externalDocumentProgress.status === "error" ? "No se pudo completar la importación" : "Importando análisis externo…"}</strong>
-              {externalDocumentProgress.sourceName && <span>{externalDocumentProgress.sourceName}</span>}
-              {Number(externalDocumentProgress.total) > 0 && <>
-                <span>{externalDocumentProgress.processed || 0} de {externalDocumentProgress.total} páginas recibidas</span>
-                <progress className="studio-wf-progress" max={externalDocumentProgress.total} value={Math.min(externalDocumentProgress.processed || 0, externalDocumentProgress.total)}/>
-              </>}
-              {externalDocumentProgress.message && <small>{externalDocumentProgress.message}</small>}
-              {externalDocumentProgress.error && <small>{externalDocumentProgress.error}</small>}
-            </div>}
-            {externalAnalysisBatches.length > 0 && <div className="studio-wf-stack">
-              <strong>Documentos externos guardados para continuar</strong>
-              {externalAnalysisBatches.map(batch => <div className="studio-wf-ai-ready" key={batch.id}>
-                <span>{batch.sourceName}</span>
-                <small>{batch.processed}/{batch.totalPages} páginas acumuladas</small>
-                <button className="ghost" type="button" onClick={() => discardExternalAnalysis(batch)} disabled={busy}>Descartar tandas</button>
-              </div>)}
-            </div>}
-          </div>}
-
           {ingestionProvider === "local" && <div className="studio-wf-security-note">
-            La extracción local no utiliza IA para interpretar la estructura ni los elementos visuales. Elegí este modo solo si querés cargar material sin análisis multimodal y construir la base conceptual después.
+            El PDF se lee y se segmenta en este navegador. Si detectamos un escaneo sin texto legible, AULIA pedirá que habilites la lectura visual con Groq o que uses OCR previamente.
           </div>}
 
           {uploadProgress && <div className={"studio-wf-ai-report " + (uploadProgress.phase === "complete" ? "ok" : uploadProgress.phase === "paused" || uploadProgress.phase === "quota-wait" || uploadProgress.phase === "error" ? "error" : "")}>
-            <strong>{uploadProgress.phase === "complete" ? "✓ Carga completada" : uploadProgress.phase === "paused" ? "Análisis pausado; el trabajo está guardado" : uploadProgress.phase === "quota-wait" ? (uploadProgress.isDailyLimit ? "Cuota diaria de Groq agotada" : "Límite temporal de Groq; reanudación controlada") : uploadProgress.phase === "error" ? "No se pudo completar la carga" : uploadProgress.phase === "rate-wait" ? "Esperando renovación de cuota…" : uploadProgress.phase === "restoring" ? "Recuperando la preparación guardada…" : uploadProgress.phase === "processing" || uploadProgress.phase === "processing-batch" ? "IA analizando el documento…" : uploadProgress.phase === "rendering" ? "Preparando solo las páginas visuales…" : "Preparando documento…"}</strong>
+            <strong>{uploadProgress.phase === "complete" ? "✓ Carga completada" : uploadProgress.phase === "paused" ? "Análisis pausado; el trabajo está guardado" : uploadProgress.phase === "quota-wait" ? (uploadProgress.isDailyLimit ? "Cuota diaria de Groq agotada" : "Límite temporal de Groq; reanudación controlada") : uploadProgress.phase === "error" ? "No se pudo completar la carga" : uploadProgress.phase === "rate-wait" ? "Esperando renovación de cuota…" : uploadProgress.phase === "restoring" ? "Recuperando la preparación guardada…" : uploadProgress.phase === "processing" || uploadProgress.phase === "processing-batch" ? "IA leyendo páginas seleccionadas…" : uploadProgress.phase === "rendering" ? "Preparando páginas visuales pendientes…" : "Preparando documento…"}</strong>
             {uploadProgress.fileName && <span>{uploadProgress.fileName}</span>}
             {Number(uploadProgress.total) > 0 && <>
-              <span>{uploadProgress.processed || 0} de {uploadProgress.total} {uploadProgress.phase === "restoring" ? "páginas recuperadas" : uploadProgress.phase === "rendering" ? "páginas preparadas" : uploadProgress.phase === "extracting" ? "páginas leídas" : "páginas analizadas"}{uploadProgress.activePages?.length ? " · analizando ahora: " + uploadProgress.activePages.join(", ") : ""}</span>
+              <span>{uploadProgress.processed || 0} de {uploadProgress.total} {uploadProgress.phase === "restoring" ? "páginas recuperadas" : uploadProgress.phase === "rendering" ? "páginas preparadas" : uploadProgress.phase === "extracting" ? "páginas leídas" : "páginas seleccionadas analizadas"}{uploadProgress.activePages?.length ? " · ahora: " + uploadProgress.activePages.join(", ") : ""}</span>
               <progress className="studio-wf-progress" max={uploadProgress.total} value={Math.min(uploadProgress.processed || 0, uploadProgress.total)}/>
             </>}
             {uploadProgress.message && <small>{uploadProgress.message}</small>}
             {uploadProgress.model && <small>Modelo: {uploadProgress.model}</small>}
             {uploadProgress.error && <small>{uploadProgress.error}</small>}
-            {(uploadProgress.phase === "paused" || uploadProgress.phase === "quota-wait") && uploadProgress.pendingId && <button className="primary" type="button" onClick={() => resumePendingPdf({ id: uploadProgress.pendingId, fileName: uploadProgress.fileName })} disabled={!canEdit || busy || Boolean(uploadProgress.blockedUntil && Date.parse(uploadProgress.blockedUntil) > rateLimitClock)}>{uploadProgress.blockedUntil && Date.parse(uploadProgress.blockedUntil) > rateLimitClock ? "Esperar restablecimiento de Groq" : "Reanudar desde el avance guardado"}</button>}
+            {(uploadProgress.phase === "paused" || uploadProgress.phase === "quota-wait") && uploadProgress.pendingId && <button className="primary" type="button" onClick={() => resumePendingPdf({ id: uploadProgress.pendingId, fileName: uploadProgress.fileName })} disabled={!canEdit || busy || Boolean(uploadProgress.blockedUntil && Date.parse(uploadProgress.blockedUntil) > rateLimitClock)}>{uploadProgress.blockedUntil && Date.parse(uploadProgress.blockedUntil) > rateLimitClock ? "Esperar restablecimiento" : "Reanudar páginas pendientes"}</button>}
           </div>}
 
           {pendingPdfs.length > 0 && <div className="studio-wf-stack">
@@ -2226,11 +1940,11 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
               {pending.blockedUntil && Date.parse(pending.blockedUntil) > rateLimitClock
                 ? <small>{pending.isDailyLimit ? "Cuota diaria agotada." : "Límite temporal de Groq."} Reanudación habilitada después de {new Date(pending.blockedUntil).toLocaleString("es-AR", { dateStyle: "short", timeStyle: "short" })}.</small>
                 : <small>{pending.prepared
-                    ? "PDF, texto y estructura ya preparados. La reanudación no volverá a extraer todas las páginas."
-                    : "PDF guardado. AULIA preparará el texto una vez y lo conservará para futuras reanudaciones."}</small>}
+                    ? "La extracción local y el texto de las páginas ya están guardados; solo se reanudarán las páginas visuales pendientes."
+                    : "PDF guardado para reanudar la extracción y la lectura visual sin volver a seleccionarlo."}</small>}
               {pending.lastError && <small>{pending.lastError}</small>}
               <div className="studio-wf-panel-actions">
-                <button className="primary" type="button" onClick={() => resumePendingPdf(pending)} disabled={!canEdit || busy || Boolean(pending.blockedUntil && Date.parse(pending.blockedUntil) > rateLimitClock)}>{pending.blockedUntil && Date.parse(pending.blockedUntil) > rateLimitClock ? "Esperar restablecimiento" : pending.prepared ? "Reanudar desde el avance guardado" : "Preparar y reanudar análisis"}</button>
+                <button className="primary" type="button" onClick={() => resumePendingPdf(pending)} disabled={!canEdit || busy || Boolean(pending.blockedUntil && Date.parse(pending.blockedUntil) > rateLimitClock)}>{pending.blockedUntil && Date.parse(pending.blockedUntil) > rateLimitClock ? "Esperar restablecimiento" : pending.prepared ? "Reanudar páginas pendientes" : "Preparar y reanudar"}</button>
                 <button className="ghost" type="button" onClick={() => discardPendingPdf(pending)} disabled={busy}>Descartar</button>
               </div>
             </div>)}
@@ -2240,8 +1954,8 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
         <Panel
           eyebrow="MATERIAL"
           title="Bibliografía y corpus de la cátedra"
-          description="Con Groq, AULIA conserva el texto extraído y analiza la jerarquía semántica por tandas. Envía imágenes solo de páginas seleccionadas por poco texto o imágenes integradas detectables; después podés revisar las secciones, el alcance y la prioridad."
-          actions={ingestionProvider === "external" ? <span className="studio-wf-security-note">En modo externo, importá arriba el JSON que generó la otra IA.</span> : <label className={"primary studio-wf-file-btn" + (busy || (ingestionProvider === "groq" && !studioApiKey) ? " disabled" : "")}>{busy ? "Procesando…" : ingestionProvider === "groq" ? (studioApiKey ? "Cargar PDF y analizar con IA" : "Configurá Groq para continuar") : "Cargar material (extracción local)"}<input type="file" accept={ingestionProvider === "groq" ? ".pdf,application/pdf" : ".txt,.md,.markdown,.json,.pdf,.docx,text/plain,text/markdown,application/json,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document"} multiple onChange={importMaterial} disabled={busy || (ingestionProvider === "groq" && !studioApiKey)}/></label>}
+          description="El texto y la estructura se preparan localmente. Después se genera un índice conceptual sobre los fragmentos extraídos; revisá las secciones, el alcance y la prioridad antes de publicar."
+          actions={<label className={"primary studio-wf-file-btn" + (busy || (ingestionProvider === "groq" && !studioApiKey) ? " disabled" : "")}>{busy ? "Procesando…" : ingestionProvider === "groq" ? "Cargar material + lectura visual selectiva" : "Cargar material (extracción local)"}<input type="file" accept=".txt,.md,.markdown,.json,.pdf,.docx,text/plain,text/markdown,application/json,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document" multiple onChange={importMaterial} disabled={busy || (ingestionProvider === "groq" && !studioApiKey)}/></label>}
         >
           {materialSections.length ? <>
             <div className="studio-wf-stats">
