@@ -760,8 +760,13 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
 
           setStatus("Preparando " + file.name + "…");
           let extracted = null;
-          const cachedPreparation = useVision && pendingId
+          const cachedPreparationCandidate = useVision && pendingId
             ? await getPreparedPdf(pendingId, file)
+            : null;
+          // Older cache records did not persist the full extracted corpus. Re-extract
+          // those once rather than resuming with only page metadata and losing the book text.
+          const cachedPreparation = Array.isArray(cachedPreparationCandidate?.corpus)
+            ? cachedPreparationCandidate
             : null;
 
           if (cachedPreparation) {
