@@ -1675,10 +1675,15 @@ async function importExternalKnowledge(e) {
       setStatus("Base conceptual completa: " + (result.entries?.length || 0) +
         " entradas con referencias a la bibliografía. Guardá la cátedra y después publicá la versión actualizada.");
     } catch (err) {
-      const isRateLimit = Number(err?.status) === 429;
+      const errorText = String(err?.message || "");
+      const isDailyLimit = Boolean(err?.isDailyLimit ||
+        /tokens per day|requests per day|daily quota|daily limit|\\bTPD\\b|\\bRPD\\b/i.test(errorText));
+      const quotaMessage = /rate.?limit|quota|too many requests|tokens per minute|tokens per day|requests per minute|requests per day|\\bTPM\\b|\\bTPD\\b|\\bRPD\\b|l[ií]mite temporal de groq|cuota de groq/i.test(errorText);
+      const isRateLimit = Number(err?.status) === 429 ||
+        (quotaMessage && !err?.isPayloadTooLarge && Number(err?.status) !== 413);
       if (isRateLimit) {
         const retryDelayMs = Math.max(0, Number(err?.retryAfterMs || 0));
-        const fallbackDelayMs = err?.isDailyLimit ? 24 * 60 * 60 * 1000 : 30 * 1000;
+        const fallbackDelayMs = isDailyLimit ? 24 * 60 * 60 * 1000 : 60 * 1000;
         const retryAt = new Date(Date.now() + (retryDelayMs > 0 ? retryDelayMs + 1500 : fallbackDelayMs)).toISOString();
         localStorage.setItem(knowledgeRetryStorageKey, retryAt);
         setKnowledgeRetryAt(retryAt);
