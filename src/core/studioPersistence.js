@@ -156,11 +156,12 @@ export async function savePreparedPdf(id, file, material) {
     sourceName: String(material?.sourceName || file?.name || "material.pdf"),
     pages: Number(material?.pages || aiPages.length || 0),
     document: material?.document || null,
-    // The final AI analysis rebuilds section records from validated page results.
-    // Do not store the heuristic section bodies twice in IndexedDB.
     analysis: compactAnalysis,
     bibliography: Array.isArray(material?.bibliography) ? material.bibliography : [],
     warnings: Array.isArray(material?.warnings) ? material.warnings : [],
+    // Persist the complete locally extracted corpus, not just page previews.
+    // This is the authoritative text needed to resume OCR/indexing after a quota pause.
+    corpus: Array.isArray(material?.corpus) ? material.corpus : [],
     aiPages,
   };
   const record = {
