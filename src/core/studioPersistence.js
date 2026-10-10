@@ -94,6 +94,21 @@ export async function getPendingPdf(id) {
   });
 }
 
+export async function getPendingPdfStatus(id) {
+  const record = await readStudioRecord(id);
+  if (!record || record.kind !== "pending-pdf") return null;
+  return {
+    id: record.id,
+    fileName: record.fileName,
+    fileSize: Number(record.fileSize || 0),
+    lastModified: Number(record.lastModified || 0),
+    blockedUntil: String(record.blockedUntil || ""),
+    pauseReason: String(record.pauseReason || ""),
+    lastError: String(record.lastError || ""),
+    isDailyLimit: Boolean(record.isDailyLimit),
+  };
+}
+
 export async function listPendingPdfs(courseId) {
   const records = await withStore("readonly", store => store.getAll());
   const preparedIds = new Set(
