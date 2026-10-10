@@ -164,20 +164,25 @@ function parseWaitMs(value) {
   const text = String(value || "").trim();
   if (!text) return 0;
   if (/^\d+(?:\.\d+)?$/.test(text)) return Number(text) * 1000;
+  const clock = text.match(/^(\d+):(\d{1,2})(?::(\d{1,2}(?:\.\d+)?))?$/);
+  if (clock) {
+    if (clock[3] !== undefined) return (Number(clock[1]) * 3600 + Number(clock[2]) * 60 + Number(clock[3])) * 1000;
+    return (Number(clock[1]) * 60 + Number(clock[2])) * 1000;
+  }
   let milliseconds = 0;
-  const minute = text.match(/([\d.]+)\s*m(?!s)/i);
-  const second = text.match(/([\d.]+)\s*s/i);
-  const millis = text.match(/([\d.]+)\s*ms/i);
-  if (minute) milliseconds += Number(minute[1]) * 60000;
-  if (second) milliseconds += Number(second[1]) * 1000;
-  if (millis) milliseconds += Number(millis[1]);
+  const parts = /([\d.]+)\s*(ms|d|h|m|s)/gi;
+  let match;
+  while ((match = parts.exec(text))) {
+    const unit = match[2].toLowerCase();
+    const factor = unit === "d" ? 86400000 : unit === "h" ? 3600000 : unit === "m" ? 60000 : unit === "s" ? 1000 : 1;
+    milliseconds += Number(match[1]) * factor;
+  }
   return milliseconds;
 }
 
 function waitFromMessage(message) {
-  const match = String(message || "").match(/(?:try again in|retry after)\s+(\d+(?:\.\d+)?)\s*(ms|s|m)/i);
-  if (!match) return 0;
-  return Number(match[1]) * (match[2].toLowerCase() === "m" ? 60000 : match[2].toLowerCase() === "s" ? 1000 : 1);
+  const match = String(message || "").match(/(?:try again in|retry after)\s+((?:\d+(?:\.\d+)?\s*(?:ms|d|h|m|s)\s*)+)/i);
+  return match ? parseWaitMs(match[1]) : 0;
 }
 
 function makeApiError(status, message, response, errorCode = "") {
