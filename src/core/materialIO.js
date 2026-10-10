@@ -799,11 +799,13 @@ export function applyAIMultimodalAnalysis(material, pageResults, model = "qwen/q
         content: pageContent,
         sourcePageStart: pageNumber,
         sourcePageEnd: pageNumber,
-        segmentationSource: "ai-multimodal",
+        segmentationSource: String(provider || "").includes("texto") ? "ai-text-first" : "ai-multimodal",
         confidence,
         confidenceTotal: confidence,
         confidenceCount: 1,
-        evidence: ["Segmentación semántica y lectura visual mediante " + model],
+        evidence: [String(provider || "").includes("texto")
+          ? "Segmentación semántica mediante " + model + "; visión utilizada solo en páginas con poco texto extraíble."
+          : "Segmentación semántica y lectura visual mediante " + model],
         visualElementCount: visualElements.length,
         needsReview,
         reviewNotes: reviewNote,
@@ -832,8 +834,10 @@ export function applyAIMultimodalAnalysis(material, pageResults, model = "qwen/q
   const analysis = {
     ...baseAnalysis,
     version: 3,
-    method: "ai-multimodal",
-    documentType: "documento analizado con IA multimodal",
+    method: String(provider || "").includes("texto") ? "ai-text-first-selective-vision" : "ai-multimodal",
+    documentType: String(provider || "").includes("texto")
+      ? "documento analizado primero mediante texto extraído y visión selectiva"
+      : "documento analizado con IA multimodal",
     confidence,
     pageCount: sourcePages.length,
     sectionCount: cleanSections.length,
