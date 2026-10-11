@@ -314,6 +314,111 @@ function buildTextSections(text, sourceName, markdown = false) {
   return sections;
 }
 
+async function runLocalPdfOcr(pdf, pages, onProgress = () => {}) {
+  const targets = (pages || []).filter((page) => {
+    const text = (page.lines || []).map((line) => line?.text || "").join(" ").trim();
+    const alphanumericCount = (text.match(/[\\p{L}\\p{N}]/gu) || []).length;
+    return alphanumericCount < 45 ||
+      (text.length > 0 && alphanumericCount / text.length < 0.23);
+  });
+  if (!targets.length) return { attemptedPages: 0, recognizedPages: 0 };
+
+  let createWorker;
+  try {
+    ({ createWorker } = await import("tesseract.js"));
+  } catch {
+    throw new Error("No se pudo cargar el motor de OCR local. Recargá AULIA con conexión a Internet e intentá nuevamente.");
+  }
+
+  let worker = null;
+  let recognizedPages = 0;
+  let activePage = targets[0]?.pageNumber || 1;
+  try {
+    onProgress({
+      phase: "ocr",
+      processed: 0,
+      total: targets.length,
+      pageNumber: activePage,
+      message: "Preparando OCR local en el navegador. La primera ejecución descarga el modelo de español e inglés.",
+    });
+    worker = await createWorker(["spa", "eng"], 1);
+
+    for (let index = 0; index < targets.length; index += 1) {
+      const target = targets[index];
+      activePage = target.pageNumber;
+      const page = await pdf.getPage(activePage);
+      let canvas = null;
+      try {
+        // Keep PDF rotation for the rendered image so OCR reads landscape and
+        // rotated pages in their natural visual orientation.
+        const baseViewport = page.getViewport({ scale: 1 });
+        const scale = Math.min(2.2, 2200 / Math.max(baseViewport.width, baseViewport.height));
+        const viewport = page.getViewport({ scale });
+        canvas = document.createElement("canvas");
+        canvas.width = Math.max(1, Math.ceil(viewport.width));
+        canvas.height = Math.max(1, Math.ceil(viewport.height));
+        const context = canvas.getContext("2d");
+        if (!context) throw new Error("No se pudo preparar la imagen de la página.");
+
+        await page.render({ canvasContext: context, viewport }).promise;
+        const result = await worker.recognize(canvas);
+        const text = String(result?.data?.text || "").replace(/\\r/g, "").trim();
+        const lines = text.split("\\n").map((line) => line.replace(/\\s+/g, " ").trim()).filter(Boolean);
+
+        // Replace only pages with little/no text-layer content. Synthetic
+        // coordinates preserve OCR reading order for the structural analyzer.
+        if (lines.length) {
+          const width = Number(target.width || viewport.width);
+          const height = Number(target.height || viewport.height);
+          const step = height / (lines.length + 1);
+          target.lines = lines.map((line, lineIndex) => ({
+            text: line,
+            xMin: 0,
+            xMax: width,
+            width,
+            y: height - (lineIndex + 1) * step,
+            fontSize: 10,
+            bold: false,
+            boldRatio: 0,
+            fontNames: ["local-ocr"],
+            items: [],
+            index: lineIndex,
+            ocr: true,
+          }));
+          target.ocrRecognized = true;
+          recognizedPages += 1;
+        } else {
+          target.ocrRecognized = false;
+        }
+      } catch (error) {
+        throw new Error("Falló el OCR local de la página " + activePage + ": " + (error?.message || "error de reconocimiento."));
+      } finally {
+        if (canvas) {
+          canvas.width = 0;
+          canvas.height = 0;
+        }
+        page.cleanup?.();
+      }
+      target.ocrAttempted = true;
+      onProgress({
+        phase: "ocr",
+        processed: index + 1,
+        total: targets.length,
+        pageNumber: activePage,
+        message: "OCR local · página " + activePage + " (" + (index + 1) + " de " + targets.length + ")",
+      });
+    }
+  } catch (error) {
+    throw error instanceof Error ? error : new Error("No se pudo completar el OCR local.");
+  } finally {
+    if (worker) {
+      try { await worker.terminate(); } catch {}
+    }
+  }
+
+  return { attemptedPages: targets.length, recognizedPages };
+}
+
 async function readPdf(file, { includePageImages = false, includeAIPageText = false, includePageImagesForLowText = false, onProgress = () => {} } = {}) {
   const pdfjsLib = await import("pdfjs-dist/legacy/build/pdf.mjs");
   pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
@@ -430,9 +535,17 @@ async function readPdf(file, { includePageImages = false, includeAIPageText = fa
       page.cleanup?.();
     }
 
-    const hasExtractableText = pages.some((page) => page.lines.length);
+    const localTextOnlyMode = !includePageImages && !includeAIPageText && !includePageImagesForLowText;
+    let localOcr = { attemptedPages: 0, recognizedPages: 0 };
+    if (localTextOnlyMode) {
+      localOcr = await runLocalPdfOcr(pdf, pages, onProgress);
+    }
+
+    const hasExtractableText = pages.some((page) =>
+      (page.lines || []).some((line) => String(line?.text || "").trim())
+    );
     if (!hasExtractableText && !includePageImages && !includePageImagesForLowText) {
-      throw new Error("Este PDF parece ser un escaneo sin texto extraíble. Elegí «OCR y visión selectiva · Groq» para recuperar el texto de sus páginas.");
+      throw new Error("AULIA no pudo reconocer texto en este PDF, ni en su capa de texto ni mediante OCR local. Comprobá que las páginas sean legibles; como alternativa, usá «OCR y visión selectiva · Groq».");
     }
 
     const analysis = await analyzePdfStructure({
@@ -440,6 +553,17 @@ async function readPdf(file, { includePageImages = false, includeAIPageText = fa
       pages,
       structTreePages,
     });
+    if (localOcr.attemptedPages > 0) {
+      analysis.localOcrPages = localOcr.attemptedPages;
+      analysis.localOcrRecognizedPages = localOcr.recognizedPages;
+      if (localOcr.recognizedPages < localOcr.attemptedPages) {
+        analysis.warnings = [
+          ...(analysis.warnings || []),
+          (localOcr.attemptedPages - localOcr.recognizedPages) +
+            " página(s) con poco texto no pudieron recuperarse mediante OCR local.",
+        ];
+      }
+    }
 
     const documentId = makeDocumentId(file.name);
     const corpus = buildSectionFragments({
