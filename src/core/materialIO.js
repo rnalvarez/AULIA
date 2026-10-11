@@ -317,7 +317,7 @@ function buildTextSections(text, sourceName, markdown = false) {
 async function runLocalPdfOcr(pdf, pages, onProgress = () => {}) {
   const targets = (pages || []).filter((page) => {
     const text = (page.lines || []).map((line) => line?.text || "").join(" ").trim();
-    const alphanumericCount = (text.match(/[\\p{L}\\p{N}]/gu) || []).length;
+    const alphanumericCount = (text.match(/[\p{L}\p{N}]/gu) || []).length;
     return alphanumericCount < 45 ||
       (text.length > 0 && alphanumericCount / text.length < 0.23);
   });
@@ -362,8 +362,8 @@ async function runLocalPdfOcr(pdf, pages, onProgress = () => {}) {
 
         await page.render({ canvasContext: context, viewport }).promise;
         const result = await worker.recognize(canvas);
-        const text = String(result?.data?.text || "").replace(/\\r/g, "").trim();
-        const lines = text.split("\\n").map((line) => line.replace(/\\s+/g, " ").trim()).filter(Boolean);
+        const text = String(result?.data?.text || "").replace(/\r/g, "").trim();
+        const lines = text.split("\n").map((line) => line.replace(/\s+/g, " ").trim()).filter(Boolean);
 
         // Replace only pages with little/no text-layer content. Synthetic
         // coordinates preserve OCR reading order for the structural analyzer.
