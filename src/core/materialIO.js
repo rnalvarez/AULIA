@@ -336,7 +336,9 @@ async function readPdf(file, { includePageImages = false, includeAIPageText = fa
         normalizeWhitespace: true,
         disableCombineTextItems: false,
       });
-      const viewport = page.getViewport({ scale: 1 });
+      // TextItem.transform uses the PDF page's native coordinate space. Keep extraction
+      // geometry unrotated; rendering below still honors the page's declared rotation.
+      const viewport = page.getViewport({ scale: 1, rotation: 0 });
 
       let structTree = null;
       try {
