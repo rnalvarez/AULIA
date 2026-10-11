@@ -854,8 +854,14 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
                   phase: progress.phase || "extracting",
                   processed: progress.processed || 0,
                   total: progress.total || 0,
-                  message: (progress.phase === "rendering" ? "Preparando imágenes" : "Extrayendo texto") +
-                    " · página " + (progress.processed || 0) + " de " + (progress.total || 0),
+                  message: progress.message || (
+                    (progress.phase === "rendering"
+                      ? "Preparando imágenes"
+                      : progress.phase === "ocr"
+                        ? "OCR local"
+                        : "Extrayendo texto") +
+                    " · página " + (progress.processed || 0) + " de " + (progress.total || 0)
+                  ),
                   error: "",
                   pendingId,
                 }));
