@@ -1147,3 +1147,114 @@ export function applySelectiveVisualAnalysis(material, pageResults, model = "qwe
     } : material?.aiAnalysis,
   };
 }
+
+
+export function applyAISemanticSegmentation(material, semanticResult) {
+  const sourceName = String(material?.sourceName || material?.document?.sourceName || "material.pdf");
+  const documentId = String(material?.document?.id || makeDocumentId(sourceName));
+  const sections = (semanticResult?.sections || []).map((section, index) => ({
+    ...section,
+    title: String(section?.title || "Sección " + (index + 1)).trim(),
+    level: Math.max(1, Math.min(6, Number(section?.level || 1))),
+    sectionPath: Array.isArray(section?.sectionPath) && section.sectionPath.length
+      ? section.sectionPath.map(value => String(value || "").trim()).filter(Boolean)
+      : [String(section?.title || "Material general")],
+    content: normalizeWhitespace(String(section?.content || "")),
+    segmentationSource: "ai-text-first",
+    confidence: Math.max(0.2, Math.min(0.99, Number(section?.confidence || 0.5))),
+    scope: section?.scope || "included",
+    priority: section?.priority || "normal",
+    evidence: Array.isArray(section?.evidence) ? section.evidence : [],
+  }));
+  if (!sections.length) throw new Error("La interpretación temática de la IA no devolvió secciones para revisar.");
+
+  const originalAnalysis = material?.analysis || material?.document?.analysis || {};
+  const uniqueWarnings = Array.from(new Set([
+    ...(material?.warnings || []),
+    ...(semanticResult?.warnings || []),
+  ]));
+  const confidences = sections.map(section => Number(section.confidence || 0.5));
+  const semanticAnalysis = {
+    ...originalAnalysis,
+    version: 3,
+    method: "ai-text-first",
+    documentType: semanticResult?.documentType || originalAnalysis.documentType || "documento",
+    model: semanticResult?.model || originalAnalysis.model || "",
+    confidence: confidences.reduce((sum, value) => sum + value, 0) / Math.max(1, confidences.length),
+    sectionCount: sections.length,
+    lowConfidenceSections: sections.filter(section => Number(section.confidence || 0) < 0.62 || section.needsReview).length,
+    semanticBoundaries: Number(semanticResult?.boundariesFound || 0),
+    semanticTasksProcessed: Number(semanticResult?.tasksProcessed || 0),
+    semanticOutline: Array.isArray(semanticResult?.outline) ? semanticResult.outline : [],
+    warnings: uniqueWarnings,
+  };
+
+  const corpus = buildSectionFragments({
+    sections,
+    sourceName,
+    documentId,
+    sourcePageCount: material?.pages || null,
+  });
+
+  // Keep visual descriptions/tables already extracted from Groq, but attach them
+  // to the new semantic section that covers their source page instead of leaving
+  // them assigned to obsolete local section IDs.
+  const visualChunks = (material?.corpus || [])
+    .filter(chunk => chunk?.segmentationSource === "vision-selective")
+    .map((chunk, index) => {
+      const pageNumber = Number(chunk?.sourcePageStart || chunk?.sourcePage || 0);
+      const candidates = sections.map((section, sectionIndex) => ({ section, sectionIndex }))
+        .filter(({ section }) =>
+          !section.structuralOnly &&
+          Number(section.sourcePageStart || 0) <= pageNumber &&
+          Number(section.sourcePageEnd || section.sourcePageStart || 0) >= pageNumber
+        )
+        .sort((a, b) =>
+          Number(b.section.sourcePageStart || 0) - Number(a.section.sourcePageStart || 0) ||
+          Number(b.section.level || 1) - Number(a.section.level || 1)
+        );
+      const target = candidates[0];
+      const targetSection = target?.section;
+      const targetIndex = target?.sectionIndex ?? 0;
+      const nextPath = targetSection?.sectionPath || chunk.sectionPath || [];
+      return {
+        ...chunk,
+        id: String(chunk.id || "visual-" + index),
+        sectionId: targetSection ? makeSectionId(documentId, targetSection, targetIndex) : chunk.sectionId,
+        chapter: nextPath.join(" › "),
+        sectionPath: [...nextPath],
+        sectionLevel: Number(targetSection?.level || chunk.sectionLevel || 1),
+        scope: targetSection?.scope || "included",
+        priority: targetSection?.priority || "normal",
+        teacherTopic: targetSection?.teacherTopic || "",
+        teacherConcepts: Array.isArray(targetSection?.teacherConcepts) ? targetSection.teacherConcepts : [],
+        teacherLimit: targetSection?.teacherLimit || "",
+      };
+    });
+
+  const document = buildDocumentMeta({
+    file: { name: sourceName },
+    documentId,
+    sections,
+    pages: material?.pages || null,
+    format: material?.document?.format || "pdf",
+    analysis: semanticAnalysis,
+  });
+  document.title = material?.document?.title || document.title;
+
+  return {
+    ...material,
+    corpus: [...corpus, ...visualChunks],
+    document,
+    analysis: semanticAnalysis,
+    warnings: uniqueWarnings,
+    aiAnalysis: {
+      provider: "Groq · interpretación semántica del texto",
+      model: semanticResult?.model || "",
+      method: "ai-text-first",
+      sectionsDetected: sections.length,
+      boundariesDetected: Number(semanticResult?.boundariesFound || 0),
+      needsReview: uniqueWarnings.length > 0 || sections.some(section => section.needsReview),
+    },
+  };
+}
