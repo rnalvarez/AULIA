@@ -2068,7 +2068,7 @@ async function importExternalKnowledge(e) {
           eyebrow="MATERIAL"
           title="Bibliografía y corpus de la cátedra"
           description="Cada documento se conserva por separado. Revisá la estructura propuesta, el texto de cada apartado y sus páginas; luego decidí el alcance y la prioridad antes de generar el índice conceptual."
-          actions={<label className={"primary studio-wf-file-btn" + (busy || (ingestionProvider === "groq" && !studioApiKey) ? " disabled" : "")}>{busy ? "Procesando…" : ingestionProvider === "groq" ? "Cargar material + lectura visual selectiva" : "Cargar material (extracción local)"}<input type="file" accept=".txt,.md,.markdown,.json,.pdf,.docx,text/plain,text/markdown,application/json,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document" multiple onChange={importMaterial} disabled={busy || (ingestionProvider === "groq" && !studioApiKey)}/></label>}
+          actions={<label className={"primary studio-wf-file-btn" + (busy || (ingestionProvider === "groq" && !studioApiKey) ? " disabled" : "")}>{busy ? "Procesando…" : ingestionProvider === "groq" ? "Cargar y segmentar con Groq" : "Cargar material (extracción local)"}<input type="file" accept=".txt,.md,.markdown,.json,.pdf,.docx,text/plain,text/markdown,application/json,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document" multiple onChange={importMaterial} disabled={busy || (ingestionProvider === "groq" && !studioApiKey)}/></label>}
         >
           {materialSections.length ? <>
             <div className="studio-wf-stats">
