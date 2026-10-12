@@ -117,7 +117,9 @@ async function saveCache(key, signature, pages) {
 
 function pagePrompt(courseTitle, pages, batchNumber) {
   const details = pages.map(page => [
-    "PÁGINA " + page.pageNumber,
+    "PÁGINA FÍSICA " + page.pageNumber,
+    "DISPOSICIÓN DETECTADA: " + String(page.layoutKind || "no determinada") +
+      (Number(page.layoutConfidence || 0) ? " · confianza " + Math.round(Number(page.layoutConfidence) * 100) + "%" : ""),
     "TEXTO EXTRAÍDO AUTOMÁTICAMENTE (puede estar desordenado o incompleto):",
     cleanText(page.extractedText, 2400) || "[No se extrajo texto; la imagen requiere lectura/OCR]",
   ].join("\n")).join("\n\n----------------\n\n");
@@ -129,12 +131,13 @@ function pagePrompt(courseTitle, pages, batchNumber) {
     "",
     "OBJETIVO",
     "1. Interpretá las imágenes de las páginas, no dependas únicamente del texto extraído. Contrastá el texto con lo que realmente se ve.",
-    "2. No vuelvas a segmentar capítulos para páginas cuyo texto y estructura ya fueron extraídos localmente. Cuando una página escaneada no tenga texto útil o no pueda asociarse a una sección local, usá los títulos visibles para sugerir sectionTitle y sectionPath como referencia auxiliar, sin inventar encabezados.",
-    "3. Identificá tablas, gráficos, diagramas, fórmulas, mapas, imágenes anotadas y otros elementos que aporten conocimiento. En tablas, conservá encabezados, columnas, filas, unidades y valores cuando sean legibles; devolvé tableMarkdown con una tabla Markdown. En gráficos, describí ejes, leyendas, variables, tendencias y valores visibles sin inventar cifras.",
-    "4. Si el texto extraído está vacío porque la página parece escaneada, transcribí el contenido textual legible en transcription, conservando títulos, párrafos, listas, ecuaciones y tablas tanto como sea posible. Si ya hay texto extraído correcto, dejá transcription vacío para evitar duplicarlo.",
-    "5. Si el texto está claramente dañado o contradice la página, registrá una transcripción corregida en transcription solo cuando puedas reconstruirla con suficiente seguridad; incluí el texto original en el análisis de forma conservadora y marcá needsReview=true cuando no sea verificable.",
-    "6. No agregues conocimiento externo ni completes valores que no se vean. No inventes encabezados, autores, citas, páginas ni relaciones. Si hay ambigüedad, explicitála en reviewNotes y marcá needsReview=true.",
-    "7. Conservá todos los elementos de conocimiento detectados aunque no sean texto corrido. La descripción visual se incorporará al contenido consultable con referencia a la página.",
+    "2. Esta etapa recupera texto y elementos visuales; la reconstrucción temática del documento se realiza después en una etapa semántica específica. No decidas el índice completo a partir de una sola página. Si la página es apaisada y parece contener dos zonas enfrentadas, transcribí primero la zona izquierda completa y después la derecha, sin intercalar renglones; conservá por separado los encabezados y números de página visibles. Una hoja horizontal puede ser también una sola página, así que no inventes una división si la imagen no la sostiene.",
+    "3. Cuando una página escaneada no tenga texto útil o no pueda asociarse a una sección local, usá los títulos visibles para sugerir sectionTitle y sectionPath como referencia auxiliar, sin inventar encabezados.",
+    "4. Identificá tablas, gráficos, diagramas, fórmulas, mapas, imágenes anotadas y otros elementos que aporten conocimiento. En tablas, conservá encabezados, columnas, filas, unidades y valores cuando sean legibles; devolvé tableMarkdown con una tabla Markdown. En gráficos, describí ejes, leyendas, variables, tendencias y valores visibles sin inventar cifras.",
+    "5. Si el texto extraído está vacío porque la página parece escaneada, transcribí el contenido textual legible en transcription, conservando títulos, párrafos, listas, ecuaciones y tablas tanto como sea posible. Si ya hay texto extraído correcto, dejá transcription vacío para evitar duplicarlo.",
+    "6. Si el texto está claramente dañado o contradice la página, registrá una transcripción corregida en transcription solo cuando puedas reconstruirla con suficiente seguridad; incluí el texto original en el análisis de forma conservadora y marcá needsReview=true cuando no sea verificable.",
+    "7. No agregues conocimiento externo ni completes valores que no se vean. No inventes encabezados, autores, citas, páginas ni relaciones. Si hay ambigüedad, explicitála en reviewNotes y marcá needsReview=true.",
+    "8. Conservá todos los elementos de conocimiento detectados aunque no sean texto corrido. La descripción visual se incorporará al contenido consultable con referencia a la página.",
     "",
     "SALIDA: devolvé solo un objeto JSON válido con esta estructura:",
     '{"pages":[{"pageNumber":1,"sectionTitle":"Título visible, o cadena vacía si no hay evidencia","sectionPath":["Sección visible si puede identificarse"],"transcription":"","visualElements":[{"kind":"table|chart|diagram|formula|map|image|other","title":"Nombre breve","description":"Qué representa y cómo interpretarlo según lo visible","tableMarkdown":"Tabla Markdown con valores legibles, o cadena vacía","transcribedText":"Etiquetas, cifras o leyendas legibles que no queden reflejadas en otra parte"}],"confidence":0.0,"needsReview":false,"reviewNotes":""}]}',
