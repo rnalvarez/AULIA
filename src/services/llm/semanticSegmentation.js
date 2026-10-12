@@ -69,10 +69,25 @@ function normalizeSourcePages(pages, visionPages = []) {
     ).length;
     const isContentsPage = /\b(?:índice|indice|contenidos|contents|table of contents|sumario)\b/i.test(lines.slice(0, 8).map(line => line.text).join(" ")) ||
       (tocSignals >= 3 && tocSignals / Math.max(1, lines.length) >= 0.14);
+    const width = Number(page?.width || 0);
+    const height = Number(page?.height || 0);
+    const aspectRatio = Number(page?.aspectRatio || (width / Math.max(1, height)) || 0);
+    let layoutKind = String(page?.layoutKind || "unknown");
+    let layoutConfidence = Number(page?.layoutConfidence || 0);
+    // Scanned pages have no extractable text geometry, so a local "single page"
+    // label is not evidence that the scan contains only one book page.
+    if (aspectRatio >= 1.32 && useTranscription &&
+        !["landscape-two-area", "landscape-ambiguous"].includes(layoutKind)) {
+      layoutKind = "landscape-unverified";
+      layoutConfidence = 0.25;
+    }
     return {
       pageNumber,
-      layoutKind: String(page?.layoutKind || "unknown"),
-      layoutConfidence: Number(page?.layoutConfidence || 0),
+      width,
+      height,
+      aspectRatio,
+      layoutKind,
+      layoutConfidence,
       isContentsPage,
       lines: lines.map(line => ({ ...line, isContentsPage })),
       sourceText: useTranscription ? transcription : raw,
@@ -630,6 +645,9 @@ export async function analyzeDocumentSemantics({
   }
   if (normalizedPages.some(page => page.layoutKind === "landscape-ambiguous")) {
     warnings.push("El documento contiene páginas horizontales ambiguas. Se mantuvo el orden de lectura detectado, pero conviene revisar manualmente esas páginas.");
+  }
+  if (normalizedPages.some(page => page.layoutKind === "landscape-unverified")) {
+    warnings.push("Una o más páginas escaneadas son apaisadas y no tienen geometría de texto fiable. Groq las transcribió en orden visual, pero verificá si cada hoja contiene una página única o una doble página.");
   }
   if (normalizedPages.some(page => page.usedVisualTranscription)) {
     warnings.push("La segmentación usó transcripciones visuales de IA donde la capa de texto era insuficiente; revisá especialmente esos límites.");
