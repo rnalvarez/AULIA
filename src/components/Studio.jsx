@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { cloneCourse, validateCourse } from "../core/courseContract.js";
 import { downloadCoursePack, readCoursePackFile } from "../core/coursePackIO.js";
-import { readMaterialFile, renderPdfPageImages, materialToCorpus, mergeImportedBibliography, mergeImportedDocuments, applySelectiveVisualAnalysis } from "../core/materialIO.js";
+import { readMaterialFile, renderPdfPageImages, materialToCorpus, mergeImportedBibliography, mergeImportedDocuments, applySelectiveVisualAnalysis, applyAISemanticSegmentation } from "../core/materialIO.js";
 import { savePendingPdf, getPendingPdf, getPendingPdfStatus, savePreparedPdf, getPreparedPdf, updatePendingPdfStatus, listPendingPdfs, deletePendingPdf } from "../core/studioPersistence.js";
 import { analyzePdfWithVision, getCachedVisionPageNumbers } from "../services/llm/multimodalIngestion.js";
+import { analyzeDocumentSemantics } from "../services/llm/semanticSegmentation.js";
 import { requestTeacherProposal } from "../services/llm/teacherProposal.js";
 import { buildKnowledgeBase, buildKnowledgePassages, isSupportedKnowledgeExcerpt, normalizeExternalKnowledgeEntries, mergeKnowledgeBaseEntries } from "../services/llm/knowledgeBase.js";
 import { createExternalKnowledgePackage, createExternalKnowledgePrompt, downloadJsonFile, EXTERNAL_KNOWLEDGE_OUTPUT_FORMAT } from "../core/externalKnowledgeBaseIO.js";
@@ -760,6 +761,7 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
     let failedCount = 0;
     let multimodalDocuments = 0;
     let conventionalDocuments = 0;
+    let semanticDocuments = 0;
     let processedPages = 0;
 
     try {
@@ -872,6 +874,7 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
             }
           }
           let prepared = extracted;
+          let visionPageAnalyses = [];
 
           if (useVision && Array.isArray(extracted.aiPages) && extracted.aiPages.length) {
             let allPages = extracted.aiPages.slice().sort((a, b) => Number(a.pageNumber) - Number(b.pageNumber));
@@ -982,6 +985,7 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
                 }
               );
               modelName = visionResult.model || modelName;
+              visionPageAnalyses = visionResult.pages || [];
               prepared = applySelectiveVisualAnalysis(extracted, visionResult.pages, modelName);
               multimodalDocuments += 1;
               processedPages += visionResult.pages.length;
@@ -990,6 +994,50 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
             }
           } else {
             conventionalDocuments += 1;
+          }
+
+          // AULIA must not stop at local typographic segmentation. When the
+          // teacher chose Groq, perform a second semantic pass on all extracted
+          // page text, not just on the few images that needed visual OCR.
+          if (useVision && Array.isArray(extracted.aiPages) && extracted.aiPages.length) {
+            setUploadProgress({
+              fileName: file.name,
+              phase: "semantic-segmentation",
+              processed: 0,
+              total: extracted.aiPages.length,
+              message: "La extracción está lista. Groq reconstruirá el mapa temático del documento por fragmentos, conservando los avances para reanudar si se alcanza una cuota.",
+              error: "",
+              pendingId,
+            });
+            const semanticResult = await analyzeDocumentSemantics({
+              apiKey: studioApiKey,
+              documentTitle: file.name,
+              pages: extracted.aiPages,
+              visionPages: visionPageAnalyses,
+              existingSections: extracted.document?.sections || [],
+              sourceFingerprint: [pendingId || course.id, file.name, file.size, file.lastModified].join("::"),
+              onProgress: progress => {
+                lastProgress = { processed: Number(progress.processed || 0), total: Number(progress.total || extracted.aiPages.length) };
+                setUploadProgress(current => ({
+                  ...(current || {}),
+                  fileName: file.name,
+                  phase: progress.phase || "semantic-segmentation",
+                  processed: Number(progress.processed || 0),
+                  total: Number(progress.total || extracted.aiPages.length),
+                  pageNumber: progress.pageNumber || null,
+                  model: progress.model || "",
+                  message: progress.message || (
+                    progress.phase === "semantic-outline"
+                      ? "Interpretando el mapa general del libro…"
+                      : "Reconstruyendo capítulos y apartados con IA…"
+                  ),
+                  error: "",
+                  pendingId,
+                }));
+              },
+            });
+            prepared = applyAISemanticSegmentation(prepared, semanticResult);
+            semanticDocuments += 1;
           }
 
           if (!prepared.corpus?.length) {
@@ -1028,8 +1076,8 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
             total: useVision ? extracted.aiPages.length : 1,
             model: prepared.aiAnalysis?.model || "",
             message: useVision
-              ? "Documento incorporado. Se analizó el texto y solo se enviaron imágenes de páginas seleccionadas por contener imágenes integradas, gráficos vectoriales complejos o poco texto extraíble."
-              : "Documento incorporado al corpus.",
+              ? "Documento incorporado. Se interpretó su estructura temática con Groq; revisá los capítulos y ajustá inclusión y prioridad antes de indexar."
+              : "Documento incorporado con extracción y segmentación local. Revisá la estructura antes de indexar.",
             error: "",
             pendingId: "",
           });
@@ -1086,8 +1134,9 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
         setStatus(
           "Carga completada." +
           (multimodalDocuments ? " " + multimodalDocuments + " PDF(s) enriquecidos con lectura visual selectiva (" + processedPages + " páginas)." : "") +
-          (conventionalDocuments ? " " + conventionalDocuments + " archivo(s) segmentados localmente." : "") +
-          " Revisá las secciones y generá el índice conceptual antes de publicar."
+          (semanticDocuments ? " " + semanticDocuments + " PDF(s) con mapa temático interpretado por IA." : "") +
+          (conventionalDocuments ? " " + conventionalDocuments + " archivo(s) con estructura local." : "") +
+          " Revisá el mapa temático, ajustá inclusión y prioridad, y después generá el índice conceptual."
         );
       } else if (files.length > 1) {
         setStatus(failedCount + " archivo(s) quedaron pendientes. Podés reanudarlos sin volver a seleccionarlos.");
