@@ -2182,8 +2182,8 @@ async function importExternalKnowledge(e) {
                           <span className="eyebrow">RELEVAMIENTO DEL PDF</span>
                           <strong>{documentGroup.title}</strong>
                           <small>{documentGroup.analysis.documentType} · método: {materialSegmentationLabel(documentGroup.analysis.method)}</small>
-                          {documentGroup.analysis.layout && (Number(documentGroup.analysis.layout.landscapeTwoAreaPages || 0) + Number(documentGroup.analysis.layout.ambiguousLandscapePages || 0) + Number(documentGroup.analysis.layout.horizontalSinglePages || 0)) > 0 && <small>
-                            Páginas horizontales: {documentGroup.analysis.layout.landscapeTwoAreaPages || 0} con dos zonas de texto, {documentGroup.analysis.layout.ambiguousLandscapePages || 0} ambiguas y {documentGroup.analysis.layout.horizontalSinglePages || 0} conservadas como página única.
+                          {documentGroup.analysis.layout && (Number(documentGroup.analysis.layout.landscapeTwoAreaPages || 0) + Number(documentGroup.analysis.layout.ambiguousLandscapePages || 0) + Number(documentGroup.analysis.layout.landscapeUnverifiedPages || 0) + Number(documentGroup.analysis.layout.horizontalSinglePages || 0)) > 0 && <small>
+                            Páginas horizontales: {documentGroup.analysis.layout.landscapeTwoAreaPages || 0} con dos zonas de texto, {documentGroup.analysis.layout.ambiguousLandscapePages || 0} ambiguas, {documentGroup.analysis.layout.landscapeUnverifiedPages || 0} sin geometría verificable y {documentGroup.analysis.layout.horizontalSinglePages || 0} conservadas como página única.
                           </small>}
                         </div>
                         <div className="studio-wf-pdf-confidence">
