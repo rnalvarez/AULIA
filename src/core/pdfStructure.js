@@ -195,9 +195,81 @@ function detectPageColumns(lines, pageWidth) {
   };
 }
 
+function detectLandscapeTwoAreaLayout(page) {
+  const width = Number(page?.width || 0);
+  const height = Number(page?.height || 0);
+  const lines = (page?.lines || []).filter(line => cleanPdfLine(line?.text));
+  if (!width || !height || width / height < 1.32 || lines.length < 12) {
+    return { kind: "single-page", confidence: 0 };
+  }
+
+  // Ignore full-width lines while looking for two independent text blocks.
+  // They may be a title spanning the spread, a caption, or a landscape heading.
+  const bodyLines = lines.filter(line => Number(line.width || 0) > 0 && line.width < width * 0.70);
+  const left = bodyLines.filter(line => line.xMin + line.width / 2 < width * 0.46);
+  const right = bodyLines.filter(line => line.xMin + line.width / 2 > width * 0.54);
+  if (left.length < 6 || right.length < 6) {
+    return { kind: "single-page", confidence: 0 };
+  }
+
+  const verticalSpan = group => {
+    const ys = group.map(line => Number(line.y || 0));
+    return Math.max(...ys) - Math.min(...ys);
+  };
+  if (verticalSpan(left) < height * 0.28 || verticalSpan(right) < height * 0.28) {
+    return { kind: "single-page", confidence: 0 };
+  }
+
+  const leftExtent = Math.max(...left.map(line => Number(line.xMin || 0) + Number(line.width || 0)));
+  const rightExtent = Math.min(...right.map(line => Number(line.xMin || 0)));
+  const centralGap = rightExtent - leftExtent;
+  const clearGutter = centralGap >= width * 0.015;
+  const aspectRatio = width / height;
+  // This is intentionally a candidate classification, not a claim that every
+  // landscape page is a book spread. A conventional landscape two-column page
+  // is still read left-to-right, and the teacher can review ambiguous layouts.
+  const confidence = Math.min(0.94,
+    0.52 + Math.min(0.18, (aspectRatio - 1.32) * 0.28) +
+    Math.min(0.12, Math.min(left.length, right.length) / 100) +
+    (clearGutter ? 0.10 : 0));
+  return {
+    kind: confidence >= 0.72 ? "landscape-two-area" : "landscape-ambiguous",
+    confidence,
+    centralGap,
+    leftLines: left.length,
+    rightLines: right.length,
+  };
+}
+
 function orderedPageLines(page) {
   const lines = page?.lines || [];
   const columns = page?.columns || { count: 1, anchors: [0] };
+
+  if (page?.layoutKind === "landscape-two-area") {
+    const width = Number(page.width || 0);
+    const mid = width / 2;
+    const spanning = [];
+    const left = [];
+    const right = [];
+    for (const line of lines) {
+      const center = Number(line.xMin || 0) + Number(line.width || 0) / 2;
+      if (Number(line.width || 0) >= width * 0.70) spanning.push(line);
+      else if (center < mid) left.push({ ...line, logicalSide: "left" });
+      else right.push({ ...line, logicalSide: "right" });
+    }
+    const byReadingOrder = (a, b) => b.y - a.y || a.xMin - b.xMin;
+    const top = spanning.filter(line => line.y >= page.height * 0.76).sort(byReadingOrder);
+    const middle = spanning.filter(line => line.y < page.height * 0.76 && line.y >= page.height * 0.22).sort(byReadingOrder);
+    const bottom = spanning.filter(line => line.y < page.height * 0.22).sort(byReadingOrder);
+    return [
+      ...top,
+      ...left.sort(byReadingOrder),
+      ...middle,
+      ...right.sort(byReadingOrder),
+      ...bottom,
+    ];
+  }
+
   if (columns.count !== 2) return lines.slice().sort((a, b) => b.y - a.y || a.xMin - b.xMin);
 
   const fullWidth = lines.filter((line) => line.width >= page.width * 0.72);
@@ -212,11 +284,13 @@ function orderedPageLines(page) {
   }
 
   const topFull = fullWidth.filter((line) => line.y >= page.height * 0.70).sort((a, b) => b.y - a.y);
+  const middleFull = fullWidth.filter((line) => line.y < page.height * 0.70 && line.y >= page.height * 0.25).sort((a, b) => b.y - a.y);
   const bottomFull = fullWidth.filter((line) => line.y < page.height * 0.25).sort((a, b) => b.y - a.y);
 
   return [
     ...topFull,
     ...columnsLines[0].sort((a, b) => b.y - a.y || a.xMin - b.xMin),
+    ...middleFull,
     ...columnsLines[1].sort((a, b) => b.y - a.y || a.xMin - b.xMin),
     ...bottomFull,
   ];
@@ -1060,7 +1134,16 @@ function guessDocumentType(pages, tocDetected, outlineDetected) {
 export async function analyzePdfStructure({ pdf, pages, structTreePages = 0 }) {
   const totalPages = pages.length;
   for (const page of pages) {
+    const layout = detectLandscapeTwoAreaLayout(page);
+    page.layoutKind = layout.kind;
+    page.layoutConfidence = Number(layout.confidence || 0);
+    page.layoutCentralGap = Number(layout.centralGap || 0);
     page.columns = detectPageColumns(page.lines, page.width);
+    if (page.layoutKind === "landscape-two-area") {
+      // A probable facing-page spread is read as two sequential text areas,
+      // not as one long line or as arbitrary parallel columns.
+      page.columns = { count: 2, anchors: [page.width * 0.25, page.width * 0.75] };
+    }
     page.readingLines = orderedPageLines(page);
     page.pageCount = totalPages;
   }
@@ -1121,6 +1204,9 @@ export async function analyzePdfStructure({ pdf, pages, structTreePages = 0 }) {
   const columnCounts = pages.map((page) => page.columns?.count || 1);
   const twoColumnPages = columnCounts.filter((count) => count === 2).length;
   const oneColumnPages = columnCounts.filter((count) => count === 1).length;
+  const landscapeTwoAreaPages = pages.filter(page => page.layoutKind === "landscape-two-area").length;
+  const ambiguousLandscapePages = pages.filter(page => page.layoutKind === "landscape-ambiguous").length;
+  const horizontalSinglePages = pages.filter(page => page.width / Math.max(1, page.height) >= 1.32 && page.layoutKind === "single-page").length;
 
   const warnings = [];
   const lowConfidence = sections.filter((section) => Number(section.confidence || 0) < 0.62);
@@ -1132,7 +1218,16 @@ export async function analyzePdfStructure({ pdf, pages, structTreePages = 0 }) {
     warnings.push("Algunas entradas del índice no pudieron contrastarse con un encabezado real del cuerpo y fueron descartadas como límites estructurales.");
   }
   if (twoColumnPages > 0 && oneColumnPages > 0) {
-    warnings.push("El documento combina páginas de una y dos columnas; AULIA adaptó el orden de lectura por página.");
+    warnings.push("El documento combina páginas de una y dos zonas de texto; AULIA adaptó el orden de lectura por página.");
+  }
+  if (landscapeTwoAreaPages > 0) {
+    warnings.push(landscapeTwoAreaPages + " página(s) apaisada(s) presentan dos zonas de texto compatibles con una doble página. AULIA las ordenó de izquierda a derecha; revisá especialmente los límites de sección en esas hojas.");
+  }
+  if (ambiguousLandscapePages > 0) {
+    warnings.push(ambiguousLandscapePages + " página(s) apaisada(s) contienen zonas de texto ambiguas. No se dividieron automáticamente; conviene revisar su orden si se trata de páginas enfrentadas.");
+  }
+  if (horizontalSinglePages > 0) {
+    warnings.push(horizontalSinglePages + " página(s) apaisada(s) no mostraron evidencia suficiente de dos páginas enfrentadas y se conservaron como página única.");
   }
   if (lowConfidence.length) {
     warnings.push(`${lowConfidence.length} sección(es) presentan una confianza de segmentación baja y conviene revisarlas antes de trabajar pedagógicamente con ellas.`);
@@ -1166,6 +1261,11 @@ export async function analyzePdfStructure({ pdf, pages, structTreePages = 0 }) {
     columns: {
       one: oneColumnPages,
       two: twoColumnPages,
+    },
+    layout: {
+      landscapeTwoAreaPages,
+      ambiguousLandscapePages,
+      horizontalSinglePages,
     },
     headingCandidates: headingCandidates.length,
     sectionCount: sections.length,
