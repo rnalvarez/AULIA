@@ -819,9 +819,14 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
           const cachedPreparationCandidate = useVision && pendingId
             ? await getPreparedPdf(pendingId, file)
             : null;
-          // Older cache records did not persist the full extracted corpus. Re-extract
-          // those once rather than resuming with only page metadata and losing the book text.
-          const cachedPreparation = Array.isArray(cachedPreparationCandidate?.corpus)
+          // Older cache records may lack the full corpus or page dimensions required
+          // to distinguish horizontal spreads. Re-extract them once, then persist
+          // the richer representation for subsequent resumptions.
+          const cachedPreparationHasGeometry = Array.isArray(cachedPreparationCandidate?.aiPages) &&
+            cachedPreparationCandidate.aiPages.length > 0 &&
+            cachedPreparationCandidate.aiPages.every(page => Number(page.width || 0) > 0 && Number(page.height || 0) > 0);
+          const cachedPreparation = Array.isArray(cachedPreparationCandidate?.corpus) &&
+            cachedPreparationHasGeometry
             ? cachedPreparationCandidate
             : null;
 
