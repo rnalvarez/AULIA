@@ -47,7 +47,7 @@ function normalizeSourcePages(pages, visionPages = []) {
     const vision = visionByPage.get(pageNumber);
     const raw = String(page?.extractedText || "").trim();
     const transcription = String(vision?.transcription || "").trim();
-    const useTranscription = transcription.length >= 80 &&
+    const useTranscription = Boolean(transcription) &&
       (raw.length < 100 || transcription.length > raw.length * 1.35);
     let lines = Array.isArray(page?.lineItems) && page.lineItems.length
       ? page.lineItems.map((line, index) => ({
@@ -238,7 +238,15 @@ function parseRetryDelay(response, message = "") {
   }
   const reset = String(response?.headers?.get("x-ratelimit-reset-tokens") || "").trim();
   if (/^\d+(?:\.\d+)?$/.test(reset)) return Number(reset) * 1000;
-  return 0;
+  let resetMs = 0;
+  const resetParts = /([\d.]+)\s*(ms|d|h|m|s)/gi;
+  let resetPart;
+  while ((resetPart = resetParts.exec(reset))) {
+    const value = Number(resetPart[1]);
+    const unit = resetPart[2].toLowerCase();
+    resetMs += value * (unit === "d" ? 86400000 : unit === "h" ? 3600000 : unit === "m" ? 60000 : unit === "s" ? 1000 : 1);
+  }
+  return resetMs;
 }
 
 function responseTokens(prompt, reserve) {
@@ -354,7 +362,7 @@ function normalizeBoundaries(raw, task) {
       level,
       confidence,
       evidence: clean(item?.evidence, 180) || "encabezado semántico localizado en el texto original",
-      layoutKind: task.layoutKind,
+      layoutKind: (task.layoutKinds || []).join(" / "),
     });
   }
   return result.sort((a, b) => a.pageNumber - b.pageNumber || a.lineNumber - b.lineNumber);
