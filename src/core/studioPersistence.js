@@ -148,6 +148,9 @@ function preparedPdfCacheId(id) {
 export async function savePreparedPdf(id, file, material) {
   const aiPages = (material?.aiPages || []).map(page => ({
     pageNumber: Number(page.pageNumber),
+    width: Number(page.width || 0),
+    height: Number(page.height || 0),
+    aspectRatio: Number(page.aspectRatio || 0),
     extractedText: String(page.extractedText || ""),
     lineItems: Array.isArray(page.lineItems) ? page.lineItems.map(line => ({
       lineNumber: Number(line.lineNumber || 0),
