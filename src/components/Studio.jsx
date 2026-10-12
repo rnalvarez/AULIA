@@ -2285,7 +2285,6 @@ async function importExternalKnowledge(e) {
                     )) : (
                       <Empty title="No se detectaron secciones estructurales." text="El documento quedó incorporado al corpus, pero todavía no hay una estructura confiable para mostrar como secciones."/>
                     )}
-                    {documentGroup.sections.length > 60 && <small>Mostrando 60 de {documentGroup.sections.length} secciones de este documento.</small>}
                   </div>
                 </section>
               ))}
