@@ -9,8 +9,8 @@ import {
 const ENDPOINT = "https://api.groq.com/openai/v1/chat/completions";
 const MODELS = ["qwen/qwen3.8-27b", "openai/gpt-oss-20b"];
 const CACHE_PREFIX = "aulia:semantic-segmentation:v1:";
-const MAX_TASK_CHARS = 2300;
-const MAX_TASK_LINES = 42;
+const MAX_TASK_CHARS = 4700;
+const MAX_TASK_LINES = 68;
 const OUTLINE_MAX_TOKENS = 1050;
 const BOUNDARY_MAX_TOKENS = 1050;
 
@@ -76,33 +76,40 @@ function normalizeSourcePages(pages, visionPages = []) {
 
 function makeTasks(pages) {
   const tasks = [];
+  let current = [];
+  let chars = 0;
+  const flush = () => {
+    if (!current.length) return;
+    const first = current[0];
+    const last = current[current.length - 1];
+    const pageNumbers = Array.from(new Set(current.map(line => line.pageNumber)));
+    tasks.push({
+      key: first.pageNumber + ":" + first.lineNumber + "-" + last.pageNumber + ":" + last.lineNumber,
+      pageNumber: first.pageNumber,
+      pageNumbers,
+      layoutKinds: Array.from(new Set(current.map(line => line.layoutKind).filter(Boolean))),
+      startLine: first.lineNumber,
+      endLine: last.lineNumber,
+      lines: current,
+    });
+    current = [];
+    chars = 0;
+  };
   for (const page of pages) {
-    let current = [];
-    let chars = 0;
-    const flush = () => {
-      if (!current.length) return;
-      const first = current[0].lineNumber;
-      const last = current[current.length - 1].lineNumber;
-      tasks.push({
-        key: String(page.pageNumber) + ":" + first + "-" + last,
+    for (const sourceLine of page.lines) {
+      const line = {
+        ...sourceLine,
         pageNumber: page.pageNumber,
         layoutKind: page.layoutKind,
         layoutConfidence: page.layoutConfidence,
-        startLine: first,
-        endLine: last,
-        lines: current,
-      });
-      current = [];
-      chars = 0;
-    };
-    for (const line of page.lines) {
+      };
       const lineChars = line.text.length + 36;
       if (current.length && (chars + lineChars > MAX_TASK_CHARS || current.length >= MAX_TASK_LINES)) flush();
       current.push(line);
       chars += lineChars;
     }
-    flush();
   }
+  flush();
   return tasks;
 }
 
@@ -166,22 +173,22 @@ function buildBoundaryPrompt({ title, outline, task, currentPath }) {
     const cues = [];
     if (line.logicalSide) cues.push("zona-" + line.logicalSide);
     if (line.bold) cues.push("negrita");
-    return "L" + line.lineNumber + (cues.length ? " [" + cues.join(",") + "]" : "") + ": " + line.text;
+    return "P" + line.pageNumber + "L" + line.lineNumber + (cues.length ? " [" + cues.join(",") + "]" : "") + ": " + line.text;
   }).join("\n");
   return [
     "Sos un especialista en análisis de libros académicos. Detectá encabezados reales en el fragmento, apoyándote en el mapa global y el contexto previo.",
     "Documento: " + clean(title, 180),
-    "Mapa global tentativo: " + JSON.stringify((outline || []).slice(0, 25)),
+    "Mapa global tentativo: " + JSON.stringify((outline || []).slice(0, 20)),
     "Sección abierta al comenzar esta tanda: " + JSON.stringify(currentPath || []),
-    "Página física del PDF: " + task.pageNumber + ". Disposición: " + task.layoutKind + ".",
+    "Páginas físicas del PDF incluidas: " + (task.pageNumbers || [task.pageNumber]).join(", ") + ". Disposiciones detectadas: " + (task.layoutKinds || []).join(", ") + ".",
     "REGLAS",
     "1. Devolvé un límite solo cuando una línea sea un título o encabezado de capítulo/apartado que cambie la organización temática. No crees límites por cambios normales de párrafo, listas, ejemplos o palabras destacadas en el cuerpo.",
-    "2. lineNumber debe ser exactamente uno de los números L que aparecen en el fragmento. title debe reflejar el encabezado visible de esa misma línea, sin inventar formulaciones conceptuales.",
+    "2. pageNumber y lineNumber deben corresponder exactamente a una marca PnLm que aparece en el fragmento. title debe reflejar el encabezado visible de esa misma línea, sin inventar formulaciones conceptuales.",
     "3. level 1 = parte/capítulo principal; 2 = sección dentro del capítulo; 3 = subsección; 4 = subapartado. Usá la jerarquía del mapa global cuando corresponda, pero no fuerces todos los títulos a pertenecer al índice.",
     "4. No repitas encabezados corrientes de página ni el título del libro salvo que realmente inauguren una sección. Si hay un pliego horizontal, las líneas se presentan de izquierda a derecha; los marcadores de zona ayudan a evitar mezclar páginas enfrentadas.",
     "5. Si la lectura no permite decidir, omití el límite y registrá la incertidumbre en notes. No resumas el texto ni inventes contenido.",
     "LÍNEAS DEL FRAGMENTO:\n" + lines,
-    'Devolvé solo JSON: {"boundaries":[{"lineNumber":1,"title":"título visible","level":1,"confidence":0.9,"evidence":"por qué es encabezado"}],"notes":""}.',
+    'Devolvé solo JSON: {"boundaries":[{"pageNumber":1,"lineNumber":1,"title":"título visible","level":1,"confidence":0.9,"evidence":"por qué es encabezado"}],"notes":""}.',
     "boundaries puede estar vacío. confidence debe estar entre 0 y 1. Máximo 12 límites por tanda.",
   ].join("\n\n");
 }
@@ -268,14 +275,16 @@ async function postJson({ apiKey, prompt, maxTokens, signal, onProgress, progres
 }
 
 function normalizeBoundaries(raw, task) {
-  const lineMap = new Map(task.lines.map(line => [line.lineNumber, line]));
+  const lineMap = new Map(task.lines.map(line => [line.pageNumber + ":" + line.lineNumber, line]));
   const result = [];
   const seen = new Set();
   for (const item of Array.isArray(raw) ? raw : []) {
     const lineNumber = Number(item?.lineNumber);
-    const line = lineMap.get(lineNumber);
+    const pageNumber = Number(item?.pageNumber);
+    const line = lineMap.get(pageNumber + ":" + lineNumber);
     const title = clean(item?.title, 150);
-    if (!line || !title || seen.has(lineNumber)) continue;
+    const key = pageNumber + ":" + lineNumber;
+    if (!line || !title || seen.has(key)) continue;
     const lineText = norm(line.text);
     const titleText = norm(title);
     const sharesAnchor = lineText && titleText && (
@@ -288,9 +297,9 @@ function normalizeBoundaries(raw, task) {
     if (line.text.length > 170 || /[.!?]$/.test(line.text) && !/^\d+(?:\.\d+)*\s/.test(line.text)) continue;
     const level = Math.max(1, Math.min(4, Number(item?.level || 1)));
     const confidence = Math.max(0.2, Math.min(0.99, Number(item?.confidence ?? 0.65) || 0.65));
-    seen.add(lineNumber);
+    seen.add(key);
     result.push({
-      pageNumber: task.pageNumber,
+      pageNumber,
       lineNumber,
       title,
       level,
@@ -507,6 +516,7 @@ export async function analyzeDocumentSemantics({
           processed,
           total: tasks.length,
           pageNumber: task.pageNumber,
+          activePages: task.pageNumbers || [task.pageNumber],
           activeLines: [task.startLine, task.endLine],
         },
       });
@@ -515,10 +525,19 @@ export async function analyzeDocumentSemantics({
         // A single task is already compact; if its line lengths still exceed the
         // safe budget, split it in memory and invalidate the old task key.
         const middle = Math.ceil(task.lines.length / 2);
-        const smaller = [
-          { ...task, key: task.key + "-a", lines: task.lines.slice(0, middle), startLine: task.lines[0].lineNumber, endLine: task.lines[middle - 1].lineNumber },
-          { ...task, key: task.key + "-b", lines: task.lines.slice(middle), startLine: task.lines[middle].lineNumber, endLine: task.lines[task.lines.length - 1].lineNumber },
-        ];
+        const smaller = [task.lines.slice(0, middle), task.lines.slice(middle)].filter(group => group.length).map(group => {
+          const first = group[0];
+          const last = group[group.length - 1];
+          return {
+            ...task,
+            key: first.pageNumber + ":" + first.lineNumber + "-" + last.pageNumber + ":" + last.lineNumber,
+            pageNumber: first.pageNumber,
+            pageNumbers: Array.from(new Set(group.map(line => line.pageNumber))),
+            startLine: first.lineNumber,
+            endLine: last.lineNumber,
+            lines: group,
+          };
+        });
         tasks.splice(index, 1, ...smaller);
         index -= 1;
         continue;
@@ -549,6 +568,7 @@ export async function analyzeDocumentSemantics({
       processed,
       total: tasks.length,
       pageNumber: task.pageNumber,
+      activePages: task.pageNumbers || [task.pageNumber],
       model,
       boundaryCount: currentBoundaries.length,
       message: "Interpretación temática con IA · fragmento " + processed + " de " + tasks.length,
