@@ -63,11 +63,18 @@ function normalizeSourcePages(pages, visionPages = []) {
     if (useTranscription) {
       lines = contentLines(transcription);
     }
+    const tocSignals = lines.filter(line =>
+      /(?:\.{2,}|…{2,}|·{2,}|_{3,})\s*\d{1,4}\s*$/.test(line.text) ||
+      /^.{8,95}\s+\d{1,4}$/.test(line.text)
+    ).length;
+    const isContentsPage = /\b(?:índice|indice|contenidos|contents|table of contents|sumario)\b/i.test(lines.slice(0, 8).map(line => line.text).join(" ")) ||
+      (tocSignals >= 3 && tocSignals / Math.max(1, lines.length) >= 0.14);
     return {
       pageNumber,
       layoutKind: String(page?.layoutKind || "unknown"),
       layoutConfidence: Number(page?.layoutConfidence || 0),
-      lines,
+      isContentsPage,
+      lines: lines.map(line => ({ ...line, isContentsPage })),
       sourceText: useTranscription ? transcription : raw,
       usedVisualTranscription: useTranscription,
     };
@@ -173,6 +180,7 @@ function buildBoundaryPrompt({ title, outline, task, currentPath }) {
     const cues = [];
     if (line.logicalSide) cues.push("zona-" + line.logicalSide);
     if (line.bold) cues.push("negrita");
+    if (line.isContentsPage) cues.push("página-de-índice-no-usar-como-límite");
     return "P" + line.pageNumber + "L" + line.lineNumber + (cues.length ? " [" + cues.join(",") + "]" : "") + ": " + line.text;
   }).join("\n");
   return [
@@ -182,7 +190,7 @@ function buildBoundaryPrompt({ title, outline, task, currentPath }) {
     "Sección abierta al comenzar esta tanda: " + JSON.stringify(currentPath || []),
     "Páginas físicas del PDF incluidas: " + (task.pageNumbers || [task.pageNumber]).join(", ") + ". Disposiciones detectadas: " + (task.layoutKinds || []).join(", ") + ".",
     "REGLAS",
-    "1. Devolvé un límite solo cuando una línea sea un título o encabezado de capítulo/apartado que cambie la organización temática. No crees límites por cambios normales de párrafo, listas, ejemplos o palabras destacadas en el cuerpo.",
+    "1. Devolvé un límite solo cuando una línea sea un título o encabezado de capítulo/apartado que cambie la organización temática. No crees límites por cambios normales de párrafo, listas, ejemplos o palabras destacadas en el cuerpo. Las líneas marcadas como página-de-índice-no-usar-como-límite nunca deben convertirse en límites de sección.",
     "2. pageNumber y lineNumber deben corresponder exactamente a una marca PnLm que aparece en el fragmento. title debe reflejar el encabezado visible de esa misma línea, sin inventar formulaciones conceptuales.",
     "3. level 1 = parte/capítulo principal; 2 = sección dentro del capítulo; 3 = subsección; 4 = subapartado. Usá la jerarquía del mapa global cuando corresponda, pero no fuerces todos los títulos a pertenecer al índice.",
     "4. No repitas encabezados corrientes de página ni el título del libro salvo que realmente inauguren una sección. No crees límites de capítulo a partir de una página de índice/tabla de contenidos; las líneas con puntos guía y número de página al final son referencias del índice, no encabezados del cuerpo. Si hay un pliego horizontal, las líneas se presentan de izquierda a derecha; los marcadores de zona ayudan a evitar mezclar páginas enfrentadas.",
@@ -352,16 +360,17 @@ function makeSections(pages, boundaries, title) {
   if (!flat.length) throw new Error("No hay texto suficiente para construir una segmentación semántica.");
 
   const position = new Map(flat.map((line, index) => [line.pageNumber + ":" + line.lineNumber, index]));
+  let previousLevel = 1;
   const validBoundaries = boundaries
     .map(boundary => ({ ...boundary, index: position.get(boundary.pageNumber + ":" + boundary.lineNumber) }))
     .filter(boundary => Number.isInteger(boundary.index))
     .sort((a, b) => a.index - b.index)
     .filter((boundary, index, list) => index === 0 || boundary.index !== list[index - 1].index)
-    .map((boundary, index, list) => {
+    .map((boundary, index) => {
       const rawLevel = Math.max(1, Math.min(4, Number(boundary.level || 1)));
-      if (index === 0) return { ...boundary, level: 1 };
-      const previousLevel = Number(list[index - 1].level || 1);
-      return { ...boundary, level: Math.min(rawLevel, previousLevel + 1) };
+      const level = index === 0 ? 1 : Math.min(rawLevel, previousLevel + 1);
+      previousLevel = level;
+      return { ...boundary, level };
     });
 
   if (!validBoundaries.length) {
