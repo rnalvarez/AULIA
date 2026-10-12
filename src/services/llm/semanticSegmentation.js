@@ -193,6 +193,31 @@ function buildBoundaryPrompt({ title, outline, task, currentPath }) {
   ].join("\n\n");
 }
 
+function parseRetryDelay(response, message = "") {
+  const retryHeader = String(response?.headers?.get("retry-after") || "").trim();
+  if (retryHeader) {
+    const seconds = Number(retryHeader);
+    if (Number.isFinite(seconds) && seconds >= 0) return seconds * 1000;
+    const date = Date.parse(retryHeader);
+    if (Number.isFinite(date)) return Math.max(0, date - Date.now());
+  }
+  const match = String(message || "").match(/(?:try again in|retry after)\\s+((?:\\d+(?:\\.\\d+)?\\s*(?:ms|d|h|m|s)\\s*)+)/i);
+  if (match) {
+    let total = 0;
+    const parts = /([\\d.]+)\\s*(ms|d|h|m|s)/gi;
+    let part;
+    while ((part = parts.exec(match[1]))) {
+      const value = Number(part[1]);
+      const unit = part[2].toLowerCase();
+      total += value * (unit === "d" ? 86400000 : unit === "h" ? 3600000 : unit === "m" ? 60000 : unit === "s" ? 1000 : 1);
+    }
+    if (total > 0) return total;
+  }
+  const reset = String(response?.headers?.get("x-ratelimit-reset-tokens") || "").trim();
+  if (/^\\d+(?:\\.\\d+)?$/.test(reset)) return Number(reset) * 1000;
+  return 0;
+}
+
 function responseTokens(prompt, reserve) {
   const estimated = estimateGroqRequestTokens({ promptText: prompt, maxCompletionTokens: reserve });
   if (estimated > MAX_GROQ_REQUEST_TOKENS) {
@@ -249,6 +274,7 @@ async function postJson({ apiKey, prompt, maxTokens, signal, onProgress, progres
       const error = new Error("Groq no pudo interpretar la estructura (" + response.status + ")" + (message ? ": " + message : "."));
       error.status = response.status;
       error.retryAfter = response.headers.get("retry-after") || "";
+      error.retryAfterMs = parseRetryDelay(response, message);
       error.isDailyLimit = response.status === 429 && /tokens per day|requests per day|daily limit|daily quota|per day \(t[dp]d\)|limit.*per day/i.test(message);
       if (response.status === 401) error.message = "La API key de Groq no es válida. Revisá la clave docente en Studio.";
       if (response.status === 413) error.message = "Groq rechazó una tanda por su tamaño. La segmentación se puede reanudar sin rehacer las tandas anteriores.";
@@ -308,7 +334,7 @@ function normalizeBoundaries(raw, task) {
       layoutKind: task.layoutKind,
     });
   }
-  return result.sort((a, b) => a.lineNumber - b.lineNumber);
+  return result.sort((a, b) => a.pageNumber - b.pageNumber || a.lineNumber - b.lineNumber);
 }
 
 function makeSections(pages, boundaries, title) {
