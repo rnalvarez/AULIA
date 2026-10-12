@@ -2060,7 +2060,7 @@ async function importExternalKnowledge(e) {
             {uploadProgress.message && <small>{uploadProgress.message}</small>}
             {uploadProgress.model && <small>Modelo: {uploadProgress.model}</small>}
             {uploadProgress.error && <small>{uploadProgress.error}</small>}
-            {(uploadProgress.phase === "paused" || uploadProgress.phase === "quota-wait") && uploadProgress.pendingId && <button className="primary" type="button" onClick={() => resumePendingPdf({ id: uploadProgress.pendingId, fileName: uploadProgress.fileName })} disabled={!canEdit || busy || Boolean(uploadProgress.blockedUntil && Date.parse(uploadProgress.blockedUntil) > rateLimitClock)}>{uploadProgress.blockedUntil && Date.parse(uploadProgress.blockedUntil) > rateLimitClock ? "Esperar restablecimiento" : "Reanudar páginas pendientes"}</button>}
+            {(uploadProgress.phase === "paused" || uploadProgress.phase === "quota-wait") && uploadProgress.pendingId && <button className="primary" type="button" onClick={() => resumePendingPdf({ id: uploadProgress.pendingId, fileName: uploadProgress.fileName })} disabled={!canEdit || busy || Boolean(uploadProgress.blockedUntil && Date.parse(uploadProgress.blockedUntil) > rateLimitClock)}>{uploadProgress.blockedUntil && Date.parse(uploadProgress.blockedUntil) > rateLimitClock ? "Esperar restablecimiento" : "Reanudar análisis pendiente"}</button>}
           </div>}
 
           {pendingPdfs.length > 0 && <div className="studio-wf-stack">
@@ -2070,11 +2070,11 @@ async function importExternalKnowledge(e) {
               {pending.blockedUntil && Date.parse(pending.blockedUntil) > rateLimitClock
                 ? <small>{pending.isDailyLimit ? "Cuota diaria agotada." : "Límite temporal de Groq."} Reanudación habilitada después de {new Date(pending.blockedUntil).toLocaleString("es-AR", { dateStyle: "short", timeStyle: "short" })}.</small>
                 : <small>{pending.prepared
-                    ? "La extracción local y el texto de las páginas ya están guardados; solo se reanudarán las páginas visuales pendientes."
+                    ? "La extracción local y el texto están guardados; al reanudar continuará la lectura visual o la interpretación temática pendiente sin repetir las tandas ya completadas."
                     : "PDF guardado para reanudar la extracción y la lectura visual sin volver a seleccionarlo."}</small>}
               {pending.lastError && <small>{pending.lastError}</small>}
               <div className="studio-wf-panel-actions">
-                <button className="primary" type="button" onClick={() => resumePendingPdf(pending)} disabled={!canEdit || busy || Boolean(pending.blockedUntil && Date.parse(pending.blockedUntil) > rateLimitClock)}>{pending.blockedUntil && Date.parse(pending.blockedUntil) > rateLimitClock ? "Esperar restablecimiento" : pending.prepared ? "Reanudar páginas pendientes" : "Preparar y reanudar"}</button>
+                <button className="primary" type="button" onClick={() => resumePendingPdf(pending)} disabled={!canEdit || busy || Boolean(pending.blockedUntil && Date.parse(pending.blockedUntil) > rateLimitClock)}>{pending.blockedUntil && Date.parse(pending.blockedUntil) > rateLimitClock ? "Esperar restablecimiento" : pending.prepared ? "Reanudar análisis" : "Preparar y reanudar"}</button>
                 <button className="ghost" type="button" onClick={() => discardPendingPdf(pending)} disabled={busy}>Descartar</button>
               </div>
             </div>)}
