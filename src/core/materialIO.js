@@ -639,6 +639,9 @@ async function readPdf(file, { includePageImages = false, includeAIPageText = fa
         const orderedLines = page.readingLines?.length ? page.readingLines : page.lines || [];
         return {
           pageNumber: page.pageNumber,
+          width: Number(page.width || 0),
+          height: Number(page.height || 0),
+          aspectRatio: Number(page.width || 0) / Math.max(1, Number(page.height || 0)),
           extractedText: orderedLines
             .map((line) => typeof line === "string" ? line : line?.text || "")
             .filter(Boolean)
