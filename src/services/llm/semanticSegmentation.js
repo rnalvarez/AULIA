@@ -185,7 +185,7 @@ function buildBoundaryPrompt({ title, outline, task, currentPath }) {
     "1. Devolvé un límite solo cuando una línea sea un título o encabezado de capítulo/apartado que cambie la organización temática. No crees límites por cambios normales de párrafo, listas, ejemplos o palabras destacadas en el cuerpo.",
     "2. pageNumber y lineNumber deben corresponder exactamente a una marca PnLm que aparece en el fragmento. title debe reflejar el encabezado visible de esa misma línea, sin inventar formulaciones conceptuales.",
     "3. level 1 = parte/capítulo principal; 2 = sección dentro del capítulo; 3 = subsección; 4 = subapartado. Usá la jerarquía del mapa global cuando corresponda, pero no fuerces todos los títulos a pertenecer al índice.",
-    "4. No repitas encabezados corrientes de página ni el título del libro salvo que realmente inauguren una sección. Si hay un pliego horizontal, las líneas se presentan de izquierda a derecha; los marcadores de zona ayudan a evitar mezclar páginas enfrentadas.",
+    "4. No repitas encabezados corrientes de página ni el título del libro salvo que realmente inauguren una sección. No crees límites de capítulo a partir de una página de índice/tabla de contenidos; las líneas con puntos guía y número de página al final son referencias del índice, no encabezados del cuerpo. Si hay un pliego horizontal, las líneas se presentan de izquierda a derecha; los marcadores de zona ayudan a evitar mezclar páginas enfrentadas.",
     "5. Si la lectura no permite decidir, omití el límite y registrá la incertidumbre en notes. No resumas el texto ni inventes contenido.",
     "LÍNEAS DEL FRAGMENTO:\n" + lines,
     'Devolvé solo JSON: {"boundaries":[{"pageNumber":1,"lineNumber":1,"title":"título visible","level":1,"confidence":0.9,"evidence":"por qué es encabezado"}],"notes":""}.',
@@ -201,10 +201,10 @@ function parseRetryDelay(response, message = "") {
     const date = Date.parse(retryHeader);
     if (Number.isFinite(date)) return Math.max(0, date - Date.now());
   }
-  const match = String(message || "").match(/(?:try again in|retry after)\\s+((?:\\d+(?:\\.\\d+)?\\s*(?:ms|d|h|m|s)\\s*)+)/i);
+  const match = String(message || "").match(/(?:try again in|retry after)\s+((?:\d+(?:\.\d+)?\s*(?:ms|d|h|m|s)\s*)+)/i);
   if (match) {
     let total = 0;
-    const parts = /([\\d.]+)\\s*(ms|d|h|m|s)/gi;
+    const parts = /([\d.]+)\s*(ms|d|h|m|s)/gi;
     let part;
     while ((part = parts.exec(match[1]))) {
       const value = Number(part[1]);
@@ -356,7 +356,13 @@ function makeSections(pages, boundaries, title) {
     .map(boundary => ({ ...boundary, index: position.get(boundary.pageNumber + ":" + boundary.lineNumber) }))
     .filter(boundary => Number.isInteger(boundary.index))
     .sort((a, b) => a.index - b.index)
-    .filter((boundary, index, list) => index === 0 || boundary.index !== list[index - 1].index);
+    .filter((boundary, index, list) => index === 0 || boundary.index !== list[index - 1].index)
+    .map((boundary, index, list) => {
+      const rawLevel = Math.max(1, Math.min(4, Number(boundary.level || 1)));
+      if (index === 0) return { ...boundary, level: 1 };
+      const previousLevel = Number(list[index - 1].level || 1);
+      return { ...boundary, level: Math.min(rawLevel, previousLevel + 1) };
+    });
 
   if (!validBoundaries.length) {
     return [{
