@@ -149,6 +149,17 @@ export async function savePreparedPdf(id, file, material) {
   const aiPages = (material?.aiPages || []).map(page => ({
     pageNumber: Number(page.pageNumber),
     extractedText: String(page.extractedText || ""),
+    lineItems: Array.isArray(page.lineItems) ? page.lineItems.map(line => ({
+      lineNumber: Number(line.lineNumber || 0),
+      text: String(line.text || ""),
+      logicalSide: String(line.logicalSide || ""),
+      bold: Boolean(line.bold),
+      fontSize: Number(line.fontSize || 0),
+      xMin: Number(line.xMin || 0),
+      width: Number(line.width || 0),
+    })) : [],
+    layoutKind: String(page.layoutKind || "unknown"),
+    layoutConfidence: Number(page.layoutConfidence || 0),
     needsVisualAnalysis: Boolean(page.needsVisualAnalysis),
   }));
   const { sections: _redundantSections, ...compactAnalysis } = material?.analysis || {};
