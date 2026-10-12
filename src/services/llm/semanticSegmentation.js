@@ -294,7 +294,7 @@ function normalizeBoundaries(raw, task) {
         Math.max(1, titleText.split(" ").filter(token => token.length > 3).length) >= 0.55
     );
     if (!sharesAnchor || titleText.length < 3) continue;
-    if (line.text.length > 170 || /[.!?]$/.test(line.text) && !/^\d+(?:\.\d+)*\s/.test(line.text)) continue;
+    if (line.text.length > 170) continue;
     const level = Math.max(1, Math.min(4, Number(item?.level || 1)));
     const confidence = Math.max(0.2, Math.min(0.99, Number(item?.confidence ?? 0.65) || 0.65));
     seen.add(key);
@@ -382,9 +382,12 @@ function makeSections(pages, boundaries, title) {
     path.length = level - 1;
     path[level - 1] = boundary.title;
     const sectionPath = path.filter(Boolean).slice();
-    const childrenCount = validBoundaries.slice(index + 1).findIndex(item => item.level <= level);
-    const directChildren = validBoundaries.slice(index + 1, childrenCount < 0 ? undefined : index + 1 + childrenCount)
-      .filter(item => item.level === level + 1).length;
+    let directChildren = 0;
+    for (let childIndex = index + 1; childIndex < validBoundaries.length; childIndex += 1) {
+      const candidate = validBoundaries[childIndex];
+      if (candidate.level <= level) break;
+      if (candidate.level === level + 1) directChildren += 1;
+    }
     sections.push({
       title: boundary.title,
       level,
