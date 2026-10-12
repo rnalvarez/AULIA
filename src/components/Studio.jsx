@@ -686,11 +686,16 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
   function updateMaterialSection(sectionOrId, patch) {
     const reference = sectionOrId && typeof sectionOrId === "object" ? sectionOrId : null;
     const sectionId = String(reference?.id || sectionOrId || "");
+    const cascade = Boolean(reference && ("scope" in (patch || {}) || "priority" in (patch || {})));
 
     const samePath = (left, right) =>
       Array.isArray(left) && Array.isArray(right) &&
       left.length === right.length &&
       left.every((value, index) => String(value || "") === String(right[index] || ""));
+
+    const pathStartsWith = (child, parent) =>
+      Array.isArray(child) && Array.isArray(parent) && child.length > parent.length &&
+      parent.every((value, index) => String(value || "") === String(child[index] || ""));
 
     const overlapsPages = (leftStart, leftEnd, rightStart, rightEnd) => {
       const a = Number(leftStart || 0);
@@ -701,6 +706,10 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
     };
 
     mutate((current) => {
+      const hasExactDocumentMatch = (current.documents || []).some(document =>
+        (!reference?.documentId || String(document.id || "") === String(reference.documentId)) &&
+        (document.sections || []).some(section => String(section.id || "") === sectionId)
+      );
       const documents = (current.documents || []).map((document) => ({
         ...document,
         sections: (document.sections || []).map((section) => {
@@ -712,22 +721,24 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
             section.sourcePageStart, section.sourcePageEnd,
             reference?.sourcePageStart, reference?.sourcePageEnd
           );
-          const fallbackMatch = Boolean(reference && sameDocument && sameTitle && (
+          const descendantMatch = cascade && sameDocument && pathStartsWith(section.path, reference?.path);
+          const fallbackMatch = Boolean(reference && !hasExactDocumentMatch && sameDocument && sameTitle && (
             sameStructuralPath || samePageRange
           ));
-          return directMatch || fallbackMatch
+          return directMatch || descendantMatch || fallbackMatch
             ? { ...section, id: section.id || sectionId, ...patch }
             : section;
         }),
       }));
 
-      // Prefer stable section IDs. For older/imported course packs that lack
-      // matching IDs, resolve the same section by document, page range and path.
+      // Stable IDs prevent repeated titles or overlapping page ranges from
+      // changing unrelated sections. Legacy packs keep a narrow fallback.
       const hasExactCorpusMatch = (current.corpus || []).some(chunk => String(chunk.sectionId || "") === sectionId);
       const corpus = (current.corpus || []).map((chunk) => {
         const directMatch = String(chunk.sectionId || "") === sectionId;
         const sameDocument = !reference?.documentId || String(chunk.documentId || "") === String(reference.documentId);
         const pathsMatch = samePath(chunk.sectionPath, reference?.path);
+        const descendantMatch = cascade && sameDocument && pathStartsWith(chunk.sectionPath, reference?.path);
         const samePageRange = overlapsPages(
           chunk.sourcePageStart || chunk.sourcePage, chunk.sourcePageEnd || chunk.sourcePageStart || chunk.sourcePage,
           reference?.sourcePageStart, reference?.sourcePageEnd
@@ -736,7 +747,7 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
         const fallbackMatch = Boolean(reference && !hasExactCorpusMatch && sameDocument && sameTitle && (
           samePageRange || pathsMatch
         ));
-        if (!directMatch && !fallbackMatch) return chunk;
+        if (!directMatch && !descendantMatch && !fallbackMatch) return chunk;
         return { ...chunk, ...patch, sectionId: chunk.sectionId || sectionId };
       });
 
@@ -1976,7 +1987,7 @@ async function importExternalKnowledge(e) {
       </>}
 
       {step === "material" && <>
-        <div className="studio-wf-hero"><div className="eyebrow">PASO 02 · BIBLIOGRAFÍA</div><h1>Una sola carga para preparar la base de conocimiento.</h1><p>Primero cargá los documentos: AULIA extrae el texto y detecta capítulos y secciones localmente. Después generá el índice conceptual con Groq o una IA externa, y revisá qué podrá consultar el chatbot.</p></div>
+        <div className="studio-wf-hero"><div className="eyebrow">PASO 02 · BIBLIOGRAFÍA</div><h1>Una sola carga para preparar la base de conocimiento.</h1><p>AULIA primero recupera el texto. Si elegís Groq, además reconstruye el mapa temático del documento por tandas; después podés revisar capítulos y apartados y decidir qué incluir, excluir o priorizar antes de generar el índice conceptual.</p></div>
         <details className="studio-wf-source-details">
           <summary>Datos bibliográficos opcionales <span>· título, autor, editorial y año</span></summary>
           <Panel eyebrow="BIBLIOGRAFÍA" title="Referencias de la cátedra" description="Estos datos ayudan a identificar las fuentes, pero no hace falta completarlos para empezar a cargar y analizar los documentos." actions={<button className="ghost" type="button" onClick={addBibliography} disabled={!canEdit}>+ Agregar fuente</button>}>
@@ -1987,23 +1998,23 @@ async function importExternalKnowledge(e) {
         </details>
         <Panel
           eyebrow="PREPARACIÓN DEL MATERIAL"
-          title="Extracción local y lectura visual selectiva"
-          description="AULIA extrae el texto y detecta capítulos y secciones localmente. Groq solo se usa, de forma opcional, para páginas escaneadas o elementos gráficos seleccionados; el índice conceptual se construye en un paso independiente."
+          title="Reconocimiento de texto y segmentación temática"
+          description="La extracción local recupera el texto y conserva la geometría. Con Groq, AULIA agrega una interpretación semántica del documento completo por tandas, y usa imágenes solo cuando hacen falta para leer páginas escaneadas o elementos visuales."
         >
           <div className="studio-wf-knowledge-provider">
             <button type="button" className={ingestionProvider === "local" ? "active" : ""} onClick={() => setIngestionProvider("local")} disabled={!canEdit || busy} aria-pressed={ingestionProvider === "local"}>
-              <strong>Extracción local</strong><span>Lectura y segmentación sin cuota de IA</span>
+              <strong>Extracción local</strong><span>OCR y estructura heurística sin cuota de IA</span>
             </button>
             <button type="button" className={ingestionProvider === "groq" ? "active" : ""} onClick={() => setIngestionProvider("groq")} disabled={!canEdit || busy} aria-pressed={ingestionProvider === "groq"}>
-              <strong>OCR y visión selectiva · Groq</strong><span>Solo para páginas sin texto suficiente o gráficos relevantes</span>
+              <strong>Interpretación temática · Groq</strong><span>OCR visual selectivo más reconstrucción de capítulos y apartados</span>
             </button>
           </div>
 
           {ingestionProvider === "groq" && <>
             {studioApiKey
-              ? <div className="studio-wf-ai-ready"><span>● Visión selectiva disponible</span><small>El texto, los títulos y la estructura principal se procesan localmente. Groq solo recibirá imágenes de páginas seleccionadas.</small><button className="ghost" type="button" onClick={() => setShowStudioKey(true)} disabled={busy}>Cambiar clave</button></div>
+              ? <div className="studio-wf-ai-ready"><span>● Interpretación temática disponible</span><small>Groq analizará el mapa general y el texto por tandas; las imágenes solo se envían para páginas que necesitan OCR visual o revisión de elementos gráficos.</small><button className="ghost" type="button" onClick={() => setShowStudioKey(true)} disabled={busy}>Cambiar clave</button></div>
               : <div className="studio-wf-ai-setup">
-                  <div><strong>Clave personal de Groq</strong><span>Necesaria únicamente si el PDF contiene páginas escaneadas o elementos visuales que requieren lectura asistida.</span></div>
+                  <div><strong>Clave personal de Groq</strong><span>Necesaria para la interpretación temática del texto con IA y para leer páginas escaneadas o elementos visuales.</span></div>
                   <div className="studio-wf-ai-key-row">
                     <input type="password" value={studioKeyInput} placeholder="gsk_…" autoComplete="off" onChange={(event) => setStudioKeyInput(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") saveTeacherKey(); }}/>
                     <button className="ghost" type="button" onClick={saveTeacherKey} disabled={!studioKeyInput.trim() || !canEdit || busy}>Guardar clave</button>
@@ -2019,14 +2030,14 @@ async function importExternalKnowledge(e) {
             </div>}
           </>}
           {ingestionProvider === "local" && <div className="studio-wf-security-note">
-            El PDF se lee y se segmenta en este navegador. Si detectamos un escaneo sin texto legible, AULIA pedirá que habilites la lectura visual con Groq o que uses OCR previamente.
+            El modo local usa extracción/OCR y reglas estructurales; no realiza una interpretación semántica con IA. Para reconstruir capítulos de bibliografías complejas, elegí Interpretación temática · Groq.
           </div>}
 
           {uploadProgress && <div className={"studio-wf-ai-report " + (uploadProgress.phase === "complete" ? "ok" : uploadProgress.phase === "paused" || uploadProgress.phase === "quota-wait" || uploadProgress.phase === "error" ? "error" : "")}>
-            <strong>{uploadProgress.phase === "complete" ? "✓ Carga completada" : uploadProgress.phase === "paused" ? "Análisis pausado; el trabajo está guardado" : uploadProgress.phase === "quota-wait" ? (uploadProgress.isDailyLimit ? "Cuota diaria de Groq agotada" : "Límite temporal de Groq; reanudación controlada") : uploadProgress.phase === "error" ? "No se pudo completar la carga" : uploadProgress.phase === "rate-wait" ? "Esperando renovación de cuota…" : uploadProgress.phase === "restoring" ? "Recuperando la preparación guardada…" : uploadProgress.phase === "processing" || uploadProgress.phase === "processing-batch" ? "IA leyendo páginas seleccionadas…" : uploadProgress.phase === "rendering" ? "Preparando páginas visuales pendientes…" : "Preparando documento…"}</strong>
+            <strong>{uploadProgress.phase === "complete" ? "✓ Carga completada" : uploadProgress.phase === "paused" ? "Análisis pausado; el trabajo está guardado" : uploadProgress.phase === "quota-wait" ? (uploadProgress.isDailyLimit ? "Cuota diaria de Groq agotada" : "Límite temporal de Groq; reanudación controlada") : uploadProgress.phase === "error" ? "No se pudo completar la carga" : uploadProgress.phase === "rate-wait" ? "Esperando renovación de cuota…" : uploadProgress.phase === "restoring" ? "Recuperando la preparación guardada…" : uploadProgress.phase === "semantic-segmentation" || uploadProgress.phase === "semantic-outline" ? "Interpretando la estructura temática…" : uploadProgress.phase === "processing" || uploadProgress.phase === "processing-batch" ? "IA leyendo páginas seleccionadas…" : uploadProgress.phase === "rendering" ? "Preparando páginas visuales pendientes…" : "Preparando documento…"}</strong>
             {uploadProgress.fileName && <span>{uploadProgress.fileName}</span>}
             {Number(uploadProgress.total) > 0 && <>
-              <span>{uploadProgress.processed || 0} de {uploadProgress.total} {uploadProgress.phase === "restoring" ? "páginas recuperadas" : uploadProgress.phase === "rendering" ? "páginas preparadas" : uploadProgress.phase === "extracting" ? "páginas leídas" : "páginas seleccionadas analizadas"}{uploadProgress.activePages?.length ? " · ahora: " + uploadProgress.activePages.join(", ") : ""}</span>
+              <span>{uploadProgress.processed || 0} de {uploadProgress.total} {uploadProgress.phase === "semantic-segmentation" || uploadProgress.phase === "semantic-outline" ? "fragmentos textuales interpretados" : uploadProgress.phase === "restoring" ? "páginas recuperadas" : uploadProgress.phase === "rendering" ? "páginas preparadas" : uploadProgress.phase === "extracting" ? "páginas leídas" : "páginas seleccionadas analizadas"}{uploadProgress.activePages?.length ? " · ahora: " + uploadProgress.activePages.join(", ") : ""}</span>
               <progress className="studio-wf-progress" max={uploadProgress.total} value={Math.min(uploadProgress.processed || 0, uploadProgress.total)}/>
             </>}
             {uploadProgress.message && <small>{uploadProgress.message}</small>}
@@ -2056,7 +2067,7 @@ async function importExternalKnowledge(e) {
         <Panel
           eyebrow="MATERIAL"
           title="Bibliografía y corpus de la cátedra"
-          description="El texto y la estructura se preparan localmente. Después se genera un índice conceptual sobre los fragmentos extraídos; revisá las secciones, el alcance y la prioridad antes de publicar."
+          description="Cada documento se conserva por separado. Revisá la estructura propuesta, el texto de cada apartado y sus páginas; luego decidí el alcance y la prioridad antes de generar el índice conceptual."
           actions={<label className={"primary studio-wf-file-btn" + (busy || (ingestionProvider === "groq" && !studioApiKey) ? " disabled" : "")}>{busy ? "Procesando…" : ingestionProvider === "groq" ? "Cargar material + lectura visual selectiva" : "Cargar material (extracción local)"}<input type="file" accept=".txt,.md,.markdown,.json,.pdf,.docx,text/plain,text/markdown,application/json,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document" multiple onChange={importMaterial} disabled={busy || (ingestionProvider === "groq" && !studioApiKey)}/></label>}
         >
           {materialSections.length ? <>
@@ -2073,7 +2084,7 @@ async function importExternalKnowledge(e) {
             </div>
 
             <div className="studio-wf-structure-note">
-              La IA analiza primero <strong>toda la bibliografía cargada</strong>. Después podés cambiar el alcance y la prioridad sin repetir el análisis: esas decisiones se aplican al recuperar información para el chatbot. Todo comienza como Incluido, con prioridad Complementario.
+              La interpretación temática se realiza documento por documento, antes del índice conceptual. Todo empieza como Incluido y Complementario. Los cambios de alcance o prioridad en un capítulo se aplican también a sus subsecciones; después podés ajustar cada apartado de forma independiente.
             </div>
 
             <section className="studio-wf-knowledge-setup">
@@ -2171,6 +2182,9 @@ async function importExternalKnowledge(e) {
                           <span className="eyebrow">RELEVAMIENTO DEL PDF</span>
                           <strong>{documentGroup.title}</strong>
                           <small>{documentGroup.analysis.documentType} · método: {materialSegmentationLabel(documentGroup.analysis.method)}</small>
+                          {documentGroup.analysis.layout && (Number(documentGroup.analysis.layout.landscapeTwoAreaPages || 0) + Number(documentGroup.analysis.layout.ambiguousLandscapePages || 0) + Number(documentGroup.analysis.layout.horizontalSinglePages || 0)) > 0 && <small>
+                            Páginas horizontales: {documentGroup.analysis.layout.landscapeTwoAreaPages || 0} con dos zonas de texto, {documentGroup.analysis.layout.ambiguousLandscapePages || 0} ambiguas y {documentGroup.analysis.layout.horizontalSinglePages || 0} conservadas como página única.
+                          </small>}
                         </div>
                         <div className="studio-wf-pdf-confidence">
                           <strong>{Math.round(Number(documentGroup.analysis.confidence || 0) * 100)}%</strong>
