@@ -9,8 +9,8 @@ import {
 const ENDPOINT = "https://api.groq.com/openai/v1/chat/completions";
 const MODELS = ["qwen/qwen3.8-27b", "openai/gpt-oss-20b"];
 const CACHE_PREFIX = "aulia:semantic-segmentation:v1:";
-const MAX_TASK_CHARS = 4700;
-const MAX_TASK_LINES = 68;
+const MAX_TASK_CHARS = 6200;
+const MAX_TASK_LINES = 80;
 const OUTLINE_MAX_TOKENS = 1050;
 const BOUNDARY_MAX_TOKENS = 1050;
 
