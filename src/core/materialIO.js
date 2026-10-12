@@ -223,6 +223,7 @@ function buildDocumentMeta({
           layout: analysis.layout || {
             landscapeTwoAreaPages: 0,
             ambiguousLandscapePages: 0,
+            landscapeUnverifiedPages: 0,
             horizontalSinglePages: 0,
           },
         }
@@ -609,16 +610,17 @@ async function readPdf(file, { includePageImages = false, includeAIPageText = fa
     if (localOcr.attemptedPages > 0) {
       analysis.localOcrPages = localOcr.attemptedPages;
       analysis.localOcrRecognizedPages = localOcr.recognizedPages;
+      const ocrWarnings = [];
       if (localOcr.recognizedPages < localOcr.attemptedPages) {
-        analysis.warnings = [
-          ...(analysis.warnings || []),
+        ocrWarnings.push(
           (localOcr.attemptedPages - localOcr.recognizedPages) +
-            " página(s) con poco texto no pudieron recuperarse mediante OCR local.",
-          ...(pages.some(page => page.ocrRecognized && !page.ocrGeometryReliable)
-            ? ["En algunas páginas el OCR recuperó texto pero no posiciones fiables; la segmentación espacial de esas páginas puede requerir revisión."]
-            : []),
-        ];
+          " página(s) con poco texto no pudieron recuperarse mediante OCR local."
+        );
       }
+      if (pages.some(page => page.ocrRecognized && !page.ocrGeometryReliable)) {
+        ocrWarnings.push("En algunas páginas el OCR recuperó texto pero no posiciones fiables; la segmentación espacial de esas páginas puede requerir revisión.");
+      }
+      if (ocrWarnings.length) analysis.warnings = [...(analysis.warnings || []), ...ocrWarnings];
     }
 
     const documentId = makeDocumentId(file.name);
