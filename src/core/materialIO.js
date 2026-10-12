@@ -217,6 +217,9 @@ function buildDocumentMeta({
           warnings: Array.isArray(analysis.warnings) ? analysis.warnings : [],
           model: String(analysis.model || ""),
           aiAnalyzedPages: Number(analysis.aiAnalyzedPages || 0),
+          semanticBoundaries: Number(analysis.semanticBoundaries || 0),
+          semanticTasksProcessed: Number(analysis.semanticTasksProcessed || 0),
+          semanticOutline: Array.isArray(analysis.semanticOutline) ? analysis.semanticOutline : [],
           layout: analysis.layout || {
             landscapeTwoAreaPages: 0,
             ambiguousLandscapePages: 0,
@@ -1202,6 +1205,14 @@ export function applyAISemanticSegmentation(material, semanticResult) {
   const visualChunks = (material?.corpus || [])
     .filter(chunk => chunk?.segmentationSource === "vision-selective")
     .map((chunk, index) => {
+      // The OCR transcription is now represented in the semantic section text.
+      // Keep only actual visual descriptions/tables here to avoid indexing the
+      // same transcribed page twice under two different passage IDs.
+      const fullVisualContent = String(chunk?.content || "");
+      const visualMarker = "LECTURA VISUAL ASISTIDA POR IA · PÁGINA ";
+      const markerIndex = fullVisualContent.indexOf(visualMarker);
+      const visualOnlyContent = markerIndex >= 0 ? fullVisualContent.slice(markerIndex).trim() : "";
+      if (!visualOnlyContent) return null;
       const pageNumber = Number(chunk?.sourcePageStart || chunk?.sourcePage || 0);
       const candidates = sections.map((section, sectionIndex) => ({ section, sectionIndex }))
         .filter(({ section }) =>
@@ -1220,6 +1231,7 @@ export function applyAISemanticSegmentation(material, semanticResult) {
       return {
         ...chunk,
         id: String(chunk.id || "visual-" + index),
+        content: visualOnlyContent,
         sectionId: targetSection ? makeSectionId(documentId, targetSection, targetIndex) : chunk.sectionId,
         chapter: nextPath.join(" › "),
         sectionPath: [...nextPath],
@@ -1244,7 +1256,7 @@ export function applyAISemanticSegmentation(material, semanticResult) {
 
   return {
     ...material,
-    corpus: [...corpus, ...visualChunks],
+    corpus: [...corpus, ...visualChunks.filter(Boolean)],
     document,
     analysis: semanticAnalysis,
     warnings: uniqueWarnings,
