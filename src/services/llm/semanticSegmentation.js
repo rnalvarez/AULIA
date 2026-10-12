@@ -35,9 +35,25 @@ function norm(value) {
 }
 
 function contentLines(text) {
-  return String(text || "").replace(/\r/g, "").split("\n")
-    .map((text, index) => ({ lineNumber: index + 1, text: clean(text, 1800), logicalSide: "" }))
-    .filter(line => line.text);
+  let logicalSide = "";
+  let lineNumber = 0;
+  const lines = [];
+  for (const rawLine of String(text || "").replace(/\r/g, "").split("\n")) {
+    const marker = rawLine.trim().toUpperCase();
+    if (/^\[AULIA_LADO_IZQUIERDO\]$/.test(marker)) {
+      logicalSide = "left";
+      continue;
+    }
+    if (/^\[AULIA_LADO_DERECHO\]$/.test(marker)) {
+      logicalSide = "right";
+      continue;
+    }
+    const textLine = clean(rawLine, 1800);
+    if (!textLine) continue;
+    lineNumber += 1;
+    lines.push({ lineNumber, text: textLine, logicalSide });
+  }
+  return lines;
 }
 
 function normalizeSourcePages(pages, visionPages = []) {
