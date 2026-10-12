@@ -214,7 +214,7 @@ function parseRetryDelay(response, message = "") {
     if (total > 0) return total;
   }
   const reset = String(response?.headers?.get("x-ratelimit-reset-tokens") || "").trim();
-  if (/^\\d+(?:\\.\\d+)?$/.test(reset)) return Number(reset) * 1000;
+  if (/^\d+(?:\.\d+)?$/.test(reset)) return Number(reset) * 1000;
   return 0;
 }
 
