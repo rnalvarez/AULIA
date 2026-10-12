@@ -217,6 +217,11 @@ function buildDocumentMeta({
           warnings: Array.isArray(analysis.warnings) ? analysis.warnings : [],
           model: String(analysis.model || ""),
           aiAnalyzedPages: Number(analysis.aiAnalyzedPages || 0),
+          layout: analysis.layout || {
+            landscapeTwoAreaPages: 0,
+            ambiguousLandscapePages: 0,
+            horizontalSinglePages: 0,
+          },
         }
       : null,
     sections: (sections || []).map((section, index) => ({
@@ -363,32 +368,77 @@ async function runLocalPdfOcr(pdf, pages, onProgress = () => {}) {
         await page.render({ canvasContext: context, viewport }).promise;
         const result = await worker.recognize(canvas);
         const text = String(result?.data?.text || "").replace(/\r/g, "").trim();
-        const lines = text.split("\n").map((line) => line.replace(/\s+/g, " ").trim()).filter(Boolean);
-
-        // Replace only pages with little/no text-layer content. Synthetic
-        // coordinates preserve OCR reading order for the structural analyzer.
-        if (lines.length) {
-          const width = Number(target.width || viewport.width);
-          const height = Number(target.height || viewport.height);
-          const step = height / (lines.length + 1);
-          target.lines = lines.map((line, lineIndex) => ({
-            text: line,
-            xMin: 0,
-            xMax: width,
-            width,
-            y: height - (lineIndex + 1) * step,
-            fontSize: 10,
+        const recognizedLines = Array.isArray(result?.data?.lines) ? result.data.lines : [];
+        const toPdfPoint = (x, y) => {
+          try {
+            return typeof viewport.convertToPdfPoint === "function"
+              ? viewport.convertToPdfPoint(x, y)
+              : [x / Math.max(0.001, scale), (canvas.height - y) / Math.max(0.001, scale)];
+          } catch {
+            return [x / Math.max(0.001, scale), (canvas.height - y) / Math.max(0.001, scale)];
+          }
+        };
+        const geometryLines = recognizedLines.map((item, lineIndex) => {
+          const lineText = String(item?.text || "").replace(/\s+/g, " ").trim();
+          const box = item?.bbox || item?.words?.[0]?.bbox;
+          if (!lineText || !box ||
+              ![box.x0, box.y0, box.x1, box.y1].every(value => Number.isFinite(Number(value)))) return null;
+          const points = [
+            toPdfPoint(Number(box.x0), Number(box.y0)),
+            toPdfPoint(Number(box.x1), Number(box.y0)),
+            toPdfPoint(Number(box.x0), Number(box.y1)),
+            toPdfPoint(Number(box.x1), Number(box.y1)),
+          ];
+          const xs = points.map(point => Number(point[0])).filter(Number.isFinite);
+          const ys = points.map(point => Number(point[1])).filter(Number.isFinite);
+          if (!xs.length || !ys.length) return null;
+          const xMin = Math.min(...xs);
+          const xMax = Math.max(...xs);
+          const yMin = Math.min(...ys);
+          const yMax = Math.max(...ys);
+          return {
+            text: lineText,
+            xMin,
+            xMax,
+            width: Math.max(0, xMax - xMin),
+            y: (yMin + yMax) / 2,
+            fontSize: Math.max(1, yMax - yMin),
             bold: false,
             boldRatio: 0,
             fontNames: ["local-ocr"],
             items: [],
             index: lineIndex,
             ocr: true,
-          }));
+          };
+        }).filter(Boolean);
+        // Retain Tesseract's bounding boxes. Fabricating a full-page width for
+        // every OCR line made column/spread detection impossible and corrupted
+        // the reading order even when OCR recognized the words correctly.
+        const fallbackLines = text.split("\n")
+          .map((line) => line.replace(/\s+/g, " ").trim())
+          .filter(Boolean);
+        const lines = geometryLines.length
+          ? geometryLines
+          : fallbackLines.map((line, lineIndex) => {
+              const width = Number(target.width || viewport.width);
+              const height = Number(target.height || viewport.height);
+              const step = height / (fallbackLines.length + 1);
+              return {
+                text: line, xMin: 0, xMax: width, width,
+                y: height - (lineIndex + 1) * step, fontSize: 10,
+                bold: false, boldRatio: 0, fontNames: ["local-ocr"],
+                items: [], index: lineIndex, ocr: true, syntheticGeometry: true,
+              };
+            });
+
+        if (lines.length) {
+          target.lines = lines;
           target.ocrRecognized = true;
+          target.ocrGeometryReliable = geometryLines.length > 0;
           recognizedPages += 1;
         } else {
           target.ocrRecognized = false;
+          target.ocrGeometryReliable = false;
         }
       } catch (error) {
         throw new Error("Falló el OCR local de la página " + activePage + ": " + (error?.message || "error de reconocimiento."));
@@ -561,6 +611,9 @@ async function readPdf(file, { includePageImages = false, includeAIPageText = fa
           ...(analysis.warnings || []),
           (localOcr.attemptedPages - localOcr.recognizedPages) +
             " página(s) con poco texto no pudieron recuperarse mediante OCR local.",
+          ...(pages.some(page => page.ocrRecognized && !page.ocrGeometryReliable)
+            ? ["En algunas páginas el OCR recuperó texto pero no posiciones fiables; la segmentación espacial de esas páginas puede requerir revisión."]
+            : []),
         ];
       }
     }
@@ -579,16 +632,30 @@ async function readPdf(file, { includePageImages = false, includeAIPageText = fa
 
     return {
       corpus,
-      aiPages: (includePageImages || includeAIPageText || includePageImagesForLowText) ? pages.map((page) => ({
-        pageNumber: page.pageNumber,
-        extractedText: (page.readingLines?.length ? page.readingLines : page.lines || [])
-          .map((line) => typeof line === "string" ? line : line?.text || "")
-          .filter(Boolean)
-          .join("\n")
-          .trim(),
-        imageDataUrl: page.imageDataUrl || "",
-        needsVisualAnalysis: Boolean(page.needsVisualAnalysis),
-      })) : undefined,
+      aiPages: (includePageImages || includeAIPageText || includePageImagesForLowText) ? pages.map((page) => {
+        const orderedLines = page.readingLines?.length ? page.readingLines : page.lines || [];
+        return {
+          pageNumber: page.pageNumber,
+          extractedText: orderedLines
+            .map((line) => typeof line === "string" ? line : line?.text || "")
+            .filter(Boolean)
+            .join("\n")
+            .trim(),
+          lineItems: orderedLines.map((line, index) => ({
+            lineNumber: index + 1,
+            text: typeof line === "string" ? line : String(line?.text || ""),
+            logicalSide: line?.logicalSide || "",
+            bold: Boolean(line?.bold),
+            fontSize: Number(line?.fontSize || 0),
+            xMin: Number(line?.xMin || 0),
+            width: Number(line?.width || 0),
+          })).filter(line => line.text.trim()),
+          layoutKind: page.layoutKind || "single-page",
+          layoutConfidence: Number(page.layoutConfidence || 0),
+          imageDataUrl: page.imageDataUrl || "",
+          needsVisualAnalysis: Boolean(page.needsVisualAnalysis),
+        };
+      }) : undefined,
       bibliography: [],
       sourceName: file.name,
       pages: pageCount,
