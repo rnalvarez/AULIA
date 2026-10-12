@@ -1063,11 +1063,23 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
             );
           }
 
-          const material = materialToCorpus(prepared, workingDraft.corpus || []);
+          const incomingDocumentId = String(prepared?.document?.id || "");
+          const incomingSourceName = String(prepared?.sourceName || file.name || "").trim().toLocaleLowerCase();
+          const retainedCorpus = (workingDraft.corpus || []).filter(chunk => {
+            const sameDocumentId = incomingDocumentId &&
+              String(chunk?.documentId || "") === incomingDocumentId;
+            const sameSourceName = incomingSourceName &&
+              String(chunk?.source || "").trim().toLocaleLowerCase() === incomingSourceName;
+            return !sameDocumentId && !sameSourceName;
+          });
+          // Re-importing the same PDF must replace its old chunks, otherwise an
+          // outdated local segmentation would remain searchable beside the new
+          // semantic segmentation and falsely inflate coverage.
+          const material = materialToCorpus(prepared, retainedCorpus);
           const materialDocument = material.document;
           workingDraft = {
             ...workingDraft,
-            corpus: [...(workingDraft.corpus || []), ...material.corpus],
+            corpus: [...retainedCorpus, ...material.corpus],
             documents: mergeImportedDocuments(workingDraft.documents || [], materialDocument ? [materialDocument] : []),
             bibliography: mergeImportedBibliography(workingDraft.bibliography || [], material.bibliography || []),
             knowledgeBase: null,
