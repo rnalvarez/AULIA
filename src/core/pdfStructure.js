@@ -199,8 +199,13 @@ function detectLandscapeTwoAreaLayout(page) {
   const width = Number(page?.width || 0);
   const height = Number(page?.height || 0);
   const lines = (page?.lines || []).filter(line => cleanPdfLine(line?.text));
-  if (!width || !height || width / height < 1.32 || lines.length < 12) {
+  if (!width || !height || width / height < 1.32) {
     return { kind: "single-page", confidence: 0 };
+  }
+  if (lines.length < 12) {
+    // No usable text geometry means the layout cannot yet be classified. This
+    // is common for scanned books; do not mistake missing OCR for one page.
+    return { kind: "landscape-unverified", confidence: 0 };
   }
 
   // Ignore full-width lines while looking for two independent text blocks.
@@ -1206,6 +1211,7 @@ export async function analyzePdfStructure({ pdf, pages, structTreePages = 0 }) {
   const oneColumnPages = columnCounts.filter((count) => count === 1).length;
   const landscapeTwoAreaPages = pages.filter(page => page.layoutKind === "landscape-two-area").length;
   const ambiguousLandscapePages = pages.filter(page => page.layoutKind === "landscape-ambiguous").length;
+  const landscapeUnverifiedPages = pages.filter(page => page.layoutKind === "landscape-unverified").length;
   const horizontalSinglePages = pages.filter(page => page.width / Math.max(1, page.height) >= 1.32 && page.layoutKind === "single-page").length;
 
   const warnings = [];
@@ -1225,6 +1231,9 @@ export async function analyzePdfStructure({ pdf, pages, structTreePages = 0 }) {
   }
   if (ambiguousLandscapePages > 0) {
     warnings.push(ambiguousLandscapePages + " página(s) apaisada(s) contienen zonas de texto ambiguas. No se dividieron automáticamente; conviene revisar su orden si se trata de páginas enfrentadas.");
+  }
+  if (landscapeUnverifiedPages > 0) {
+    warnings.push(landscapeUnverifiedPages + " página(s) apaisada(s) no tenían suficiente texto para clasificar su disposición. No se asumió que fueran páginas únicas; se requiere lectura visual u OCR para decidir si son pliegos.");
   }
   if (horizontalSinglePages > 0) {
     warnings.push(horizontalSinglePages + " página(s) apaisada(s) no mostraron evidencia suficiente de dos páginas enfrentadas y se conservaron como página única.");
@@ -1265,6 +1274,7 @@ export async function analyzePdfStructure({ pdf, pages, structTreePages = 0 }) {
     layout: {
       landscapeTwoAreaPages,
       ambiguousLandscapePages,
+      landscapeUnverifiedPages,
       horizontalSinglePages,
     },
     headingCandidates: headingCandidates.length,
