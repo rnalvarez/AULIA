@@ -10,6 +10,7 @@ export default defineConfig({
       input: {
         main: resolve(__dirname, "index.html"),
         studio: resolve(__dirname, "studio.html"),
+        ocrBenchmark: resolve(__dirname, "ocr-benchmark.html"),
       },
     },
   },
