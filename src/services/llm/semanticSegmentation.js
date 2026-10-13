@@ -457,13 +457,81 @@ async function postJson({ apiKey, prompt, maxTokens, signal, onProgress, progres
       throw error;
     }
     recordGroqUsage(model, estimatedTokens, data?.usage?.total_tokens || 0);
-    const choice = data?.choices?.[0] || {};
-    const raw = String(choice?.message?.content || "").trim();
+    let choice = data?.choices?.[0] || {};
+    let raw = String(choice?.message?.content || "").trim();
+
     if (!raw || choice?.finish_reason === "length") {
-      const error = new Error("La respuesta de Groq quedó vacía o truncada. La tanda no se marcará como completada.");
-      error.code = "AULIA_SEMANTIC_OUTPUT_TRUNCATED";
-      throw error;
+      // Retry once with a larger but still sub-1k output ceiling and unconstrained
+      // generation. This handles models that spend too much of the first budget
+      // on reasoning or whose constrained decoder returns an empty/truncated body.
+      const retryMaxTokens = Math.min(950, Math.max(850, maxTokens + 150));
+      const retryPrompt = prompt +
+        "\n\nREINTENTO POR RESPUESTA VACÍA O TRUNCADA: producí únicamente el objeto JSON pedido. " +
+        "Usá una salida breve. En límites temáticos, devolvé solo los encabezados evidentes, sin explicaciones extensas. " +
+        "Respetá exactamente la forma del esquema JSON solicitado y cerrá todas las llaves.";
+      const retryEstimate = responseTokens(retryPrompt, retryMaxTokens);
+      onProgress({
+        ...progress,
+        model,
+        phase: "semantic-output-retry",
+        message: "Groq devolvió una respuesta vacía o cortada. AULIA reintenta la misma tanda con un margen de salida mayor; el avance previo se conserva.",
+      });
+      await waitForGroqCapacity({
+        model,
+        estimatedTokens: retryEstimate,
+        onProgress,
+        progress: { ...progress, model, phase: "semantic-output-retry" },
+      });
+      const retryResult = await requestGroqWithRateRetry({
+        apiKey,
+        model,
+        body: JSON.stringify({
+          model,
+          messages: [
+            {
+              role: "system",
+              content: "Devolvé solamente un objeto JSON válido, breve y completo. No incluyas Markdown ni texto externo.",
+            },
+            { role: "user", content: retryPrompt },
+          ],
+          temperature: 0.1,
+          top_p: 0.9,
+          max_completion_tokens: retryMaxTokens,
+          reasoning_effort: "low",
+          stream: false,
+        }),
+        signal,
+        onProgress,
+        progress: { ...progress, model, phase: "semantic-output-retry" },
+      });
+      if (retryResult.response.status === 404) {
+        lastError = new Error("El modelo de segmentación " + model + " no está disponible.");
+        continue;
+      }
+      if (!retryResult.response.ok) {
+        const retryError = new Error("Groq no pudo recuperar la respuesta truncada (" + retryResult.response.status + ")" +
+          (retryResult.message ? ": " + retryResult.message : "."));
+        retryError.status = retryResult.response.status;
+        retryError.retryAfter = retryResult.response.headers.get("retry-after") || "";
+        retryError.retryAfterMs = parseRetryDelay(retryResult.response, retryResult.message);
+        retryError.isDailyLimit = retryResult.response.status === 429 &&
+          /tokens per day|requests per day|daily limit|daily quota|per day \(t[dp]d\)|limit.*per day/i.test(retryResult.message);
+        if (retryResult.response.status === 429) {
+          retryError.message = "Groq alcanzó un límite de uso durante el reintento de segmentación. El avance se guardó. Detalle: " + retryResult.message;
+        }
+        throw retryError;
+      }
+      recordGroqUsage(model, retryEstimate, retryResult.data?.usage?.total_tokens || 0);
+      choice = retryResult.data?.choices?.[0] || {};
+      raw = String(choice?.message?.content || "").trim();
+      data = retryResult.data;
+      if (!raw || choice?.finish_reason === "length") {
+        lastError = new Error("El modelo " + model + " volvió a devolver una respuesta vacía o truncada.");
+        lastError.code = "AULIA_SEMANTIC_OUTPUT_TRUNCATED";
+        continue;
+      }
     }
+
     try {
       return { parsed: parseGeneratedObject(raw), model: data?.model || model };
     } catch {
@@ -732,7 +800,11 @@ export async function analyzeDocumentSemantics({
         },
       });
     } catch (error) {
-      if (error?.code === "AULIA_SEMANTIC_BATCH_TOO_LARGE" && task.lines.length > 1) {
+      if ([
+        "AULIA_SEMANTIC_BATCH_TOO_LARGE",
+        "AULIA_SEMANTIC_OUTPUT_TRUNCATED",
+        "AULIA_SEMANTIC_INVALID_JSON",
+      ].includes(error?.code) && task.lines.length > 1) {
         // A single task is already compact; if its line lengths still exceed the
         // safe budget, split it in memory and invalidate the old task key.
         const middle = Math.ceil(task.lines.length / 2);
