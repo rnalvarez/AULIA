@@ -150,6 +150,57 @@ function pagePrompt(courseTitle, pages, batchNumber) {
   ].join("\n\n");
 }
 
+
+function compactVisionRetryPrompt(courseTitle, pages, batchNumber) {
+  const pageInfo = pages.map(page => [
+    "PÁGINA FÍSICA " + page.pageNumber,
+    "DIMENSIONES: " + Math.round(Number(page.width || 0)) + " × " + Math.round(Number(page.height || 0)),
+    "DISPOSICIÓN: " + String(page.layoutKind || "no determinada"),
+    "TEXTO EXTRAÍDO DISPONIBLE: " + (cleanText(page.extractedText, 1200) || "[sin texto legible extraído]"),
+  ].join("\n")).join("\n\n");
+  return [
+    "Recuperación OCR para un documento académico. En el intento anterior Groq no pudo generar el JSON; esta vez priorizá una salida breve, fiel y correctamente estructurada.",
+    "Cátedra: " + String(courseTitle || "No especificada") + ". Tanda: " + batchNumber + ".",
+    "Leé las imágenes adjuntas y transcribí el texto visible sin resumir, manteniendo títulos, párrafos, listas y fórmulas legibles. No inventes letras o contenido.",
+    "Si una imagen es un pliego con dos páginas enfrentadas, transcribí primero la página izquierda completa precedida por [AULIA_LADO_IZQUIERDO] y después la derecha precedida por [AULIA_LADO_DERECHO]. Si no es seguro que sean dos páginas, no las dividas.",
+    "Usá visualElements solo para tablas, gráficos, diagramas o fórmulas que aporten información que no quede recogida en la transcripción; descripciones breves, sin inventar valores.",
+    "Devolvé exclusivamente un único objeto JSON válido, sin Markdown ni comentarios, con exactamente una entrada por página: " +
+      '{"pages":[{"pageNumber":1,"sectionTitle":"","sectionPath":[],"transcription":"","visualElements":[],"confidence":0.5,"needsReview":true,"reviewNotes":""}]}',
+    "En cada entrada, pageNumber debe coincidir con la página física indicada. sectionTitle y sectionPath solo deben incluir títulos realmente visibles; usá cadenas vacías o listas vacías cuando no haya evidencia. confidence debe estar entre 0 y 1. Si el contenido resulta ilegible, explicalo en reviewNotes y marcá needsReview=true.",
+    pageInfo,
+  ].join("\n\n");
+}
+
+function parseJsonObject(raw) {
+  const text = String(raw || "").trim()
+    .replace(/^\x60{3}(?:json)?\s*/i, "")
+    .replace(/\s*\x60{3}$/, "");
+  try {
+    return JSON.parse(text);
+  } catch {}
+  const start = text.indexOf("{");
+  if (start < 0) throw new Error("No se encontró un objeto JSON en la respuesta.");
+  let depth = 0;
+  let quoted = false;
+  let escaped = false;
+  for (let i = start; i < text.length; i += 1) {
+    const character = text[i];
+    if (quoted) {
+      if (escaped) escaped = false;
+      else if (character === "\\") escaped = true;
+      else if (character === '"') quoted = false;
+      continue;
+    }
+    if (character === '"') quoted = true;
+    else if (character === "{") depth += 1;
+    else if (character === "}") {
+      depth -= 1;
+      if (depth === 0) return JSON.parse(text.slice(start, i + 1));
+    }
+  }
+  throw new Error("El objeto JSON quedó incompleto.");
+}
+
 async function requestBatch({
   apiKey, courseTitle, pages, batchNumber, signal,
   onProgress = () => {}, processed = 0, total = 0,
@@ -185,33 +236,69 @@ async function requestBatch({
       onProgress,
       progress: { processed, total, model, activePageNumbers: pages.map(page => page.pageNumber) },
     });
-    const response = await fetch(ENDPOINT, {
+    const makeRequestBody = (userContent, jsonMode = true) => ({
+      model,
+      messages: [
+        {
+          role: "system",
+          content: "Devolvé únicamente un objeto JSON válido. Leé las páginas adjuntas y basate en evidencia visible; no inventes contenido.",
+        },
+        { role: "user", content: userContent },
+      ],
+      temperature: 0.1,
+      top_p: 0.9,
+      max_completion_tokens: outputTokens,
+      reasoning_effort: "low",
+      ...(jsonMode ? { response_format: { type: "json_object" } } : {}),
+      stream: false,
+    });
+
+    let response = await fetch(ENDPOINT, {
       method: "POST",
       headers: {
         Authorization: "Bearer " + apiKey,
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({
-        model,
-        messages: [
-          {
-            role: "system",
-            content: "Devolvé únicamente JSON válido. Leé visualmente las páginas adjuntas y fundamentá el análisis en lo que aparece en esas páginas. No inventes contenido.",
-          },
-          { role: "user", content },
-        ],
-        temperature: 0.1,
-        top_p: 0.9,
-        max_completion_tokens: outputTokens,
-        reasoning_effort: "low",
-        response_format: { type: "json_object" },
-        stream: false,
-      }),
+      body: JSON.stringify(makeRequestBody(content, true)),
       signal,
     });
+    let data = await response.json().catch(() => ({}));
+    let message = data?.error?.message || data?.message || "";
 
-    const data = await response.json().catch(() => ({}));
-    const message = data?.error?.message || data?.message || "";
+    // Groq's JSON-mode decoder can fail with HTTP 400 on otherwise valid multimodal
+    // requests. Retry that one failure with a shorter OCR-first prompt and plain
+    // generation; the response is still parsed and validated before caching.
+    const failedJsonGeneration = response.status === 400 &&
+      /failed to generate json|adjust your prompt/i.test(message);
+    if (failedJsonGeneration) {
+      const fallbackContent = [{
+        type: "text",
+        text: compactVisionRetryPrompt(courseTitle, pages, batchNumber),
+      }];
+      for (const page of pages) {
+        fallbackContent.push({
+          type: "text",
+          text: "La siguiente imagen corresponde exactamente a la página física " + page.pageNumber + ".",
+        });
+        fallbackContent.push({
+          type: "image_url",
+          image_url: { url: page.imageDataUrl },
+        });
+      }
+      const retryResponse = await fetch(ENDPOINT, {
+        method: "POST",
+        headers: {
+          Authorization: "Bearer " + apiKey,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(makeRequestBody(fallbackContent, false)),
+        signal,
+      });
+      const retryData = await retryResponse.json().catch(() => ({}));
+      response = retryResponse;
+      data = retryData;
+      message = retryData?.error?.message || retryData?.message || "";
+    }
     if (response.status === 404) {
       lastError = new Error("El modelo multimodal " + model + " no está disponible para esta cuenta.");
       continue;
@@ -252,7 +339,7 @@ async function requestBatch({
 
     let parsed;
     try {
-      parsed = JSON.parse(raw.replace(/^\x60{3}(?:json)?\s*/i, "").replace(/\s*\x60{3}$/, ""));
+      parsed = parseJsonObject(raw);
     } catch {
       throw new Error("La IA no devolvió JSON válido para las páginas " + pages.map(page => page.pageNumber).join(", ") + ". El lote no se marcó como completado.");
     }
