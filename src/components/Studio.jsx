@@ -2058,7 +2058,7 @@ async function importExternalKnowledge(e) {
             </div>}
           </>}
           {ingestionProvider === "local" && <div className="studio-wf-security-note">
-            El modo local usa extracción/OCR y reglas estructurales; no realiza una interpretación semántica con IA. Para reconstruir capítulos de bibliografías complejas, elegí Interpretación temática · Groq.
+            El OCR local avanzado procesa en el navegador, recupera coordenadas reales de las palabras y prueba una segunda imagen cuando la lectura es deficiente. No consume cuota de Groq. La interpretación temática de capítulos sigue siendo una etapa distinta y requiere Groq.
           </div>}
 
           {uploadProgress && <div className={"studio-wf-ai-report " + (uploadProgress.phase === "complete" ? "ok" : uploadProgress.phase === "paused" || uploadProgress.phase === "quota-wait" || uploadProgress.phase === "error" ? "error" : "")}>
@@ -2071,21 +2071,23 @@ async function importExternalKnowledge(e) {
             {uploadProgress.message && <small>{uploadProgress.message}</small>}
             {uploadProgress.model && <small>Modelo: {uploadProgress.model}</small>}
             {uploadProgress.error && <small>{uploadProgress.error}</small>}
-            {(uploadProgress.phase === "paused" || uploadProgress.phase === "quota-wait") && uploadProgress.pendingId && <button className="primary" type="button" onClick={() => resumePendingPdf({ id: uploadProgress.pendingId, fileName: uploadProgress.fileName })} disabled={!canEdit || busy || Boolean(uploadProgress.blockedUntil && Date.parse(uploadProgress.blockedUntil) > rateLimitClock)}>{uploadProgress.blockedUntil && Date.parse(uploadProgress.blockedUntil) > rateLimitClock ? "Esperar restablecimiento" : "Reanudar análisis pendiente"}</button>}
+            {(uploadProgress.phase === "paused" || uploadProgress.phase === "quota-wait") && uploadProgress.pendingId && <button className="primary" type="button" onClick={() => resumePendingPdf({ id: uploadProgress.pendingId, fileName: uploadProgress.fileName })} disabled={!canEdit || busy || (ingestionProvider !== "local" && Boolean(uploadProgress.blockedUntil && Date.parse(uploadProgress.blockedUntil) > rateLimitClock))}>{ingestionProvider === "local" ? "Reanudar con OCR local avanzado" : uploadProgress.blockedUntil && Date.parse(uploadProgress.blockedUntil) > rateLimitClock ? "Esperar restablecimiento" : "Reanudar análisis pendiente"}</button>}
           </div>}
 
           {pendingPdfs.length > 0 && <div className="studio-wf-stack">
             <strong>PDF guardados para reanudar</strong>
             {pendingPdfs.map(pending => <div className="studio-wf-ai-ready" key={pending.id}>
               <span>{pending.fileName}</span>
-              {pending.blockedUntil && Date.parse(pending.blockedUntil) > rateLimitClock
-                ? <small>{pending.isDailyLimit ? "Cuota diaria agotada." : "Límite temporal de Groq."} Reanudación habilitada después de {new Date(pending.blockedUntil).toLocaleString("es-AR", { dateStyle: "short", timeStyle: "short" })}.</small>
-                : <small>{pending.prepared
-                    ? "La extracción local y el texto están guardados; al reanudar continuará la lectura visual o la interpretación temática pendiente sin repetir las tandas ya completadas."
-                    : "PDF guardado para reanudar la extracción y la lectura visual sin volver a seleccionarlo."}</small>}
+              {pending.blockedUntil && Date.parse(pending.blockedUntil) > rateLimitClock && ingestionProvider !== "local"
+                ? <small>{pending.isDailyLimit ? "Cuota diaria agotada." : "Límite temporal de Groq."} Reanudación con Groq habilitada después de {new Date(pending.blockedUntil).toLocaleString("es-AR", { dateStyle: "short", timeStyle: "short" })}. Elegí OCR local avanzado arriba si querés procesar el PDF sin Groq.</small>
+                : <small>{ingestionProvider === "local"
+                    ? "Se ejecutará el OCR local avanzado sobre el PDF guardado, sin llamar a Groq ni esperar la cuota."
+                    : pending.prepared
+                      ? "La extracción local y el texto están guardados; al reanudar continuará la lectura visual o la interpretación temática pendiente sin repetir las tandas ya completadas."
+                      : "PDF guardado para reanudar la extracción y la lectura visual sin volver a seleccionarlo."}</small>}
               {pending.lastError && <small>{pending.lastError}</small>}
               <div className="studio-wf-panel-actions">
-                <button className="primary" type="button" onClick={() => resumePendingPdf(pending)} disabled={!canEdit || busy || Boolean(pending.blockedUntil && Date.parse(pending.blockedUntil) > rateLimitClock)}>{pending.blockedUntil && Date.parse(pending.blockedUntil) > rateLimitClock ? "Esperar restablecimiento" : pending.prepared ? "Reanudar análisis" : "Preparar y reanudar"}</button>
+                <button className="primary" type="button" onClick={() => resumePendingPdf(pending)} disabled={!canEdit || busy || (ingestionProvider !== "local" && Boolean(pending.blockedUntil && Date.parse(pending.blockedUntil) > rateLimitClock))}>{ingestionProvider === "local" ? "Procesar con OCR local avanzado" : pending.blockedUntil && Date.parse(pending.blockedUntil) > rateLimitClock ? "Esperar restablecimiento" : pending.prepared ? "Reanudar análisis" : "Preparar y reanudar"}</button>
                 <button className="ghost" type="button" onClick={() => discardPendingPdf(pending)} disabled={busy}>Descartar</button>
               </div>
             </div>)}
