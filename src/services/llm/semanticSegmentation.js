@@ -11,8 +11,8 @@ const MODELS = ["qwen/qwen3.8-27b", "openai/gpt-oss-20b"];
 const CACHE_PREFIX = "aulia:semantic-segmentation:v1:";
 const MAX_TASK_CHARS = 6200;
 const MAX_TASK_LINES = 80;
-const OUTLINE_MAX_TOKENS = 1050;
-const BOUNDARY_MAX_TOKENS = 1050;
+const OUTLINE_MAX_TOKENS = 800; // Mantener margen bajo el límite gratuito de salida de algunos modelos Groq (1.000 OTPM).
+const BOUNDARY_MAX_TOKENS = 800; // Reserva por solicitud por debajo del límite gratuito de salida de 1.000 tokens/minuto.
 
 function hashString(value) {
   let hash = 2166136261;
@@ -323,9 +323,15 @@ async function postJson({ apiKey, prompt, maxTokens, signal, onProgress, progres
       error.retryAfter = response.headers.get("retry-after") || "";
       error.retryAfterMs = parseRetryDelay(response, message);
       error.isDailyLimit = response.status === 429 && /tokens per day|requests per day|daily limit|daily quota|per day \(t[dp]d\)|limit.*per day/i.test(message);
+      const outputTokenWindow = response.status === 429 && /output tokens per minute|\\bOTPM\\b/i.test(message);
       if (response.status === 401) error.message = "La API key de Groq no es válida. Revisá la clave docente en Studio.";
       if (response.status === 413) error.message = "Groq rechazó una tanda por su tamaño. La segmentación se puede reanudar sin rehacer las tandas anteriores.";
-      if (response.status === 429) error.message = "Groq alcanzó un límite de uso durante la segmentación. El avance se guardó; reanudá cuando la cuota vuelva a estar disponible. Detalle: " + message;
+      if (outputTokenWindow) {
+        error.code = "AULIA_GROQ_OUTPUT_TPM";
+        error.message = "La solicitud superó el límite de tokens de salida por minuto del modelo Groq. AULIA ahora solicitará respuestas más cortas; reanudá el análisis para continuar con las tandas pendientes. Detalle: " + message;
+      } else if (response.status === 429) {
+        error.message = "Groq alcanzó un límite de uso durante la segmentación. El avance se guardó; reanudá cuando la cuota vuelva a estar disponible. Detalle: " + message;
+      }
       throw error;
     }
     recordGroqUsage(model, estimatedTokens, data?.usage?.total_tokens || 0);
