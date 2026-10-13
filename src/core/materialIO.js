@@ -805,15 +805,32 @@ async function readPdf(file, { includePageImages = false, includeAIPageText = fa
     if (localOcr.attemptedPages > 0) {
       analysis.localOcrPages = localOcr.attemptedPages;
       analysis.localOcrRecognizedPages = localOcr.recognizedPages;
+      analysis.localOcrImprovedPages = Number(localOcr.improvedPages || localOcr.recognizedPages || 0);
+      analysis.localOcrLowConfidencePages = Array.isArray(localOcr.lowConfidencePages) ? localOcr.lowConfidencePages : [];
+      analysis.localOcrSpreadPages = Array.isArray(localOcr.spreadPages) ? localOcr.spreadPages : [];
       const ocrWarnings = [];
       if (localOcr.recognizedPages < localOcr.attemptedPages) {
         ocrWarnings.push(
           (localOcr.attemptedPages - localOcr.recognizedPages) +
-          " página(s) con poco texto no pudieron recuperarse mediante OCR local."
+          " página(s) requirieron OCR, pero el resultado no superó de forma suficiente la calidad del texto anterior. Revisá esas páginas antes de generar el índice conceptual."
+        );
+      }
+      if (analysis.localOcrLowConfidencePages.length) {
+        ocrWarnings.push(
+          "OCR local con confianza limitada en las páginas físicas " +
+          analysis.localOcrLowConfidencePages.join(", ") +
+          ". El texto se conservó, pero conviene verificarlo contra el PDF."
+        );
+      }
+      if (analysis.localOcrSpreadPages.length) {
+        ocrWarnings.push(
+          "Se detectaron y leyeron por separado posibles páginas enfrentadas en: " +
+          analysis.localOcrSpreadPages.join(", ") +
+          ". Verificá el orden de lectura en esas páginas."
         );
       }
       if (pages.some(page => page.ocrRecognized && !page.ocrGeometryReliable)) {
-        ocrWarnings.push("En algunas páginas el OCR recuperó texto pero no posiciones fiables; la segmentación espacial de esas páginas puede requerir revisión.");
+        ocrWarnings.push("En algunas páginas el OCR recuperó texto, pero Tesseract no devolvió coordenadas reales; se mantuvo el texto y se marcó la geometría como aproximada.");
       }
       if (ocrWarnings.length) analysis.warnings = [...(analysis.warnings || []), ...ocrWarnings];
     }
