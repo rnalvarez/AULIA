@@ -434,7 +434,8 @@ async function postJson({ apiKey, prompt, maxTokens, signal, onProgress, progres
       }
     }
 
-    const { response, data, message } = result;
+    const { response, message } = result;
+    let data = result.data;
     if (response.status === 404) {
       lastError = new Error("El modelo de segmentación " + model + " no está disponible.");
       continue;
