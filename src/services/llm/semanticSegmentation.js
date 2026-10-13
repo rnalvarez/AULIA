@@ -300,70 +300,141 @@ function waitForRetry(ms, signal) {
   });
 }
 
+
+function parseGeneratedObject(raw) {
+  const text = String(raw || "").trim()
+    .replace(/^\x60{3}(?:json)?\s*/i, "")
+    .replace(/\s*\x60{3}$/, "");
+  try {
+    return JSON.parse(text);
+  } catch {}
+  const start = text.indexOf("{");
+  if (start < 0) throw new Error("No se encontró un objeto JSON en la respuesta.");
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let index = start; index < text.length; index += 1) {
+    const character = text[index];
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (character === "\\") escaped = true;
+      else if (character === '"') inString = false;
+      continue;
+    }
+    if (character === '"') inString = true;
+    else if (character === "{") depth += 1;
+    else if (character === "}") {
+      depth -= 1;
+      if (depth === 0) return JSON.parse(text.slice(start, index + 1));
+    }
+  }
+  throw new Error("El objeto JSON quedó incompleto.");
+}
+
+async function requestGroqWithRateRetry({ apiKey, model, body, signal, onProgress, progress }) {
+  const maxAutomaticRateRetries = 8;
+  let rateRetryCount = 0;
+  while (true) {
+    const response = await fetch(ENDPOINT, {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer " + apiKey,
+        "Content-Type": "application/json",
+      },
+      body,
+      signal,
+    });
+    const data = await response.json().catch(() => ({}));
+    const message = data?.error?.message || data?.message || "";
+    const outputTokenWindow = response.status === 429 &&
+      /output tokens per minute|\bOTPM\b/i.test(message);
+    if (!outputTokenWindow || rateRetryCount >= maxAutomaticRateRetries) {
+      return { response, data, message };
+    }
+    const providerWaitMs = parseRetryDelay(response, message);
+    const waitMs = Math.min(120000, Math.max(1500, providerWaitMs > 0 ? providerWaitMs + 1200 : 10000));
+    onProgress({
+      ...progress,
+      model,
+      phase: "rate-wait",
+      message: "Groq está liberando tokens de salida. AULIA reintentará esta misma tanda automáticamente en " +
+        Math.max(1, Math.ceil(waitMs / 1000)) + " s; el avance previo se conserva.",
+    });
+    await waitForRetry(waitMs, signal);
+    rateRetryCount += 1;
+  }
+}
+
 async function postJson({ apiKey, prompt, maxTokens, signal, onProgress, progress }) {
   const orderedModels = MODELS.slice();
   let lastError = null;
+
   for (const model of orderedModels) {
     const estimatedTokens = responseTokens(prompt, maxTokens);
     await waitForGroqCapacity({ model, estimatedTokens, onProgress, progress: { ...progress, model } });
-    const requestBody = JSON.stringify({
+
+    const makeBody = (userPrompt, tokenLimit, jsonMode) => JSON.stringify({
       model,
       messages: [
         {
           role: "system",
           content: "Analizá exclusivamente la evidencia suministrada. Devolvé un objeto JSON válido y no agregues texto fuera del JSON.",
         },
-        { role: "user", content: prompt },
+        { role: "user", content: userPrompt },
       ],
       temperature: 0.1,
       top_p: 0.9,
-      max_completion_tokens: maxTokens,
+      max_completion_tokens: tokenLimit,
       reasoning_effort: "low",
-      response_format: { type: "json_object" },
+      ...(jsonMode ? { response_format: { type: "json_object" } } : {}),
       stream: false,
     });
 
-    let response;
-    let data;
-    let message = "";
-    let rateRetryCount = 0;
-    const maxAutomaticRateRetries = 8;
-    while (true) {
-      try {
-        response = await fetch(ENDPOINT, {
-          method: "POST",
-          headers: {
-            Authorization: "Bearer " + apiKey,
-            "Content-Type": "application/json",
-          },
-          body: requestBody,
-          signal,
-        });
-      } catch (error) {
-        throw error;
-      }
-      data = await response.json().catch(() => ({}));
-      message = data?.error?.message || data?.message || "";
+    let result = await requestGroqWithRateRetry({
+      apiKey, model, body: makeBody(prompt, maxTokens, true), signal, onProgress, progress,
+    });
 
-      const outputTokenWindow = response.status === 429 &&
-        /output tokens per minute|\bOTPM\b/i.test(message);
-      if (!outputTokenWindow || rateRetryCount >= maxAutomaticRateRetries) break;
-
-      const providerWaitMs = parseRetryDelay(response, message);
-      // Groq reports the time until enough of the rolling output-token window expires.
-      // Add a small safety margin to avoid pausing the whole document for a transient 429.
-      const waitMs = Math.min(120000, Math.max(1500, providerWaitMs > 0 ? providerWaitMs + 1200 : 10000));
+    // Some Groq model generations fail their JSON-mode validation with HTTP 400.
+    // Retry the same evidence without constrained JSON decoding; parse and validate
+    // the returned object locally before accepting the batch.
+    const failedJsonValidation = result.response.status === 400 &&
+      /failed to (?:generate|validate) json|adjust your prompt|failed_generation/i.test(result.message);
+    if (failedJsonValidation) {
+      const retryMaxTokens = Math.min(maxTokens, 750);
+      const retryPrompt = prompt +
+        "\n\nREINTENTO DE FORMATO: devolvé un único objeto JSON válido sin Markdown ni texto externo. " +
+        "Respetá exactamente las claves y la forma del esquema de salida indicado arriba. " +
+        "No agregues claves; si no hay evidencia suficiente, usá arrays vacíos y notes breves. " +
+        "Priorizá la validez del JSON y respuestas concisas.";
+      const retryEstimate = responseTokens(retryPrompt, retryMaxTokens);
       onProgress({
         ...progress,
         model,
-        phase: "rate-wait",
-        message: "Groq está liberando tokens de salida. AULIA reintentará esta misma tanda automáticamente en " +
-          Math.max(1, Math.ceil(waitMs / 1000)) + " s; el avance previo se conserva.",
+        phase: "semantic-json-retry",
+        message: "Groq rechazó el formato JSON estructurado. AULIA reintentará esta misma tanda con salida JSON validada localmente; el avance previo se conserva.",
       });
-      await waitForRetry(waitMs, signal);
-      rateRetryCount += 1;
+      await waitForGroqCapacity({
+        model,
+        estimatedTokens: retryEstimate,
+        onProgress,
+        progress: { ...progress, model, phase: "semantic-json-retry" },
+      });
+      result = await requestGroqWithRateRetry({
+        apiKey,
+        model,
+        body: makeBody(retryPrompt, retryMaxTokens, false),
+        signal,
+        onProgress,
+        progress: { ...progress, phase: "semantic-json-retry" },
+      });
+      if (result.response.status === 400 &&
+          /failed to (?:generate|validate) json|adjust your prompt|failed_generation/i.test(result.message)) {
+        lastError = new Error("Groq no pudo generar una respuesta válida ni en modo JSON libre para el modelo " + model + ".");
+        continue;
+      }
     }
 
+    const { response, data, message } = result;
     if (response.status === 404) {
       lastError = new Error("El modelo de segmentación " + model + " no está disponible.");
       continue;
@@ -394,7 +465,7 @@ async function postJson({ apiKey, prompt, maxTokens, signal, onProgress, progres
       throw error;
     }
     try {
-      return { parsed: JSON.parse(raw), model: data?.model || model };
+      return { parsed: parseGeneratedObject(raw), model: data?.model || model };
     } catch {
       const error = new Error("Groq devolvió JSON inválido durante la segmentación. El avance anterior se conservó.");
       error.code = "AULIA_SEMANTIC_INVALID_JSON";
