@@ -275,44 +275,95 @@ function responseTokens(prompt, reserve) {
   return estimated;
 }
 
+function waitForRetry(ms, signal) {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      const error = new Error("El análisis fue cancelado.");
+      error.name = "AbortError";
+      reject(error);
+      return;
+    }
+    let timer;
+    const cleanup = () => signal?.removeEventListener("abort", onAbort);
+    const onAbort = () => {
+      clearTimeout(timer);
+      cleanup();
+      const error = new Error("El análisis fue cancelado.");
+      error.name = "AbortError";
+      reject(error);
+    };
+    timer = setTimeout(() => {
+      cleanup();
+      resolve();
+    }, Math.max(250, ms));
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
 async function postJson({ apiKey, prompt, maxTokens, signal, onProgress, progress }) {
   const orderedModels = MODELS.slice();
   let lastError = null;
   for (const model of orderedModels) {
     const estimatedTokens = responseTokens(prompt, maxTokens);
     await waitForGroqCapacity({ model, estimatedTokens, onProgress, progress: { ...progress, model } });
-    let response;
-    try {
-      response = await fetch(ENDPOINT, {
-        method: "POST",
-        headers: {
-          Authorization: "Bearer " + apiKey,
-          "Content-Type": "application/json",
+    const requestBody = JSON.stringify({
+      model,
+      messages: [
+        {
+          role: "system",
+          content: "Analizá exclusivamente la evidencia suministrada. Devolvé un objeto JSON válido y no agregues texto fuera del JSON.",
         },
-        body: JSON.stringify({
-          model,
-          messages: [
-            {
-              role: "system",
-              content: "Analizá exclusivamente la evidencia suministrada. Devolvé un objeto JSON válido y no agregues texto fuera del JSON.",
-            },
-            { role: "user", content: prompt },
-          ],
-          temperature: 0.1,
-          top_p: 0.9,
-          max_completion_tokens: maxTokens,
-          reasoning_effort: "low",
-          response_format: { type: "json_object" },
-          stream: false,
-        }),
-        signal,
+        { role: "user", content: prompt },
+      ],
+      temperature: 0.1,
+      top_p: 0.9,
+      max_completion_tokens: maxTokens,
+      reasoning_effort: "low",
+      response_format: { type: "json_object" },
+      stream: false,
+    });
+
+    let response;
+    let data;
+    let message = "";
+    let rateRetryCount = 0;
+    const maxAutomaticRateRetries = 8;
+    while (true) {
+      try {
+        response = await fetch(ENDPOINT, {
+          method: "POST",
+          headers: {
+            Authorization: "Bearer " + apiKey,
+            "Content-Type": "application/json",
+          },
+          body: requestBody,
+          signal,
+        });
+      } catch (error) {
+        throw error;
+      }
+      data = await response.json().catch(() => ({}));
+      message = data?.error?.message || data?.message || "";
+
+      const outputTokenWindow = response.status === 429 &&
+        /output tokens per minute|\bOTPM\b/i.test(message);
+      if (!outputTokenWindow || rateRetryCount >= maxAutomaticRateRetries) break;
+
+      const providerWaitMs = parseRetryDelay(response, message);
+      // Groq reports the time until enough of the rolling output-token window expires.
+      // Add a small safety margin to avoid pausing the whole document for a transient 429.
+      const waitMs = Math.min(120000, Math.max(1500, providerWaitMs > 0 ? providerWaitMs + 1200 : 10000));
+      onProgress({
+        ...progress,
+        model,
+        phase: "rate-wait",
+        message: "Groq está liberando tokens de salida. AULIA reintentará esta misma tanda automáticamente en " +
+          Math.max(1, Math.ceil(waitMs / 1000)) + " s; el avance previo se conserva.",
       });
-    } catch (error) {
-      throw error;
+      await waitForRetry(waitMs, signal);
+      rateRetryCount += 1;
     }
 
-    const data = await response.json().catch(() => ({}));
-    const message = data?.error?.message || data?.message || "";
     if (response.status === 404) {
       lastError = new Error("El modelo de segmentación " + model + " no está disponible.");
       continue;
@@ -323,12 +374,12 @@ async function postJson({ apiKey, prompt, maxTokens, signal, onProgress, progres
       error.retryAfter = response.headers.get("retry-after") || "";
       error.retryAfterMs = parseRetryDelay(response, message);
       error.isDailyLimit = response.status === 429 && /tokens per day|requests per day|daily limit|daily quota|per day \(t[dp]d\)|limit.*per day/i.test(message);
-      const outputTokenWindow = response.status === 429 && /output tokens per minute|\\bOTPM\\b/i.test(message);
+      const outputTokenWindow = response.status === 429 && /output tokens per minute|\bOTPM\b/i.test(message);
       if (response.status === 401) error.message = "La API key de Groq no es válida. Revisá la clave docente en Studio.";
       if (response.status === 413) error.message = "Groq rechazó una tanda por su tamaño. La segmentación se puede reanudar sin rehacer las tandas anteriores.";
       if (outputTokenWindow) {
         error.code = "AULIA_GROQ_OUTPUT_TPM";
-        error.message = "La solicitud superó el límite de tokens de salida por minuto del modelo Groq. AULIA ahora solicitará respuestas más cortas; reanudá el análisis para continuar con las tandas pendientes. Detalle: " + message;
+        error.message = "Groq mantuvo el límite de tokens de salida por minuto después de varios reintentos automáticos. El avance está guardado; AULIA volverá a intentarlo cuando el servicio libere capacidad. Detalle: " + message;
       } else if (response.status === 429) {
         error.message = "Groq alcanzó un límite de uso durante la segmentación. El avance se guardó; reanudá cuando la cuota vuelva a estar disponible. Detalle: " + message;
       }
