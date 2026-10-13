@@ -544,6 +544,26 @@ async function postJson({ apiKey, prompt, maxTokens, signal, onProgress, progres
   throw lastError || new Error("Ningún modelo configurado pudo interpretar la segmentación.");
 }
 
+
+function splitTaskInHalf(task) {
+  const middle = Math.ceil(task.lines.length / 2);
+  return [task.lines.slice(0, middle), task.lines.slice(middle)]
+    .filter(group => group.length)
+    .map(group => {
+      const first = group[0];
+      const last = group[group.length - 1];
+      return {
+        ...task,
+        key: first.pageNumber + ":" + first.lineNumber + "-" + last.pageNumber + ":" + last.lineNumber,
+        pageNumber: first.pageNumber,
+        pageNumbers: Array.from(new Set(group.map(line => line.pageNumber))),
+        startLine: first.lineNumber,
+        endLine: last.lineNumber,
+        lines: group,
+      };
+    });
+}
+
 function normalizeBoundaries(raw, task) {
   const lineMap = new Map(task.lines.map(line => [line.pageNumber + ":" + line.lineNumber, line]));
   const result = [];
@@ -769,6 +789,16 @@ export async function analyzeDocumentSemantics({
   let currentBoundaries = [];
   for (let index = 0; index < tasks.length; index += 1) {
     const task = tasks[index];
+    // Rehydrate persisted recursive splits before looking for completed results.
+    // This ensures completed child batches stay complete across refresh/resume.
+    if (cache.taskSplits?.[task.key] && task.lines.length > 1) {
+      const plannedChildren = splitTaskInHalf(task);
+      if (plannedChildren.length > 1) {
+        tasks.splice(index, 1, ...plannedChildren);
+        index -= 1;
+        continue;
+      }
+    }
     const saved = cache.completedTasks?.[task.key];
     if (saved) {
       currentBoundaries.push(...(saved.boundaries || []));
@@ -806,25 +836,21 @@ export async function analyzeDocumentSemantics({
         "AULIA_SEMANTIC_OUTPUT_TRUNCATED",
         "AULIA_SEMANTIC_INVALID_JSON",
       ].includes(error?.code) && task.lines.length > 1) {
-        // A single task is already compact; if its line lengths still exceed the
-        // safe budget, split it in memory and invalidate the old task key.
-        const middle = Math.ceil(task.lines.length / 2);
-        const smaller = [task.lines.slice(0, middle), task.lines.slice(middle)].filter(group => group.length).map(group => {
-          const first = group[0];
-          const last = group[group.length - 1];
-          return {
-            ...task,
-            key: first.pageNumber + ":" + first.lineNumber + "-" + last.pageNumber + ":" + last.lineNumber,
-            pageNumber: first.pageNumber,
-            pageNumbers: Array.from(new Set(group.map(line => line.pageNumber))),
-            startLine: first.lineNumber,
-            endLine: last.lineNumber,
-            lines: group,
+        // Persist the split plan before trying child batches. If the browser is
+        // closed or a child later fails, resume reconstructs exactly these children.
+        const smaller = splitTaskInHalf(task);
+        if (smaller.length > 1) {
+          cache.taskSplits = {
+            ...(cache.taskSplits || {}),
+            [task.key]: smaller.map(child => child.key),
           };
-        });
-        tasks.splice(index, 1, ...smaller);
-        index -= 1;
-        continue;
+          cache.model = model;
+          cache.lastError = clean(error?.message, 500);
+          await writeCache(cacheKey, signature, cache);
+          tasks.splice(index, 1, ...smaller);
+          index -= 1;
+          continue;
+        }
       }
       cache.lastError = clean(error?.message, 500);
       cache.model = model;
