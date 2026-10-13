@@ -88,9 +88,9 @@ function normalizeForWords(value) {
   return String(value || "")
     .toLocaleLowerCase("es")
     .normalize("NFC")
-    .replace(/[^\\p{L}\\p{N}]+/gu, " ")
+    .replace(/[^\p{L}\p{N}]+/gu, " ")
     .trim()
-    .split(/\\s+/u)
+    .split(/\s+/u)
     .filter(Boolean);
 }
 
@@ -98,7 +98,7 @@ function normalizeForChars(value) {
   return String(value || "")
     .toLocaleLowerCase("es")
     .normalize("NFC")
-    .replace(/\\s+/gu, " ")
+    .replace(/\s+/gu, " ")
     .trim();
 }
 
@@ -125,8 +125,8 @@ function editDistance(a, b) {
 function errorMetrics(reference, candidate) {
   const refWords = normalizeForWords(reference);
   const gotWords = normalizeForWords(candidate);
-  const refChars = normalizeForChars(reference).replace(/\\s+/gu, "");
-  const gotChars = normalizeForChars(candidate).replace(/\\s+/gu, "");
+  const refChars = normalizeForChars(reference).replace(/\s+/gu, "");
+  const gotChars = normalizeForChars(candidate).replace(/\s+/gu, "");
   return {
     wer: editDistance(refWords, gotWords) / Math.max(1, refWords.length),
     cer: editDistance(refChars, gotChars) / Math.max(1, refChars.length),
@@ -139,7 +139,7 @@ function errorMetrics(reference, candidate) {
 function parseReferences(rawText, pageNumbers) {
   const raw = String(rawText || "").trim();
   if (!raw) return {};
-  const markers = Array.from(raw.matchAll(/^===\\s*(\\d+)\\s*===$/gm));
+  const markers = Array.from(raw.matchAll(/^===\s*(\d+)\s*===$/gm));
   if (!markers.length) return pageNumbers.length === 1 ? { [pageNumbers[0]]: raw } : {};
   const references = {};
   for (let i = 0; i < markers.length; i += 1) {
@@ -155,7 +155,7 @@ function textStats(value) {
   return {
     characters: text.length,
     words: normalizeForWords(text).length,
-    lines: text.split(/\\r?\\n/u).filter((line) => line.trim()).length,
+    lines: text.split(/\r?\n/u).filter((line) => line.trim()).length,
   };
 }
 
@@ -248,7 +248,7 @@ async function renderPdfPage(pdf, pageNumber, maxSide) {
     .map((item) => typeof item.str === "string" ? item.str : "")
     .filter(Boolean)
     .join(" ")
-    .replace(/\\s+/gu, " ")
+    .replace(/\s+/gu, " ")
     .trim();
   page.cleanup?.();
   return { canvas, embeddedText, width: viewport.width, height: viewport.height, scale };
@@ -336,7 +336,7 @@ async function runPaddle(ocr, canvas, pageNumber, method) {
       pageNumber,
       method,
       status: "ok",
-      text: lines.map((item) => item.text).join("\\n").trim(),
+      text: lines.map((item) => item.text).join("\n").trim(),
       confidence,
       elapsedMs: Number(result?.metrics?.totalMs) || performance.now() - started,
       engineMetrics: result?.metrics || null,
@@ -605,7 +605,7 @@ downloadButton.addEventListener("click", () => {
   const url = URL.createObjectURL(blob);
   const anchor = document.createElement("a");
   anchor.href = url;
-  anchor.download = (selectedFile?.name || "aulia-documento").replace(/\\.pdf$/i, "") + "-ocr-comparison.json";
+  anchor.download = (selectedFile?.name || "aulia-documento").replace(/\.pdf$/i, "") + "-ocr-comparison.json";
   document.body.append(anchor);
   anchor.click();
   anchor.remove();
