@@ -436,8 +436,11 @@ async function runLocalPdfOcr(pdf, pages, onProgress = () => {}) {
 
         // The extracted PDF text may have a stale/garbled OCR layer. Replace it
         // only with non-empty OCR; keep a record when the local read is uncertain.
+        const sourceWasPoor = isLocalTextPoor(originalText);
         const ocrCanReplace = bestText.length > 0 &&
-          (bestQuality.score >= originalQuality.score + 2 || originalQuality.score < 48);
+          (sourceWasPoor
+            ? bestQuality.score >= Math.max(25, originalQuality.score - 4)
+            : bestQuality.score >= originalQuality.score + 3);
         if (ocrCanReplace && finalLines.length) {
           target.lines = finalLines;
           target.ocrRecognized = true;
@@ -563,17 +566,22 @@ async function recognizeLocalCanvas(worker, canvas, pageWidth, pageHeight, viewp
   const confidence = Number(result?.data?.confidence || 0);
   if (!records.length) {
     const fallback = String(result?.data?.text || "").replace(/\r/g, "").split("\n").map(text => text.trim()).filter(Boolean);
-    return {
-      records: fallback.map((text, index) => ({
-        text,
-        left: 0,
-        top: Math.round(index * canvas.height / Math.max(1, fallback.length)),
-        width: canvas.width,
-        height: Math.max(1, Math.round(canvas.height / Math.max(1, fallback.length))),
-        confidence,
-      })),
+    const fallbackRecords = fallback.map((text, index) => ({
+      text,
+      left: 0,
+      top: Math.round(index * canvas.height / Math.max(1, fallback.length)),
+      width: canvas.width,
+      height: Math.max(1, Math.round(canvas.height / Math.max(1, fallback.length))),
       confidence,
+    }));
+    const fallbackText = fallbackRecords.map(line => line.text).join("\n");
+    return {
+      records: fallbackRecords,
+      text: fallbackText,
+      confidence,
+      quality: measureLocalTextQuality(fallbackText, confidence),
       usedGeometry: false,
+      detectedSpread: false,
     };
   }
 
