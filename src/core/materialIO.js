@@ -324,6 +324,331 @@ function buildTextSections(text, sourceName, markdown = false) {
 }
 
 async function runLocalPdfOcr(pdf, pages, onProgress = () => {}) {
+  const targets = (pages || []).filter(page => {
+    const text = (page.lines || []).map(line => line?.text || "").join("\n").trim();
+    return isLocalTextPoor(text);
+  });
+  if (!targets.length) return {
+    attemptedPages: 0,
+    recognizedPages: 0,
+    improvedPages: 0,
+    lowConfidencePages: [],
+    spreadPages: [],
+  };
+
+  let createWorker;
+  try {
+    ({ createWorker } = await import("tesseract.js"));
+  } catch {
+    throw new Error("No se pudo cargar el motor de OCR local. Recargá AULIA con conexión a Internet e intentá nuevamente.");
+  }
+
+  let worker = null;
+  let recognizedPages = 0;
+  let improvedPages = 0;
+  const lowConfidencePages = [];
+  const spreadPages = [];
+  let activePage = targets[0]?.pageNumber || 1;
+  try {
+    onProgress({
+      phase: "ocr",
+      processed: 0,
+      total: targets.length,
+      pageNumber: activePage,
+      message: "OCR local avanzado: recuperando coordenadas reales, leyendo en alta resolución y evaluando la calidad de cada página.",
+    });
+    worker = await createWorker(["spa", "eng"], 1);
+    await worker.setParameters({
+      tessedit_pageseg_mode: "3",
+      preserve_interword_spaces: "1",
+      user_defined_dpi: "300",
+    });
+
+    for (let index = 0; index < targets.length; index += 1) {
+      const target = targets[index];
+      activePage = target.pageNumber;
+      const page = await pdf.getPage(activePage);
+      let canvas = null;
+      let enhancedCanvas = null;
+      try {
+        const nativeViewport = page.getViewport({ scale: 1, rotation: 0 });
+        // Render near 250–300 dpi when the physical page size permits. Pages are
+        // handled sequentially to avoid holding a whole book's images in memory.
+        const scale = Math.min(4.1, 4200 / Math.max(nativeViewport.width, nativeViewport.height));
+        const viewport = page.getViewport({ scale });
+        canvas = document.createElement("canvas");
+        canvas.width = Math.max(1, Math.ceil(viewport.width));
+        canvas.height = Math.max(1, Math.ceil(viewport.height));
+        const context = canvas.getContext("2d", { willReadFrequently: true });
+        if (!context) throw new Error("No se pudo preparar la imagen de la página.");
+        await page.render({ canvasContext: context, viewport }).promise;
+
+        const originalText = (target.lines || []).map(line => line?.text || "").join("\n").trim();
+        const originalQuality = measureLocalTextQuality(originalText, 65);
+        let best = await recognizeLocalCanvas(worker, canvas, target.width, target.height, viewport, scale, onProgress);
+        let bestText = String(best.text || "").trim();
+        let bestQuality = best.quality || measureLocalTextQuality(bestText, best.confidence);
+
+        // Only spend a second OCR pass where the first pass produces too little,
+        // incoherent or low-confidence text. Preserve the better of the two reads.
+        if (bestQuality.letters < 90 || bestQuality.score < 57 || best.confidence < 48) {
+          enhancedCanvas = enhanceLocalOcrCanvas(canvas);
+          await worker.setParameters({
+            tessedit_pageseg_mode: "3",
+            preserve_interword_spaces: "1",
+            user_defined_dpi: String(Math.max(180, Math.min(300, Math.round(scale * 72)))),
+          });
+          const enhanced = await recognizeLocalCanvas(
+            worker, enhancedCanvas, target.width, target.height, viewport, scale, onProgress
+          );
+          const enhancedText = String(enhanced.text || "").trim();
+          const enhancedQuality = enhanced.quality || measureLocalTextQuality(enhancedText, enhanced.confidence);
+          if (enhancedQuality.score > bestQuality.score ||
+              (enhancedQuality.score >= bestQuality.score - 3 && enhancedQuality.letters > bestQuality.letters * 1.15)) {
+            best = enhanced;
+            bestText = enhancedText;
+            bestQuality = enhancedQuality;
+            target.ocrEnhancement = "grayscale-contrast";
+          }
+        }
+
+        const records = best.records || [];
+        const geometryLines = records.length
+          ? toPageGeometryLines(
+              records, viewport, scale, canvas.height, 0, ""
+            )
+          : [];
+        const fallbackLines = bestText.split("\n").map(line => line.trim()).filter(Boolean);
+        const finalLines = geometryLines.length
+          ? geometryLines
+          : fallbackLines.map((text, lineIndex) => {
+              const height = Number(target.height || nativeViewport.height);
+              const width = Number(target.width || nativeViewport.width);
+              const step = height / (fallbackLines.length + 1);
+              return {
+                text, xMin: 0, xMax: width, width,
+                y: height - (lineIndex + 1) * step,
+                fontSize: 10, bold: false, boldRatio: 0,
+                fontNames: ["local-ocr-text-only"], items: [],
+                index: lineIndex, ocr: true, syntheticGeometry: true,
+              };
+            });
+
+        // The extracted PDF text may have a stale/garbled OCR layer. Replace it
+        // only with non-empty OCR; keep a record when the local read is uncertain.
+        const ocrCanReplace = bestText.length > 0 &&
+          (bestQuality.score >= originalQuality.score + 2 || originalQuality.score < 48);
+        if (ocrCanReplace && finalLines.length) {
+          target.lines = finalLines;
+          target.ocrRecognized = true;
+          target.ocrGeometryReliable = geometryLines.length > 0;
+          target.ocrConfidence = Math.round(best.confidence || bestQuality.confidence || 0);
+          target.ocrQualityScore = Math.round(bestQuality.score);
+          target.ocrTextChars = bestText.length;
+          target.ocrSpreadSplit = Boolean(best.detectedSpread);
+          if (best.detectedSpread) spreadPages.push(activePage);
+          improvedPages += 1;
+          recognizedPages += 1;
+          if (bestQuality.score < 52 || best.confidence < 40) lowConfidencePages.push(activePage);
+        } else if (bestText.length > 0) {
+          // Keep the original extraction if it scores better than OCR; do not
+          // silently downgrade text that was already usable.
+          target.ocrRecognized = false;
+          target.ocrGeometryReliable = false;
+          target.ocrConfidence = Math.round(best.confidence || 0);
+          target.ocrQualityScore = Math.round(bestQuality.score);
+          lowConfidencePages.push(activePage);
+        } else {
+          target.ocrRecognized = false;
+          target.ocrGeometryReliable = false;
+          target.ocrConfidence = 0;
+          target.ocrQualityScore = 0;
+          lowConfidencePages.push(activePage);
+        }
+      } catch (error) {
+        throw new Error("Falló el OCR local avanzado de la página " + activePage + ": " + (error?.message || "error de reconocimiento."));
+      } finally {
+        if (enhancedCanvas) {
+          enhancedCanvas.width = 0;
+          enhancedCanvas.height = 0;
+        }
+        if (canvas) {
+          canvas.width = 0;
+          canvas.height = 0;
+        }
+        page.cleanup?.();
+      }
+      target.ocrAttempted = true;
+      onProgress({
+        phase: "ocr",
+        processed: index + 1,
+        total: targets.length,
+        pageNumber: activePage,
+        message: "OCR local avanzado · página " + activePage + " (" + (index + 1) + " de " + targets.length + ")" +
+          (target.ocrSpreadSplit ? " · doble página detectada" : "") +
+          (target.ocrEnhancement ? " · imagen optimizada" : ""),
+      });
+    }
+  } catch (error) {
+    throw error instanceof Error ? error : new Error("No se pudo completar el OCR local avanzado.");
+  } finally {
+    if (worker) {
+      try { await worker.terminate(); } catch {}
+    }
+  }
+
+  return {
+    attemptedPages: targets.length,
+    recognizedPages,
+    improvedPages,
+    lowConfidencePages: Array.from(new Set(lowConfidencePages)).sort((a, b) => a - b),
+    spreadPages: Array.from(new Set(spreadPages)).sort((a, b) => a - b),
+  };
+}
+|| []).map((record, index) => {
+    const px0 = Number(record.left || 0) + xOffset;
+    const px1 = Number(record.left || 0) + Number(record.width || 0) + xOffset;
+    const py0 = Number(record.top || 0);
+    const py1 = Number(record.top || 0) + Number(record.height || 0);
+    let points;
+    try {
+      points = [
+        viewport.convertToPdfPoint(px0, py0),
+        viewport.convertToPdfPoint(px1, py0),
+        viewport.convertToPdfPoint(px0, py1),
+        viewport.convertToPdfPoint(px1, py1),
+      ];
+    } catch {
+      points = [
+        [px0 / scale, (canvasHeight - py0) / scale],
+        [px1 / scale, (canvasHeight - py0) / scale],
+        [px0 / scale, (canvasHeight - py1) / scale],
+        [px1 / scale, (canvasHeight - py1) / scale],
+      ];
+    }
+    const xs = points.map(point => Number(point[0])).filter(Number.isFinite);
+    const ys = points.map(point => Number(point[1])).filter(Number.isFinite);
+    if (!xs.length || !ys.length) return null;
+    const xMin = Math.min(...xs);
+    const xMax = Math.max(...xs);
+    const yMin = Math.min(...ys);
+    const yMax = Math.max(...ys);
+    return {
+      text: record.text,
+      xMin,
+      xMax,
+      width: Math.max(0, xMax - xMin),
+      y: (yMin + yMax) / 2,
+      fontSize: Math.max(1, yMax - yMin),
+      bold: false,
+      boldRatio: 0,
+      fontNames: ["local-ocr-tesseract6"],
+      items: [],
+      index,
+      ocr: true,
+      ocrConfidence: Number(record.confidence || 0),
+      ...(logicalSide ? { logicalSide } : {}),
+    };
+  }).filter(Boolean);
+}
+
+async function recognizeLocalCanvas(worker, canvas, pageWidth, pageHeight, viewport, scale, onProgress) {
+  await worker.setParameters({
+    tessedit_pageseg_mode: "3",
+    preserve_interword_spaces: "1",
+    user_defined_dpi: String(Math.max(180, Math.min(300, Math.round(scale * 72)))),
+  });
+  const result = await worker.recognize(canvas, {}, { blocks: true, tsv: true });
+  const records = parseTesseractTsv(result?.data);
+  const confidence = Number(result?.data?.confidence || 0);
+  if (!records.length) {
+    const fallback = String(result?.data?.text || "").replace(/\r/g, "").split("\n").map(text => text.trim()).filter(Boolean);
+    return {
+      records: fallback.map((text, index) => ({
+        text,
+        left: 0,
+        top: Math.round(index * canvas.height / Math.max(1, fallback.length)),
+        width: canvas.width,
+        height: Math.max(1, Math.round(canvas.height / Math.max(1, fallback.length))),
+        confidence,
+      })),
+      confidence,
+      usedGeometry: false,
+    };
+  }
+
+  let selected = records;
+  let spread = false;
+  if (detectOcrSpread(records, canvas.width, canvas.height)) {
+    const middle = Math.round(canvas.width / 2);
+    const overlap = Math.max(8, Math.round(canvas.width * 0.008));
+    const leftWidth = Math.min(canvas.width, middle + overlap);
+    const rightStart = Math.max(0, middle - overlap);
+    const rightWidth = canvas.width - rightStart;
+    let leftCanvas = null;
+    let rightCanvas = null;
+    try {
+      leftCanvas = document.createElement("canvas");
+      leftCanvas.width = leftWidth;
+      leftCanvas.height = canvas.height;
+      rightCanvas = document.createElement("canvas");
+      rightCanvas.width = rightWidth;
+      rightCanvas.height = canvas.height;
+      const leftContext = leftCanvas.getContext("2d");
+      const rightContext = rightCanvas.getContext("2d");
+      if (!leftContext || !rightContext) throw new Error("No se pudieron separar las páginas enfrentadas para OCR.");
+      leftContext.drawImage(canvas, 0, 0, leftWidth, canvas.height, 0, 0, leftWidth, canvas.height);
+      rightContext.drawImage(canvas, rightStart, 0, rightWidth, canvas.height, 0, 0, rightWidth, canvas.height);
+
+      await worker.setParameters({
+        tessedit_pageseg_mode: "4",
+        preserve_interword_spaces: "1",
+        user_defined_dpi: String(Math.max(180, Math.min(300, Math.round(scale * 72)))),
+      });
+      const [leftResult, rightResult] = await Promise.all([
+        worker.recognize(leftCanvas, {}, { blocks: true, tsv: true }),
+        worker.recognize(rightCanvas, {}, { blocks: true, tsv: true }),
+      ]);
+      const leftRecords = parseTesseractTsv(leftResult?.data).map(item => ({ ...item, logicalSide: "left" }));
+      const rightRecords = parseTesseractTsv(rightResult?.data).map(item => ({
+        ...item,
+        left: item.left + rightStart,
+        right: item.right + rightStart,
+        logicalSide: "right",
+      }));
+      const spanning = records.filter(item => item.width >= canvas.width * 0.66);
+      const splitRecords = [...spanning, ...leftRecords, ...rightRecords];
+      const splitText = textFromTesseractRecords(splitRecords, canvas.width);
+      const fullText = textFromTesseractRecords(records, canvas.width);
+      const splitQuality = measureLocalTextQuality(splitText, (Number(leftResult?.data?.confidence || 0) + Number(rightResult?.data?.confidence || 0)) / 2);
+      const fullQuality = measureLocalTextQuality(fullText, confidence);
+      // Choose the split OCR only if it retained substantive text and quality.
+      if (splitRecords.length >= 8 && splitQuality.letters >= Math.min(45, fullQuality.letters * 0.65) &&
+          splitQuality.score >= fullQuality.score - 8) {
+        selected = splitRecords;
+        spread = true;
+      }
+    } finally {
+      if (leftCanvas) { leftCanvas.width = 0; leftCanvas.height = 0; }
+      if (rightCanvas) { rightCanvas.width = 0; rightCanvas.height = 0; }
+    }
+  }
+
+  const effectiveText = textFromTesseractRecords(selected, canvas.width);
+  const effectiveConfidence = selected.length
+    ? selected.reduce((sum, line) => sum + Number(line.confidence || 0), 0) / selected.length
+    : confidence;
+  return {
+    records: selected,
+    text: effectiveText,
+    confidence: effectiveConfidence,
+    quality: measureLocalTextQuality(effectiveText, effectiveConfidence),
+    usedGeometry: selected.some(item => Number(item.width) > 0),
+    detectedSpread: spread,
+  };
+}
+
+async function runLocalPdfOcr(pdf, pages, onProgress = () => {}) {
   const targets = (pages || []).filter((page) => {
     const text = (page.lines || []).map((line) => line?.text || "").join(" ").trim();
     const alphanumericCount = (text.match(/[\p{L}\p{N}]/gu) || []).length;
