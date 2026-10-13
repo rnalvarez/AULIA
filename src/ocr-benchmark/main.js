@@ -478,27 +478,35 @@ async function runComparison() {
         if (reference && full.status === "ok") full.errorRates = errorMetrics(reference, full.text);
         addResult(full);
         if (splitSpread) {
+          const splitTexts = [];
+          let splitElapsedMs = 0;
           for (const [side, startRatio, endRatio] of [["mitad izquierda", 0.015, 0.49], ["mitad derecha", 0.51, 0.985]]) {
             const crop = cropCanvas(pageResult.canvas, startRatio, endRatio);
             const ink = foregroundRatio(crop);
             if (ink < 0.0007) {
               addResult({
-                pageNumber,
-                method: "Tesseract.js · " + side,
-                status: "ok",
-                text: "",
-                elapsedMs: 0,
-                skippedBlankCrop: true,
-                inkRatio: ink,
+                pageNumber, method: "Tesseract.js · " + side, status: "ok", text: "",
+                elapsedMs: 0, skippedBlankCrop: true, inkRatio: ink,
               });
+              splitTexts.push("");
             } else {
               const part = await runTesseract(tesseract, crop, pageNumber, "Tesseract.js · " + side);
               part.inkRatio = ink;
-              if (reference && part.status === "ok") part.errorRates = errorMetrics(reference, part.text);
+              splitElapsedMs += Number(part.elapsedMs || 0);
+              splitTexts.push(part.text || "");
               addResult(part);
             }
             clearCanvas(crop);
           }
+          const combined = {
+            pageNumber,
+            method: "Tesseract.js · mitades reunidas (orden izquierda → derecha)",
+            status: splitTexts.some(Boolean) ? "ok" : "error",
+            text: splitTexts.filter(Boolean).join(String.fromCharCode(10)),
+            elapsedMs: splitElapsedMs,
+          };
+          if (reference && combined.status === "ok") combined.errorRates = errorMetrics(reference, combined.text);
+          addResult(combined);
         }
       }
 
@@ -507,27 +515,35 @@ async function runComparison() {
         if (reference && full.status === "ok") full.errorRates = errorMetrics(reference, full.text);
         addResult(full);
         if (splitSpread) {
+          const splitTexts = [];
+          let splitElapsedMs = 0;
           for (const [side, startRatio, endRatio] of [["mitad izquierda", 0.015, 0.49], ["mitad derecha", 0.51, 0.985]]) {
             const crop = cropCanvas(pageResult.canvas, startRatio, endRatio);
             const ink = foregroundRatio(crop);
             if (ink < 0.0007) {
               addResult({
-                pageNumber,
-                method: "PaddleOCR.js · " + side,
-                status: "ok",
-                text: "",
-                elapsedMs: 0,
-                skippedBlankCrop: true,
-                inkRatio: ink,
+                pageNumber, method: "PaddleOCR.js · " + side, status: "ok", text: "",
+                elapsedMs: 0, skippedBlankCrop: true, inkRatio: ink,
               });
+              splitTexts.push("");
             } else {
               const part = await runPaddle(paddle, crop, pageNumber, "PaddleOCR.js · " + side);
               part.inkRatio = ink;
-              if (reference && part.status === "ok") part.errorRates = errorMetrics(reference, part.text);
+              splitElapsedMs += Number(part.elapsedMs || 0);
+              splitTexts.push(part.text || "");
               addResult(part);
             }
             clearCanvas(crop);
           }
+          const combined = {
+            pageNumber,
+            method: "PaddleOCR.js · mitades reunidas (orden izquierda → derecha)",
+            status: splitTexts.some(Boolean) ? "ok" : "error",
+            text: splitTexts.filter(Boolean).join(String.fromCharCode(10)),
+            elapsedMs: splitElapsedMs,
+          };
+          if (reference && combined.status === "ok") combined.errorRates = errorMetrics(reference, combined.text);
+          addResult(combined);
         }
       }
 
@@ -547,6 +563,10 @@ async function runComparison() {
   } catch (error) {
     setStatus("La prueba se interrumpió" + (currentPage ? " en la página " + currentPage : "") + ": " + (error?.message || String(error)), "error");
   } finally {
+    if (loadedPdf) {
+      try { await loadedPdf.destroy?.(); } catch {}
+      loadedPdf = null;
+    }
     if (tesseract) {
       try { await tesseract.terminate(); } catch {}
     }
