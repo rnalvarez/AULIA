@@ -2020,7 +2020,7 @@ async function importExternalKnowledge(e) {
         >
           <div className="studio-wf-knowledge-provider">
             <button type="button" className={ingestionProvider === "local" ? "active" : ""} onClick={() => setIngestionProvider("local")} disabled={!canEdit || busy} aria-pressed={ingestionProvider === "local"}>
-              <strong>Extracción local</strong><span>OCR y estructura heurística sin cuota de IA</span>
+              <strong>OCR local avanzado</strong><span>Alta resolución, coordenadas reales y segundo intento para páginas de baja calidad · sin cuota de IA</span>
             </button>
             <button type="button" className={ingestionProvider === "groq" ? "active" : ""} onClick={() => setIngestionProvider("groq")} disabled={!canEdit || busy} aria-pressed={ingestionProvider === "groq"}>
               <strong>Interpretación temática · Groq</strong><span>OCR visual selectivo más reconstrucción de capítulos y apartados</span>
