@@ -1183,40 +1183,51 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
     await processMaterialFiles(files);
   }
 
+
   async function resumePendingPdf(pending) {
-    if (!studioApiKey) {
-      setIngestionProvider("groq");
+    const resumeWithGroq = ingestionProvider === "groq";
+    if (resumeWithGroq && !studioApiKey) {
       setShowStudioKey(true);
-      setStatus("La preparación local del PDF está guardada. Configurá tu clave de Groq para reanudar solo las páginas que requieren lectura visual; no hace falta volver a cargarlo.");
+      setStatus("La preparación local del PDF está guardada. Configurá tu clave de Groq para reanudar el análisis semántico.");
       return;
     }
-    setIngestionProvider("groq");
     setBusy(true);
     try {
       const pendingStatus = await getPendingPdfStatus(pending.id);
-      const blockedUntilMs = Date.parse(pendingStatus?.blockedUntil || "");
-      if (Number.isFinite(blockedUntilMs) && blockedUntilMs > Date.now()) {
-        const availableAt = new Date(blockedUntilMs).toLocaleString("es-AR", { dateStyle: "short", timeStyle: "short" });
-        setUploadProgress({
-          fileName: pendingStatus.fileName || pending.fileName,
-          phase: "quota-wait",
-          processed: 0,
-          total: 0,
-          pendingId: pending.id,
-          blockedUntil: pendingStatus.blockedUntil,
-          isDailyLimit: pendingStatus.isDailyLimit,
-          message: (pendingStatus.isDailyLimit ? "La cuota diaria de Groq todavía no se restableció." : "El límite temporal de Groq todavía está vigente.") +
-            " AULIA guardó la preparación del PDF y no volverá a leerlo. Podés reanudar después de " + availableAt + ".",
-          error: pendingStatus.lastError || "",
-        });
-        setStatus("Todavía no conviene reanudar: Groq indicó que la cuota estará disponible después de " + availableAt + ".");
-        return;
+      if (resumeWithGroq) {
+        const blockedUntilMs = Date.parse(pendingStatus?.blockedUntil || "");
+        if (Number.isFinite(blockedUntilMs) && blockedUntilMs > Date.now()) {
+          const availableAt = new Date(blockedUntilMs).toLocaleString("es-AR", { dateStyle: "short", timeStyle: "short" });
+          setUploadProgress({
+            fileName: pendingStatus.fileName || pending.fileName,
+            phase: "quota-wait",
+            processed: 0,
+            total: 0,
+            pendingId: pending.id,
+            blockedUntil: pendingStatus.blockedUntil,
+            isDailyLimit: pendingStatus.isDailyLimit,
+            message: (pendingStatus.isDailyLimit ? "La cuota diaria de Groq todavía no se restableció." : "El límite temporal de Groq todavía está vigente.") +
+              " AULIA guardó la preparación del PDF y no volverá a leerlo. Podés reanudar después de " + availableAt + ".",
+            error: pendingStatus.lastError || "",
+          });
+          setStatus("Todavía no conviene reanudar con Groq: la cuota estará disponible después de " + availableAt + ". Elegí «OCR local avanzado» para procesar el PDF localmente sin esa cuota.");
+          return;
+        }
       }
 
       const file = await getPendingPdf(pending.id);
       if (!file) throw new Error("No se encontró el PDF guardado. Si el almacenamiento del navegador fue borrado, será necesario seleccionar el archivo otra vez.");
-      await updatePendingPdfStatus(pending.id, {});
-      await processMaterialFiles([file], { forceVision: true, resumePendingId: pending.id });
+      // Local mode deliberately bypasses the Groq cooldown and runs the original
+      // file through the advanced browser OCR pipeline instead.
+      await updatePendingPdfStatus(pending.id, resumeWithGroq ? {} : {
+        blockedUntil: "",
+        pauseReason: "",
+        isDailyLimit: false,
+      });
+      await processMaterialFiles([file], {
+        forceVision: resumeWithGroq,
+        resumePendingId: pending.id,
+      });
     } catch (error) {
       setStatus(error?.message || "No se pudo recuperar el PDF pendiente.");
     } finally {
