@@ -1429,10 +1429,12 @@ export function mergeImportedDocuments(existing, incoming) {
   const merged = [...(existing || [])];
   for (const document of incoming || []) {
     if (!document?.id) continue;
-    const index = merged.findIndex((item) =>
-      item.id === document.id ||
-      String(item.sourceName || "").toLowerCase() === String(document.sourceName || "").toLowerCase()
-    );
+    const index = merged.findIndex((item) => {
+      if (item.id === document.id) return true;
+      const sameSource = String(item.sourceName || "").toLowerCase() === String(document.sourceName || "").toLowerCase();
+      const hasPageRange = Boolean(item.pageRange || item.sourcePageStart || item.sourcePageEnd || document.pageRange || document.sourcePageStart || document.sourcePageEnd);
+      return sameSource && !hasPageRange;
+    });
     if (index >= 0) {
       merged[index] = { ...merged[index], ...document };
     } else {

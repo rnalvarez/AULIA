@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { cloneCourse, validateCourse } from "../core/courseContract.js";
 import { downloadCoursePack, readCoursePackFile } from "../core/coursePackIO.js";
 import { readMaterialFile, renderPdfPageImages, materialToCorpus, mergeImportedBibliography, mergeImportedDocuments, applySelectiveVisualAnalysis, applyAISemanticSegmentation } from "../core/materialIO.js";
+import { detectCompilationWorks, splitCompilationIntoWorks } from "../core/compilationWorks.js";
 import { savePendingPdf, getPendingPdf, getPendingPdfStatus, savePreparedPdf, getPreparedPdf, updatePendingPdfStatus, listPendingPdfs, deletePendingPdf } from "../core/studioPersistence.js";
 import { analyzePdfWithVision, getCachedVisionPageNumbers } from "../services/llm/multimodalIngestion.js";
 import { analyzeDocumentSemantics } from "../services/llm/semanticSegmentation.js";
@@ -304,6 +305,17 @@ function structureConfidenceLabel(value) {
   return "Baja";
 }
 
+function materialFileKey(file) {
+  return [file?.name || "", Number(file?.size || 0), Number(file?.lastModified || 0)].join("::");
+}
+function isValidCompilationReview(item) {
+  if (item?.documentType !== "compilacion") return true;
+  const pageCount = Number(item.pageCount || 0);
+  const ordered = (item.works || []).map(work => ({ title: String(work.title || "").trim(), start: Number(work.startPage), end: Number(work.endPage) })).sort((a,b) => a.start-b.start);
+  return pageCount > 0 && ordered.length > 0 && ordered.every((work,index) =>
+    work.title && Number.isInteger(work.start) && Number.isInteger(work.end) && work.start >= 1 && work.end >= work.start && work.end <= pageCount && (!index || work.start > ordered[index-1].end)
+  );
+}
 function buildMaterialStructure(course) {
   const corpus = Array.isArray(course?.corpus) ? course.corpus : [];
   const documents = Array.isArray(course?.documents) ? course.documents : [];
@@ -455,6 +467,7 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
   const [ingestionProvider, setIngestionProvider] = useState(() => loadStudioApiKey(course.id) ? "groq" : "local");
   const [uploadProgress, setUploadProgress] = useState(null);
   const [pendingPdfs, setPendingPdfs] = useState([]);
+  const [materialReviewQueue, setMaterialReviewQueue] = useState([]);
   const [rateLimitClock, setRateLimitClock] = useState(() => Date.now());
 
   useEffect(() => {
@@ -763,7 +776,110 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
     updateMaterialSection(section, { priority });
   }
 
-  async function processMaterialFiles(files, { forceVision = false, resumePendingId = "" } = {}) {
+  async function prepareMaterialForReview(files) {
+    if (!files.length) return;
+    setBusy(true);
+    setStatus("Extrayendo texto en este navegador. Todavía no se llama a Groq.");
+    setUploadProgress(null);
+    const queue = [];
+    try {
+      for (const file of files) {
+        const ext = String(file.name || "").toLowerCase().split(".").pop();
+        const useVision = ext === "pdf" && Boolean(studioApiKey) && ingestionProvider === "groq";
+        let pendingId = "";
+        if (useVision) {
+          pendingId = (await savePendingPdf(course.id, file)).id;
+          const prior = await getPendingPdfStatus(pendingId);
+          const blockedUntil = Date.parse(prior?.blockedUntil || "");
+          if (Number.isFinite(blockedUntil) && blockedUntil > Date.now()) {
+            throw new Error("La cuota de Groq sigue bloqueada para «" + file.name + "». Reanudá después de " + new Date(blockedUntil).toLocaleString("es-AR", { dateStyle: "short", timeStyle: "short" }) + ".");
+          }
+        }
+        let extracted = useVision && pendingId ? await getPreparedPdf(pendingId, file) : null;
+        if (!Array.isArray(extracted?.aiPages) || !extracted.aiPages.length) {
+          extracted = await readMaterialFile(file, {
+            includePageImages: false, includeAIPageText: true, includePageImagesForLowText: useVision,
+            onProgress: progress => setUploadProgress(current => ({
+              ...(current || {}), fileName: file.name, phase: progress.phase || "extracting",
+              processed: progress.processed || 0, total: progress.total || 0,
+              message: progress.message || "Extrayendo texto y páginas físicas…", error: "", pendingId,
+            })),
+          });
+          if (useVision && pendingId) await savePreparedPdf(pendingId, file, extracted);
+        }
+        const pageCount = Math.max(Number(extracted.pages || extracted.document?.pages || 0),
+          (extracted.aiPages || []).reduce((max, page) => Math.max(max, Number(page.pageNumber || 0)), 0));
+        const documentType = ["libro", "articulo", "compilacion", "apunte"].includes(extracted.document?.documentType) ? extracted.document.documentType : "apunte";
+        let works = detectCompilationWorks(extracted);
+        if (!works.length && pageCount) works = [{ id: "obra-manual-1", title: "Obra 1", author: "", year: "", startPage: 1, endPage: pageCount, confidence: 0.25, needsReview: true, evidence: "No se detectaron todos los comienzos; revisá título y rango físico." }];
+        queue.push({ key: materialFileKey(file), file, pendingId, useVision, extracted: useVision ? null : extracted, pageCount, documentType, documentTypeSource: "auto", works });
+      }
+      setMaterialReviewQueue(queue);
+      setStatus("La extracción local está lista. Confirmá el tipo documental; si es una compilación, revisá cada obra y sus páginas físicas.");
+      if (queue.some(item => item.pendingId)) setPendingPdfs(await listPendingPdfs(course.id));
+    } catch (error) {
+      setStatus(error?.message || "No se pudo preparar el material para revisión.");
+      try { setPendingPdfs(await listPendingPdfs(course.id)); } catch {}
+    } finally { setBusy(false); }
+  }
+
+  function updateMaterialReviewItem(itemIndex, patch) {
+    setMaterialReviewQueue(current => current.map((item, index) => {
+      if (index !== itemIndex) return item;
+      const next = { ...item, ...patch };
+      if (next.documentType === "compilacion" && !next.works?.length) {
+        next.works = [{ id: "obra-manual-1", title: "Obra 1", author: "", year: "", startPage: 1, endPage: Number(next.pageCount || 1), needsReview: true }];
+      }
+      return next;
+    }));
+  }
+  function updateCompilationWork(itemIndex, workIndex, patch) {
+    setMaterialReviewQueue(current => current.map((item,index) => index !== itemIndex ? item : ({
+      ...item, works: (item.works || []).map((work,childIndex) => childIndex === workIndex ? { ...work, ...patch } : work),
+    })));
+  }
+  function addCompilationWork(itemIndex) {
+    setMaterialReviewQueue(current => current.map((item,index) => {
+      if (index !== itemIndex) return item;
+      const lastEnd = Math.max(0, ...(item.works || []).map(work => Number(work.endPage || 0)));
+      const pageCount = Number(item.pageCount || 1);
+      if (lastEnd >= pageCount) return item;
+      const number = (item.works || []).length + 1;
+      return { ...item, works: [...(item.works || []), {
+        id: "obra-manual-" + number, title: "Obra " + number, author: "", year: "",
+        startPage: lastEnd + 1, endPage: pageCount, needsReview: true, evidence: "Obra agregada manualmente por el docente.",
+      }] };
+    }));
+  }
+  async function confirmMaterialReview() {
+    const queue = materialReviewQueue.map(item => ({ ...item, documentTypeSource: "teacher" }));
+    const invalid = queue.find(item => !isValidCompilationReview(item));
+    if (invalid) {
+      setStatus("Revisá los rangos físicos de «" + invalid.file.name + "»: deben estar dentro del PDF y no superponerse.");
+      return;
+    }
+    try {
+      for (const item of queue) {
+        let extracted = item.extracted;
+        if (item.pendingId) extracted = await getPreparedPdf(item.pendingId, item.file);
+        if (extracted) {
+          extracted = { ...extracted, document: { ...extracted.document, documentType: item.documentType, documentTypeSource: "teacher", ...(item.documentType === "compilacion" ? { compilationWorks: item.works } : {}) }};
+          if (item.pendingId) await savePreparedPdf(item.pendingId, item.file, extracted);
+          item.extracted = item.useVision ? null : extracted;
+        }
+      }
+      setMaterialReviewQueue([]);
+      setStatus("Tipo documental confirmado. Continúa el análisis existente sin repetir la extracción.");
+      await processMaterialFiles(queue.map(item => item.file), { materialReviewItems: queue });
+    } catch (error) { setStatus(error?.message || "No se pudo guardar la revisión del material."); }
+  }
+  async function cancelMaterialReview() {
+    setMaterialReviewQueue([]);
+    setStatus("Se canceló la confirmación. No se consumió cuota de Groq; los PDF guardados siguen disponibles para reanudar o descartar.");
+    try { setPendingPdfs(await listPendingPdfs(course.id)); } catch {}
+  }
+
+  async function processMaterialFiles(files, { forceVision = false, resumePendingId = "", materialReviewItems = [] } = {}) {
     if (!files.length) return;
     setAnalysisReport(null);
     setBusy(true);
@@ -778,8 +894,9 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
     try {
       for (const file of files) {
         const ext = String(file.name || "").toLowerCase().split(".").pop();
-        const useVision = ext === "pdf" && Boolean(studioApiKey) && (forceVision || ingestionProvider === "groq");
-        let pendingId = resumePendingId || "";
+        const reviewItem = materialReviewItems.find(item => item.key === materialFileKey(file));
+        const useVision = ext === "pdf" && Boolean(studioApiKey) && (forceVision || (reviewItem ? reviewItem.useVision : ingestionProvider === "groq"));
+        let pendingId = reviewItem?.pendingId || resumePendingId || "";
         let lastProgress = { processed: 0, total: 0 };
         try {
           if (useVision) {
@@ -815,7 +932,7 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
           }
 
           setStatus("Preparando " + file.name + "…");
-          let extracted = null;
+          let extracted = !useVision && reviewItem?.extracted ? reviewItem.extracted : null;
           const cachedPreparationCandidate = useVision && pendingId
             ? await getPreparedPdf(pendingId, file)
             : null;
@@ -830,7 +947,9 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
             ? cachedPreparationCandidate
             : null;
 
-          if (cachedPreparation) {
+          if (extracted) {
+            lastProgress = { processed: Number(extracted.pages || extracted.aiPages?.length || 0), total: Number(extracted.pages || extracted.aiPages?.length || 0) };
+          } else if (cachedPreparation) {
             extracted = {
               ...cachedPreparation,
               aiPages: (cachedPreparation.aiPages || []).map(page => ({
@@ -1025,9 +1144,11 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
               error: "",
               pendingId,
             });
+            const selectedDocumentType = reviewItem?.documentType || extracted.document?.documentType || "apunte";
             const semanticResult = await analyzeDocumentSemantics({
               apiKey: studioApiKey,
               documentTitle: file.name,
+              declaredDocumentType: reviewItem?.documentTypeSource === "teacher" || extracted.document?.documentTypeSource === "teacher" ? selectedDocumentType : "",
               pages: extracted.aiPages,
               visionPages: visionPageAnalyses,
               existingSections: extracted.document?.sections || [],
@@ -1056,6 +1177,10 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
             semanticDocuments += 1;
           }
 
+          const selectedDocumentType = reviewItem?.documentType || prepared.document?.documentType || extracted.document?.documentType || "apunte";
+          const selectedDocumentTypeSource = reviewItem?.documentTypeSource || prepared.document?.documentTypeSource || extracted.document?.documentTypeSource || "auto";
+          const selectedWorks = reviewItem?.works || prepared.document?.compilationWorks || extracted.document?.compilationWorks || [];
+          prepared = { ...prepared, document: { ...prepared.document, documentType: selectedDocumentType, documentTypeSource: selectedDocumentTypeSource, ...(selectedDocumentType === "compilacion" ? { compilationWorks: selectedWorks } : {}) }};
           if (!prepared.corpus?.length) {
             throw new Error(
               "No se pudo recuperar texto de " + file.name +
@@ -1065,23 +1190,29 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
 
           const incomingDocumentId = String(prepared?.document?.id || "");
           const incomingSourceName = String(prepared?.sourceName || file.name || "").trim().toLocaleLowerCase();
-          const retainedCorpus = (workingDraft.corpus || []).filter(chunk => {
-            const sameDocumentId = incomingDocumentId &&
-              String(chunk?.documentId || "") === incomingDocumentId;
-            const sameSourceName = incomingSourceName &&
-              String(chunk?.source || "").trim().toLocaleLowerCase() === incomingSourceName;
-            return !sameDocumentId && !sameSourceName;
-          });
-          // Re-importing the same PDF must replace its old chunks, otherwise an
-          // outdated local segmentation would remain searchable beside the new
-          // semantic segmentation and falsely inflate coverage.
-          const material = materialToCorpus(prepared, retainedCorpus);
-          const materialDocument = material.document;
+          const retainedCorpus = (workingDraft.corpus || []).filter(chunk =>
+            String(chunk?.documentId || "") !== incomingDocumentId &&
+            String(chunk?.source || "").trim().toLocaleLowerCase() !== incomingSourceName
+          );
+          const incomingMaterials = selectedDocumentType === "compilacion"
+            ? splitCompilationIntoWorks({ ...prepared, aiPages: extracted.aiPages || prepared.aiPages || [] }, selectedWorks)
+            : [prepared];
+          const retainedDocuments = (workingDraft.documents || []).filter(document =>
+            String(document?.id || "") !== incomingDocumentId &&
+            String(document?.sourceName || "").trim().toLocaleLowerCase() !== incomingSourceName
+          );
+          const retainedBibliography = (workingDraft.bibliography || []).filter(reference =>
+            !(reference?.sourceType === "aulia-compilation-work" &&
+              String(reference?.sourceName || "").trim().toLocaleLowerCase() === incomingSourceName)
+          );
+          const importedCorpus = incomingMaterials.flatMap(item => materialToCorpus(item, []).corpus);
+          const importedDocuments = incomingMaterials.map(item => item.document).filter(Boolean);
+          const importedBibliography = incomingMaterials.flatMap(item => item.bibliography || []);
           workingDraft = {
             ...workingDraft,
-            corpus: [...retainedCorpus, ...material.corpus],
-            documents: mergeImportedDocuments(workingDraft.documents || [], materialDocument ? [materialDocument] : []),
-            bibliography: mergeImportedBibliography(workingDraft.bibliography || [], material.bibliography || []),
+            corpus: [...retainedCorpus, ...importedCorpus],
+            documents: mergeImportedDocuments(retainedDocuments, importedDocuments),
+            bibliography: mergeImportedBibliography(retainedBibliography, importedBibliography),
             knowledgeBase: null,
           };
           setDraft(cloneCourse(workingDraft));
@@ -1103,9 +1234,11 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
             processed: useVision ? extracted.aiPages.length : 1,
             total: useVision ? extracted.aiPages.length : 1,
             model: prepared.aiAnalysis?.model || "",
-            message: useVision
-              ? "Documento incorporado. Se interpretó su estructura temática con Groq; revisá los capítulos y ajustá inclusión y prioridad antes de indexar."
-              : "Documento incorporado con extracción y segmentación local. Revisá la estructura antes de indexar.",
+            message: selectedDocumentType === "compilacion"
+              ? "Compilación incorporada como " + incomingMaterials.length + " obra(s) con rangos físicos. Revisá títulos, referencias y alcance antes de indexar."
+              : useVision
+                ? "Documento incorporado. Se interpretó su estructura temática con Groq; revisá los capítulos y ajustá inclusión y prioridad antes de indexar."
+                : "Documento incorporado con extracción y segmentación local. Revisá la estructura antes de indexar.",
             error: "",
             pendingId: "",
           });
@@ -1180,7 +1313,7 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
   async function importMaterial(e) {
     const files = Array.from(e.target.files || []);
     e.target.value = "";
-    await processMaterialFiles(files);
+    await prepareMaterialForReview(files);
   }
 
 
