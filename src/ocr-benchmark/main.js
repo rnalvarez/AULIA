@@ -75,6 +75,7 @@ const summaryNode = byId("summary");
 
 let selectedFile = null;
 let loadedPdf = null;
+let pdfjsLibModule = null;
 let results = [];
 let reportMetadata = {};
 let activeRun = false;
@@ -239,7 +240,8 @@ function parsePageNumbers(raw, totalPages) {
 }
 
 async function loadPdf(file) {
-  const pdfjsLib = await import("pdfjs-dist/legacy/build/pdf.mjs");
+  pdfjsLibModule = await import("pdfjs-dist/legacy/build/pdf.mjs");
+  const pdfjsLib = pdfjsLibModule;
   pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
     "pdfjs-dist/legacy/build/pdf.worker.min.mjs",
     import.meta.url
@@ -279,7 +281,7 @@ async function renderPdfPage(pdf, pageNumber, maxSide) {
   // Record whether PDF.js parsed and scheduled image paint operators. These
   // diagnostics distinguish a missing image operator from a blank paint result.
   const operatorList = await page.getOperatorList();
-  const ops = pdfjsLib.OPS || {};
+  const ops = pdfjsLibModule?.OPS || {};
   const opNames = new Map(Object.entries(ops).filter(([, value]) => Number.isInteger(value)).map(([name, value]) => [value, name]));
   const imageOperatorNames = new Set([
     "paintImageXObject",
