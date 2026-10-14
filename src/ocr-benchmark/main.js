@@ -244,7 +244,12 @@ async function loadPdf(file) {
     "pdfjs-dist/legacy/build/pdf.worker.min.mjs",
     import.meta.url
   ).toString();
-  return pdfjsLib.getDocument({ data: new Uint8Array(await file.arrayBuffer()) }).promise;
+  return pdfjsLib.getDocument({
+    data: new Uint8Array(await file.arrayBuffer()),
+    // Force PDF.js's own image decoding. Browser ImageDecoder can yield white
+    // canvases for some CCITT-fax scanned PDFs, even while text extraction works.
+    isImageDecoderSupported: false,
+  }).promise;
 }
 
 async function renderPdfPage(pdf, pageNumber, maxSide) {
@@ -487,6 +492,10 @@ async function runComparison() {
       },
       startedAt: started,
       localOnly: true,
+      pdfRenderOptions: {
+        isImageDecoderSupported: false,
+        reason: "Usar el decodificador interno de PDF.js para evitar lienzos blancos con algunos escaneos CCITT Fax.",
+      },
       referencesProvidedForPages: Object.keys(referenceByPage).map(Number),
     };
 
