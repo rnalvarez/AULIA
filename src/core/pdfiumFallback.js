@@ -112,6 +112,9 @@ export async function createPdfiumRenderer(file) {
           rawCanvas = null;
         }
 
+        // Transfer canvas ownership to the caller; the temporary-bitmap
+        // cleanup in finally must not clear the returned image.
+        if (canvas === rawCanvas) rawCanvas = null;
         return {
           canvas,
           diagnostics: {
