@@ -16,7 +16,7 @@ Comparar de forma reproducible la extracción de texto de un PDF y el OCR de Tes
 
 ## Privacidad y dependencias
 
-El código lee y procesa el PDF en el navegador. No envía el PDF ni sus transcripciones a servicios de AULIA. En la primera ejecución, los motores pueden descargar código de ejecución, datos de idioma y modelos desde sus fuentes públicas. PaddleOCR.js utiliza ONNX Runtime Web. Para español se configura PP-OCRv6, cuyo selector de idioma admite `es`; PP-OCRv5 no admite esa combinación en la versión del SDK probada.
+El código lee y procesa el PDF en el navegador. No envía el PDF ni sus transcripciones a servicios de AULIA. Para renderizar las páginas, se desactiva la vía de `ImageDecoder` del navegador y se usa el decodificador interno de PDF.js, como medida de compatibilidad para algunos escaneos CCITT Fax que pueden generar lienzos blancos. En la primera ejecución, los motores pueden descargar código de ejecución, datos de idioma y modelos desde sus fuentes públicas. PaddleOCR.js utiliza ONNX Runtime Web. Para español se configura PP-OCRv6, cuyo selector de idioma admite `es`; PP-OCRv5 no admite esa combinación en la versión del SDK probada.
 
 La página de diagnóstico debe mantenerse como entrada independiente. No debe cargarse en el chat estudiantil ni convertirse en requisito del flujo de ingestión de producción.
 
