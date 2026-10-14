@@ -383,7 +383,11 @@ function buildTextSections(text, sourceName, markdown = false) {
 }
 
 
-function measureLocalTextQuality(value, confidence = 55) {
+const SHORT_FUNCTION_WORDS = new Set(
+  "a al algo ante asi aun bajo cada como con cual cuando cuyo de del desde donde dos e el ella ellas ellos en era eramos eran es esa esas ese eso esta este esto estos fue fueron ha hace han hasta hay la las le les lo los mas me mi mis muy ni no nos o otra otras otro otros para pero por porque que quien se sea segun ser si sin sobre son su sus tambien te todo todos tras tu un una unas uno unos y ya and the for from into not that this with when where which who you your are was were been have has had but can did its our out use".split(/\s+/)
+);
+
+export function measureLocalTextQuality(value, confidence = 55) {
   const text = String(value || "");
   const visible = text.replace(/\s/g, "");
   const letters = (text.match(/\p{L}/gu) || []).length;
@@ -396,17 +400,58 @@ function measureLocalTextQuality(value, confidence = 55) {
   const wordRatio = wordTokens.length / Math.max(1, tokens.length);
   const contentScore = Math.min(1, letters / 180);
   const conf = Math.max(0, Math.min(100, Number(confidence) || 0));
+
+  // A PDF text layer can contain plenty of characters while inserting spaces
+  // inside words (for example "an áli sis" or "ima gen"). Count runs of
+  // short, non-function words as a conservative signal; do not try to guess
+  // the missing word locally. Instead, let the existing OCR pipeline compare
+  // a fresh transcription with the original and keep whichever scores better.
+  const normalizedWords = (text.toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .match(/[a-zñ]+/g) || []);
+  const fragments = normalizedWords.filter(token => token.length <= 4 && !SHORT_FUNCTION_WORDS.has(token));
+  const shortFragmentRatio = fragments.length / Math.max(1, normalizedWords.length);
+  let fragmentRuns = 0;
+  let fragmentRunTokens = 0;
+  for (const line of text.split(/\r?\n/)) {
+    const lineWords = (line.toLowerCase()
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .match(/[a-zñ]+/g) || []);
+    let run = 0;
+    const finishRun = () => {
+      if (run >= 2) {
+        fragmentRuns += 1;
+        fragmentRunTokens += run;
+      }
+      run = 0;
+    };
+    for (const token of lineWords) {
+      if (token.length <= 4 && !SHORT_FUNCTION_WORDS.has(token)) run += 1;
+      else finishRun();
+    }
+    finishRun();
+  }
+  const brokenSpacing = text.length >= 200 && letters >= 150 &&
+    normalizedWords.length >= 35 && shortFragmentRatio >= 0.34 &&
+    fragmentRuns >= 4 && fragmentRunTokens >= 10;
+  const spacingPenalty = brokenSpacing ? 18 : 0;
   const score = Math.max(0, Math.min(100,
     alphaRatio * 25 + wordRatio * 25 + contentScore * 20 + conf * 0.30 -
-    singleRatio * 18 - replacements * 3 - controls * 5
+    singleRatio * 18 - replacements * 3 - controls * 5 - spacingPenalty
   ));
-  return { score, chars: text.length, letters, words: wordTokens.length, confidence: conf, alphaRatio, singleRatio };
+  return {
+    score, chars: text.length, letters, words: wordTokens.length, confidence: conf,
+    alphaRatio, singleRatio, shortFragmentRatio, fragmentRuns, brokenSpacing,
+  };
 }
 
 function isLocalTextPoor(value) {
   const quality = measureLocalTextQuality(value, 65);
   return quality.chars < 90 || quality.letters < 45 || quality.score < 54 ||
-    quality.singleRatio > 0.28 || /(?:\uFFFD|[\u0000-\u0008\u000B\u000C\u000E-\u001F])/.test(String(value || ""));
+    quality.singleRatio > 0.28 || quality.brokenSpacing ||
+    /(?:\uFFFD|[\u0000-\u0008\u000B\u000C\u000E-\u001F])/.test(String(value || ""));
 }
 
 function looksLikeTocPage(value) {
@@ -604,13 +649,17 @@ async function recognizeLocalCanvas(worker, canvas, viewport, scale) {
 async function runLocalPdfOcr(pdf, pages, onProgress = () => {}, renderPdfiumFallback = null) {
   const targets = (pages || []).filter(page => {
     const text = (page.lines || []).map(line => line?.text || "").join("\n").trim();
+    const quality = measureLocalTextQuality(text, 65);
+    page.textSpacingSuspect = quality.brokenSpacing;
     // TOC pages need reliable line geometry for matching titles and page
     // numbers. OCR them even when the native text layer has a high character
-    // count but its reading order or line boundaries are misleading.
+    // count but its reading order or line boundaries are misleading. Malformed
+    // spacing is another OCR trigger even when the character count looks healthy.
     return isLocalTextPoor(text) || looksLikeTocPage(text);
   });
+  const spacingSuspectPages = targets.filter(page => page.textSpacingSuspect).map(page => page.pageNumber);
   if (!targets.length) return {
-    attemptedPages: 0, recognizedPages: 0, improvedPages: 0, lowConfidencePages: [], spreadPages: [],
+    attemptedPages: 0, recognizedPages: 0, improvedPages: 0, lowConfidencePages: [], spreadPages: [], spacingSuspectPages: [],
   };
 
   let createWorker;
@@ -775,6 +824,7 @@ async function runLocalPdfOcr(pdf, pages, onProgress = () => {}, renderPdfiumFal
     attemptedPages: targets.length, recognizedPages, improvedPages,
     lowConfidencePages: Array.from(new Set(lowConfidencePages)).sort((a, b) => a - b),
     spreadPages: Array.from(new Set(spreadPages)).sort((a, b) => a - b),
+    spacingSuspectPages: Array.from(new Set(spacingSuspectPages)).sort((a, b) => a - b),
   };
 }
 
@@ -951,7 +1001,7 @@ async function readPdf(file, { includePageImages = false, includeAIPageText = fa
     }
 
     const localTextOnlyMode = !includePageImages && !includeAIPageText && !includePageImagesForLowText;
-    let localOcr = { attemptedPages: 0, recognizedPages: 0 };
+    let localOcr = { attemptedPages: 0, recognizedPages: 0, spacingSuspectPages: [] };
     if (localTextOnlyMode) {
       localOcr = await runLocalPdfOcr(pdf, pages, onProgress, renderPdfiumFallback);
     }
@@ -993,6 +1043,7 @@ async function readPdf(file, { includePageImages = false, includeAIPageText = fa
       analysis.localOcrPages = localOcr.attemptedPages;
       analysis.localOcrRecognizedPages = localOcr.recognizedPages;
       analysis.localOcrImprovedPages = Number(localOcr.improvedPages || localOcr.recognizedPages || 0);
+      analysis.localOcrSpacingSuspectPages = Array.isArray(localOcr.spacingSuspectPages) ? localOcr.spacingSuspectPages : [];
       analysis.localOcrLowConfidencePages = Array.isArray(localOcr.lowConfidencePages) ? localOcr.lowConfidencePages : [];
       analysis.localOcrSpreadPages = Array.isArray(localOcr.spreadPages) ? localOcr.spreadPages : [];
       const ocrWarnings = [];
@@ -1018,6 +1069,16 @@ async function readPdf(file, { includePageImages = false, includeAIPageText = fa
       }
       if (pages.some(page => page.ocrRecognized && !page.ocrGeometryReliable)) {
         ocrWarnings.push("En algunas páginas el OCR recuperó texto, pero Tesseract no devolvió coordenadas reales; se mantuvo el texto y se marcó la geometría como aproximada.");
+      }
+      const unresolvedSpacingPages = pages
+        .filter(page => page.textSpacingSuspect && !page.ocrRecognized)
+        .map(page => page.pageNumber);
+      if (unresolvedSpacingPages.length) {
+        ocrWarnings.push(
+          "Se detectaron espacios sospechosos dentro de palabras en las páginas físicas " +
+          unresolvedSpacingPages.join(", ") +
+          ". El OCR local no produjo una mejora suficiente para reemplazar el texto original; revisá esas páginas antes de publicar la cátedra."
+        );
       }
       if (ocrWarnings.length) analysis.warnings = [...(analysis.warnings || []), ...ocrWarnings];
     }
