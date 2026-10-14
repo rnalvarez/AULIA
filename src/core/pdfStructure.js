@@ -615,11 +615,21 @@ function parseTocLine(line, pageCount, pageWidth) {
   const gapBeforePageNumber = previousItem && lastItem
     ? Number(lastItem.x || 0) - (Number(previousItem.x || 0) + Number(previousItem.width || 0))
     : 0;
-  // In a landscape scan the index may occupy only one half of the physical
-  // page. A page number aligned at the edge of that half is not necessarily
-  // beyond 58% of the full spread width; accept clear local right alignment too.
+  const rowLeft = Number(line?.xMin || 0);
+  const rowWidth = Number(line?.width || 0);
+  const rowRight = rowLeft + rowWidth;
+  // A printed index can occupy the left page of a landscape spread, so its
+  // right-aligned page number may sit near the middle of the physical sheet.
+  // OCR rows do not expose the original PDF text items; use their measured
+  // row geometry as evidence when they end at the gutter of the left page.
+  const rowEndsAtLeftSpreadEdge = Boolean(pageWidth) &&
+    rowWidth >= pageWidth * 0.18 &&
+    rowWidth <= pageWidth * 0.58 &&
+    rowRight >= pageWidth * 0.40 &&
+    rowRight <= pageWidth * 0.60;
   const pageNumberAtRight = !pageWidth || Number(lastItem?.x || 0) >= pageWidth * 0.58 ||
-    gapBeforePageNumber >= Math.max(12, pageWidth * 0.008);
+    gapBeforePageNumber >= Math.max(12, pageWidth * 0.008) ||
+    rowEndsAtLeftSpreadEdge;
 
   if (!dotted && !pageNumberAtRight) return null;
   if (SENTENCE_END_RE.test(title) && !/^\d+(?:\.\d+)*\s+/.test(title)) return null;
