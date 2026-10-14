@@ -14,6 +14,34 @@ function slugify(value) {
 const MAX_UNIT_CHARS = 5200;
 const OVERLAP_CHARS = 320;
 
+const ROLE_METADATA_FIELDS = [
+  "role",
+  "roleSource",
+  "roleConfidence",
+  "scopeSource",
+  "prioritySource",
+];
+
+function copyRoleMetadata(item) {
+  const metadata = {};
+  for (const field of ROLE_METADATA_FIELDS) {
+    if (item && Object.prototype.hasOwnProperty.call(item, field)) {
+      metadata[field] = item[field];
+    }
+  }
+  return metadata;
+}
+
+function inferDocumentType(value, format = "") {
+  const text = String(value || "").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+  if (/\b(compilacion|antologia|anthology|selected papers|actas)\b/.test(text)) return "compilacion";
+  if (/\b(articulo|article|academic paper|journal)\b/.test(text)) return "articulo";
+  if (/\b(libro|monografia|book)\b/.test(text)) return "libro";
+  if (/\b(apunte|documento breve|documento estructurado|manual|diapositivas|slides|presentacion)\b/.test(text)) return "apunte";
+  if (["txt", "md", "markdown", "docx", "json", "ppt", "pptx"].includes(String(format || "").toLowerCase())) return "apunte";
+  return "apunte";
+}
+
 function normalizeWhitespace(value) {
   return String(value ?? "")
     .replace(/\u00ad/g, "")
@@ -177,6 +205,7 @@ function buildSectionFragments({
         ...(section.needsReview ? { needsReview: true } : {}),
         ...(section.reviewNotes ? { reviewNotes: String(section.reviewNotes) } : {}),
         ...(section.childrenCount ? { childrenCount: section.childrenCount } : {}),
+        ...copyRoleMetadata(section),
         scope: section.scope || "included",
         priority: section.priority || "normal",
         teacherTopic: section.teacherTopic || "",
@@ -204,6 +233,11 @@ function buildDocumentMeta({
     title: String(file?.name || "Material").replace(/\.[^.]+$/, ""),
     sourceName: file?.name || "",
     format,
+    documentType: ["libro", "articulo", "compilacion", "apunte"].includes(file?.documentType)
+      ? file.documentType
+      : inferDocumentType(analysis?.documentType, format),
+    documentTypeSource: file?.documentTypeSource === "teacher" ? "teacher" : "auto",
+    priority: ["central", "normal", "context"].includes(file?.priority) ? file.priority : "normal",
     pages: pages || null,
     analysis: analysis
       ? {
@@ -250,6 +284,7 @@ function buildDocumentMeta({
       reviewNotes: String(section.reviewNotes || ""),
       ...(section.sourceTextOriginal ? { sourceTextOriginal: String(section.sourceTextOriginal) } : {}),
       childrenCount: Number(section.childrenCount || 0),
+      ...copyRoleMetadata(section),
       scope: section.scope || "included",
       priority: section.priority || "normal",
       teacherTopic: section.teacherTopic || "",
@@ -1350,6 +1385,7 @@ function normalizeChunk(item, index, sourceName = "") {
     teacherConcepts: Array.isArray(item.teacherConcepts) ? item.teacherConcepts : [],
     teacherLimit: item.teacherLimit || "",
     ...(item.sourceBibliographyId ? { sourceBibliographyId: item.sourceBibliographyId } : {}),
+    ...copyRoleMetadata(item),
   };
 }
 
@@ -1361,7 +1397,7 @@ export function materialToCorpus(material, existing = []) {
     let suffix = 1;
     while (used.has(id)) id = base + "-" + suffix++;
     used.add(id);
-    return { ...chunk, id };
+    return { ...chunk, ...copyRoleMetadata(chunk), id };
   });
 
   return {

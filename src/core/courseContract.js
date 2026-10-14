@@ -1,5 +1,31 @@
 const REQUIRED_ARRAYS = ["bibliography", "concepts", "modes", "activities", "examples"];
 
+const SECTION_ROLES = new Set(["contenido", "preliminares", "indice", "referencias", "anexo", "actividades"]);
+const ROLE_SOURCES = new Set(["rules", "ai", "teacher"]);
+const SCOPE_SOURCES = new Set(["role-default", "teacher"]);
+const PRIORITY_SOURCES = new Set(["document", "teacher"]);
+const DOCUMENT_TYPES = new Set(["libro", "articulo", "compilacion", "apunte"]);
+const DOCUMENT_TYPE_SOURCES = new Set(["auto", "teacher"]);
+
+function validateRoleMetadata(item, label, errors) {
+  if (Object.prototype.hasOwnProperty.call(item || {}, "role") && !SECTION_ROLES.has(item.role)) {
+    errors.push(label + " tiene role inválido");
+  }
+  if (item?.roleSource && !ROLE_SOURCES.has(item.roleSource)) {
+    errors.push(label + " tiene roleSource inválido");
+  }
+  if (item && Object.prototype.hasOwnProperty.call(item, "roleConfidence") &&
+      (!Number.isFinite(item.roleConfidence) || item.roleConfidence < 0 || item.roleConfidence > 1)) {
+    errors.push(label + " tiene roleConfidence inválido (debe estar entre 0 y 1)");
+  }
+  if (item?.scopeSource && !SCOPE_SOURCES.has(item.scopeSource)) {
+    errors.push(label + " tiene scopeSource inválido");
+  }
+  if (item?.prioritySource && !PRIORITY_SOURCES.has(item.prioritySource)) {
+    errors.push(label + " tiene prioritySource inválido");
+  }
+}
+
 function checkUniqueIds(items, label, errors) {
   const seen = new Set();
   for (const [index, item] of (items || []).entries()) {
@@ -46,7 +72,17 @@ export function validateCourse(course) {
   const validPriorities = new Set(["central", "normal", "context"]);
 
   for (const document of course?.documents || []) {
+    if (document && Object.prototype.hasOwnProperty.call(document, "documentType") && !DOCUMENT_TYPES.has(document.documentType)) {
+      errors.push("Documento \"" + (document?.title || document?.id || "sin título") + "\" tiene documentType inválido");
+    }
+    if (document?.documentTypeSource && !DOCUMENT_TYPE_SOURCES.has(document.documentTypeSource)) {
+      errors.push("Documento \"" + (document?.title || document?.id || "sin título") + "\" tiene documentTypeSource inválido");
+    }
+    if (document?.priority && !validPriorities.has(document.priority)) {
+      errors.push("Documento \"" + (document?.title || document?.id || "sin título") + "\" tiene priority inválida");
+    }
     for (const section of document?.sections || []) {
+      validateRoleMetadata(section, "Sección \"" + (section?.title || "sin título") + "\"", errors);
       if (section?.scope && !validScopes.has(section.scope)) {
         errors.push(`La sección "${section?.title || "sin título"}" tiene scope inválido`);
       }
@@ -60,6 +96,7 @@ export function validateCourse(course) {
   }
 
   for (const [index, chunk] of (course?.corpus || []).entries()) {
+    validateRoleMetadata(chunk, "Corpus[" + index + "]", errors);
     if (chunk?.scope && !validScopes.has(chunk.scope)) {
       errors.push(`Corpus[${index}] tiene scope inválido`);
     }
