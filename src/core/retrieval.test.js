@@ -83,3 +83,17 @@ test("la prioridad heredada de las fuentes ordena entradas del índice conceptua
  ]);
  assert.deepEqual(results.map(item=>item.priority),["central","normal","context"]);
 });
+
+
+test("contexto sigue siendo recuperable cuando la penalización lo baja al final",()=>{
+ const context=priorityCorpusItem("contexto-relevante","context");
+ context.title="Material complementario";
+ context.chapter="";
+ context.sectionPath=[];
+ context.content="vibración";
+ const longQuery="alfa bravo charlie delta echo foxtrot golf hotel india juliet kilo lima mike november oscar papa quebec romeo sierra vibración";
+ const results=retrieveFromCourse({concepts:[],corpus:[context],knowledgeBase:null},longQuery,{
+  conceptLimit:0,corpusLimit:3,knowledgeLimit:0
+ });
+ assert.equal(results.some(item=>item.id==="contexto-relevante"),true);
+});

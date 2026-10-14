@@ -209,15 +209,17 @@ function rank(items, question, optionsIncludeReference = false) {
   const corpusStats = buildCorpusStats(available, question);
   return available
     .map(item => {
-      const value = score(question, item, corpusStats);
+      const relevance = score(question, item, corpusStats);
       const priorityAdjustment = item.priority === "central"
         ? 1.5
         : item.priority === "context"
           ? -1.5
           : 0;
-      return { item, score: value + priorityAdjustment };
+      return { item, relevance, score: relevance + priorityAdjustment };
     })
-    .filter(({ score: value }) => value > 0)
+    // Priority affects ordering, not whether a textually relevant passage
+    // remains retrievable. Context material is a fallback, not an exclusion.
+    .filter(({ relevance }) => relevance > 0)
     .sort((a, b) => b.score - a.score)
     .map(({ item, score: value }) => ({ ...item, _score: value }));
 }
