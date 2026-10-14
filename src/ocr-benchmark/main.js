@@ -270,7 +270,7 @@ function cropCanvas(source, startRatio, endRatio) {
 function foregroundRatio(canvas) {
   const context = canvas.getContext("2d", { willReadFrequently: true });
   if (!context) return 1;
-  const step = 12;
+  const step = 4;
   const image = context.getImageData(0, 0, canvas.width, canvas.height).data;
   let sampled = 0;
   let foreground = 0;
@@ -283,6 +283,18 @@ function foregroundRatio(canvas) {
     }
   }
   return foreground / Math.max(1, sampled);
+}
+
+function cloneCanvas(source) {
+  const copy = document.createElement("canvas");
+  copy.width = source.width;
+  copy.height = source.height;
+  const context = copy.getContext("2d", { alpha: false });
+  if (!context) throw new Error("No se pudo copiar la imagen para el motor OCR.");
+  context.fillStyle = "#fff";
+  context.fillRect(0, 0, copy.width, copy.height);
+  context.drawImage(source, 0, 0);
+  return copy;
 }
 
 function centerOrderedPaddleText(items) {
@@ -304,30 +316,56 @@ function centerOrderedPaddleText(items) {
 
 async function runTesseract(worker, canvas, pageNumber, method) {
   const started = performance.now();
+  let input = null;
   try {
+    input = cloneCanvas(canvas);
+    const inputInkRatio = foregroundRatio(input);
+    if (inputInkRatio < 0.0007) {
+      return {
+        pageNumber, method, status: "error", text: "",
+        error: "La imagen entregada a Tesseract aparece vacía antes del reconocimiento.",
+        inputInkRatio, elapsedMs: performance.now() - started,
+      };
+    }
     await worker.setParameters({
       tessedit_pageseg_mode: "3",
       preserve_interword_spaces: "1",
     });
-    const result = await worker.recognize(canvas, {}, { blocks: true, tsv: true });
+    const result = await worker.recognize(input, {}, { blocks: true, tsv: true });
+    const text = String(result?.data?.text || "").trim();
     return {
       pageNumber,
       method,
-      status: "ok",
-      text: String(result?.data?.text || "").trim(),
+      status: text ? "ok" : "error",
+      text,
+      ...(text ? {} : { error: "Tesseract terminó, pero devolvió cero caracteres pese a recibir una imagen con contenido." }),
+      inputInkRatio,
       confidence: Number(result?.data?.confidence ?? NaN),
       elapsedMs: performance.now() - started,
     };
   } catch (error) {
     return { pageNumber, method, status: "error", text: "", error: error?.message || String(error), elapsedMs: performance.now() - started };
+  } finally {
+    clearCanvas(input);
   }
 }
 
 async function runPaddle(ocr, canvas, pageNumber, method) {
   const started = performance.now();
+  let input = null;
   try {
-    const [result] = await ocr.predict(canvas);
+    input = cloneCanvas(canvas);
+    const inputInkRatio = foregroundRatio(input);
+    if (inputInkRatio < 0.0007) {
+      return {
+        pageNumber, method, status: "error", text: "",
+        error: "La imagen entregada a PaddleOCR aparece vacía antes del reconocimiento.",
+        inputInkRatio, elapsedMs: performance.now() - started,
+      };
+    }
+    const [result] = await ocr.predict(input);
     const lines = centerOrderedPaddleText(result?.items);
+    const text = lines.map((item) => item.text).join("\\n").trim();
     const scored = lines.filter((item) => Number.isFinite(item.score));
     const confidence = scored.length
       ? 100 * scored.reduce((sum, item) => sum + item.score, 0) / scored.length
@@ -335,8 +373,10 @@ async function runPaddle(ocr, canvas, pageNumber, method) {
     return {
       pageNumber,
       method,
-      status: "ok",
-      text: lines.map((item) => item.text).join("\n").trim(),
+      status: text ? "ok" : "error",
+      text,
+      ...(text ? {} : { error: "PaddleOCR terminó, pero no detectó texto en una imagen con contenido visual." }),
+      inputInkRatio,
       confidence,
       elapsedMs: Number(result?.metrics?.totalMs) || performance.now() - started,
       engineMetrics: result?.metrics || null,
@@ -344,6 +384,8 @@ async function runPaddle(ocr, canvas, pageNumber, method) {
     };
   } catch (error) {
     return { pageNumber, method, status: "error", text: "", error: error?.message || String(error), elapsedMs: performance.now() - started };
+  } finally {
+    clearCanvas(input);
   }
 }
 
@@ -367,7 +409,7 @@ async function ensurePaddle() {
   const { PaddleOCR } = await import("@paddleocr/paddleocr-js");
   const ocr = await PaddleOCR.create({
     lang: "es",
-    ocrVersion: "PP-OCRv5",
+    ocrVersion: "PP-OCRv6",
     textDetectionBatchSize: 1,
     textRecognitionBatchSize: 1,
     ortOptions: {
