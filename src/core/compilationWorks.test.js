@@ -40,3 +40,35 @@ test("rechaza rangos superpuestos y páginas fuera del PDF", () => {
   assert.throws(() => splitCompilationIntoWorks(material, [{title:"A",startPage:1,endPage:4},{title:"B",startPage:4,endPage:6}]), /se superponen/);
   assert.throws(() => splitCompilationIntoWorks(material, [{title:"A",startPage:1,endPage:9}]), /entre 1 y 6/);
 });
+
+
+test("la separación de una compilación conserva el alcance por rol y su procedencia", () => {
+  const material = sample();
+  material.corpus = material.aiPages.map(page => ({
+    id: "src-" + page.pageNumber,
+    title: /references|bibliografia/i.test(page.extractedText) ? "Referencias" : "Contenido",
+    sectionPath: [/references|bibliografia/i.test(page.extractedText) ? "Referencias" : "Contenido"],
+    sectionLevel: 1,
+    content: page.extractedText,
+    sourcePageStart: page.pageNumber,
+    sourcePageEnd: page.pageNumber,
+    sourcePageCount: 6,
+    documentId: "doc-pack",
+    role: /references|bibliografia/i.test(page.extractedText) ? "referencias" : "contenido",
+    roleSource: "rules",
+    roleConfidence: 0.98,
+    scope: /references|bibliografia/i.test(page.extractedText) ? "excluded" : "included",
+    scopeSource: "role-default",
+    priority: "central",
+    prioritySource: "document",
+  }));
+  const split = splitCompilationIntoWorks(material, [
+    { title: "Listening Image", startPage: 1, endPage: 2 },
+  ]);
+  const references = split[0].corpus.find(chunk => chunk.role === "referencias");
+  assert.ok(references);
+  assert.equal(references.scope, "excluded");
+  assert.equal(references.scopeSource, "role-default");
+  assert.equal(references.priority, "central");
+  assert.equal(references.prioritySource, "document");
+});

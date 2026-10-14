@@ -1,4 +1,4 @@
-import { classifySectionRole } from "./sectionRoles.js";
+import { applySectionRoleDefaults } from "./sectionRoles.js";
 const clean = value => String(value ?? "").replace(/\s+/g, " ").trim();
 const slug = value => clean(value).normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 64) || "obra";
 function pageLines(page) {
@@ -66,8 +66,8 @@ export function splitCompilationIntoWorks(material, proposedWorks = []) {
       const pageNumber = Number(page.pageNumber), text = pageLines(page).join("\n");
       if (!text) continue;
       const source = sourceMetadataAtPage(material?.corpus, pageNumber);
-      const guessed = classifySectionRole({ title: source.title || work.title, content: text, sourcePageStart: pageNumber, sourcePageEnd: pageNumber, sourcePageCount: pageCount }, { pageCount, startPage: pageNumber, endPage: pageNumber });
-      const role = source.role || guessed.role, title = source.title || (role === "referencias" ? "Referencias" : work.title);
+      const resolved = applySectionRoleDefaults({ ...source, title: source.title || work.title, content: text, sourcePageStart: pageNumber, sourcePageEnd: pageNumber, sourcePageCount: pageCount }, { pageCount, startPage: pageNumber, endPage: pageNumber, documentPriority: parent.priority || "normal" });
+      const role = resolved.role, title = source.title || (role === "referencias" ? "Referencias" : work.title);
       const path = Array.isArray(source.sectionPath) && source.sectionPath.length ? source.sectionPath : [title];
       const key = [source.sectionId || "", title, role, path.join(" › ")].join("::");
       let section = grouped[grouped.length - 1];
@@ -76,11 +76,12 @@ export function splitCompilationIntoWorks(material, proposedWorks = []) {
           id: documentId + "-section-" + (grouped.length + 1), title, path, sectionPath: path,
           level: Number(source.sectionLevel || 1), sourcePageStart: pageNumber, sourcePageEnd: pageNumber,
           segmentationSource: source.segmentationSource || "compilation-page-range",
-          confidence: Number(source.confidence ?? guessed.confidence),
-          evidence: [...(Array.isArray(source.structureEvidence) ? source.structureEvidence : []), "texto asociado a páginas físicas exactas"],
-          role, roleSource: source.roleSource || "rules", roleConfidence: Number(source.roleConfidence ?? guessed.confidence),
-          scope: source.scope || "included", priority: source.priority || parent.priority || "normal",
-          needsReview: Boolean(source.needsReview || /ambiguous|unverified/i.test(String(page.layoutKind || ""))),
+          confidence: Number(source.confidence ?? source.roleConfidence ?? resolved.roleConfidence ?? 0.5),
+          evidence: [...(Array.isArray(source.structureEvidence) ? source.structureEvidence : []), ...(resolved.evidence || []), "texto asociado a páginas físicas exactas"],
+          role, roleSource: resolved.roleSource, roleConfidence: resolved.roleConfidence,
+          scope: resolved.scope, scopeSource: resolved.scopeSource,
+          priority: resolved.priority, prioritySource: resolved.prioritySource,
+          needsReview: Boolean(resolved.needsReview || source.needsReview || /ambiguous|unverified/i.test(String(page.layoutKind || ""))),
           content: "", documentId, sourceBibliographyId: bibliographyId, _key: key,
         };
         grouped.push(section);
@@ -103,7 +104,8 @@ export function splitCompilationIntoWorks(material, proposedWorks = []) {
       sourcePageCount: pageCount, documentId, sourceBibliographyId: bibliographyId,
       segmentationSource: section.segmentationSource, confidence: section.confidence, structureEvidence: section.evidence,
       role: section.role, roleSource: section.roleSource, roleConfidence: section.roleConfidence,
-      scope: section.scope, priority: section.priority, needsReview: section.needsReview,
+      scope: section.scope, scopeSource: section.scopeSource,
+      priority: section.priority, prioritySource: section.prioritySource, needsReview: section.needsReview,
     }));
     const document = {
       ...parent, id: documentId, title: work.title, sourceName: parent.sourceName || material.sourceName || "",
