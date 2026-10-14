@@ -1981,3 +1981,20 @@ button { border: 0; }
   white-space:pre-wrap;
   overflow-wrap:anywhere;
 }
+
+/* Revisión previa del tipo documental y las obras de una compilación */
+.studio-wf-review-queue{display:grid;gap:1rem;margin-bottom:1.25rem}
+.studio-wf-review-banner{display:flex;justify-content:space-between;align-items:flex-start;gap:1rem;flex-wrap:wrap;padding:1rem;border:1px solid var(--line,#d7dce3);border-radius:12px}
+.studio-wf-review-banner p{margin:.4rem 0 0;color:var(--muted,#667085)}
+.studio-wf-review-document{display:grid;gap:.85rem;padding:1rem;border:1px solid var(--line,#d7dce3);border-radius:12px}
+.studio-wf-review-heading,.studio-wf-work-review-head,.studio-wf-work-row-foot{display:flex;align-items:center;justify-content:space-between;gap:.75rem;flex-wrap:wrap}
+.studio-wf-review-heading span,.studio-wf-work-review-head small,.studio-wf-work-row-foot small{color:var(--muted,#667085);font-size:.86rem}
+.studio-wf-review-document select{width:100%;min-height:2.6rem;border:1px solid var(--line,#d7dce3);border-radius:8px;padding:.5rem .65rem;background:var(--panel,white);color:inherit}
+.studio-wf-work-review{display:grid;gap:.85rem}
+.studio-wf-work-review-head>div{display:grid;gap:.25rem}
+.studio-wf-work-row{display:grid;gap:.8rem;padding:.9rem;border:1px solid var(--line,#d7dce3);border-radius:10px}
+.studio-wf-work-fields{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:.65rem}
+.studio-wf-work-fields input{width:100%;min-width:0}
+.studio-wf-review-warning{color:#a33b21}
+@media(max-width:850px){.studio-wf-work-fields{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:520px){.studio-wf-work-fields{grid-template-columns:1fr}}

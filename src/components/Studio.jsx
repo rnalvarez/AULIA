@@ -2163,10 +2163,10 @@ async function importExternalKnowledge(e) {
           description="La extracción local recupera el texto y conserva la geometría. Con Groq, AULIA agrega una interpretación semántica del documento completo por tandas, y usa imágenes solo cuando hacen falta para leer páginas escaneadas o elementos visuales."
         >
           <div className="studio-wf-knowledge-provider">
-            <button type="button" className={ingestionProvider === "local" ? "active" : ""} onClick={() => setIngestionProvider("local")} disabled={!canEdit || busy} aria-pressed={ingestionProvider === "local"}>
+            <button type="button" className={ingestionProvider === "local" ? "active" : ""} onClick={() => setIngestionProvider("local")} disabled={!canEdit || busy || materialReviewQueue.length > 0} aria-pressed={ingestionProvider === "local"}>
               <strong>OCR local avanzado</strong><span>Alta resolución, coordenadas reales y segundo intento para páginas de baja calidad · sin cuota de IA</span>
             </button>
-            <button type="button" className={ingestionProvider === "groq" ? "active" : ""} onClick={() => setIngestionProvider("groq")} disabled={!canEdit || busy} aria-pressed={ingestionProvider === "groq"}>
+            <button type="button" className={ingestionProvider === "groq" ? "active" : ""} onClick={() => setIngestionProvider("groq")} disabled={!canEdit || busy || materialReviewQueue.length > 0} aria-pressed={ingestionProvider === "groq"}>
               <strong>Interpretación temática · Groq</strong><span>OCR visual selectivo más reconstrucción de capítulos y apartados</span>
             </button>
           </div>
@@ -2231,8 +2231,45 @@ async function importExternalKnowledge(e) {
           eyebrow="MATERIAL"
           title="Bibliografía y corpus de la cátedra"
           description="Cada documento se conserva por separado. Revisá la estructura propuesta, el texto de cada apartado y sus páginas; luego decidí el alcance y la prioridad antes de generar el índice conceptual."
-          actions={<label className={"primary studio-wf-file-btn" + (busy || (ingestionProvider === "groq" && !studioApiKey) ? " disabled" : "")}>{busy ? "Procesando…" : ingestionProvider === "groq" ? "Cargar y segmentar con Groq" : "Cargar material (extracción local)"}<input type="file" accept=".txt,.md,.markdown,.json,.pdf,.docx,text/plain,text/markdown,application/json,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document" multiple onChange={importMaterial} disabled={busy || (ingestionProvider === "groq" && !studioApiKey)}/></label>}
+          actions={<label className={"primary studio-wf-file-btn" + (busy || materialReviewQueue.length > 0 || (ingestionProvider === "groq" && !studioApiKey) ? " disabled" : "")}>{busy ? "Preparando…" : "Cargar material y revisar tipo"}<input type="file" accept=".txt,.md,.markdown,.json,.pdf,.docx,text/plain,text/markdown,application/json,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document" multiple onChange={importMaterial} disabled={busy || materialReviewQueue.length > 0 || (ingestionProvider === "groq" && !studioApiKey)}/></label>}
         >
+          {materialReviewQueue.length > 0 && <div className="studio-wf-review-queue">
+            <div className="studio-wf-review-banner">
+              <div><strong>Revisá el tipo documental antes de procesar</strong><p>AULIA ya extrajo el texto en este navegador. Todavía no llamó a Groq. Al confirmar, el análisis reutiliza esta extracción.</p></div>
+              <div className="studio-wf-panel-actions">
+                <button className="ghost" type="button" onClick={cancelMaterialReview} disabled={busy}>Cancelar</button>
+                <button className="primary" type="button" onClick={confirmMaterialReview} disabled={busy || !materialReviewQueue.every(isValidCompilationReview)}>Confirmar tipo y continuar</button>
+              </div>
+            </div>
+            {materialReviewQueue.map((item, itemIndex) => <article className="studio-wf-review-document" key={item.key}>
+              <div className="studio-wf-review-heading"><strong>{item.file.name}</strong><span>{item.pageCount ? item.pageCount + " páginas físicas" : "Páginas no detectadas"}</span></div>
+              <label className="studio-wf-field"><span>Tipo de documento</span>
+                <select value={item.documentType} disabled={busy} onChange={event => updateMaterialReviewItem(itemIndex, { documentType: event.target.value, documentTypeSource: "teacher" })}>
+                  <option value="libro">Libro</option><option value="articulo">Artículo</option><option value="compilacion">Compilación de artículos</option><option value="apunte">Apunte o diapositivas</option>
+                </select>
+                <small>Propuesta automática a partir de la estructura local; al confirmar, tu elección queda declarada para el análisis.</small>
+              </label>
+              {item.documentType === "compilacion" && <div className="studio-wf-work-review">
+                <div className="studio-wf-work-review-head"><div><strong>Obras detectadas</strong><small>Los rangos usan páginas físicas. Cada obra incluye sus referencias hasta la página anterior a la siguiente.</small></div>
+                  <button className="ghost" type="button" onClick={() => addCompilationWork(itemIndex)} disabled={busy || Math.max(0, ...(item.works || []).map(work => Number(work.endPage || 0))) >= Number(item.pageCount || 1)}>+ Agregar obra</button>
+                </div>
+                {(item.works || []).map((work, workIndex) => <div className="studio-wf-work-row" key={work.id || workIndex}>
+                  <div className="studio-wf-work-fields">
+                    <Field label="Título de la obra" value={work.title} onChange={value => updateCompilationWork(itemIndex, workIndex, { title: value })} placeholder="Título detectado o manual"/>
+                    <Field label="Autoría" value={work.author} onChange={value => updateCompilationWork(itemIndex, workIndex, { author: value })} placeholder="Autor o autores"/>
+                    <Field label="Año" value={work.year} onChange={value => updateCompilationWork(itemIndex, workIndex, { year: value })} placeholder="Año"/>
+                    <label className="studio-wf-field"><span>Página física inicial</span><input type="number" min="1" max={item.pageCount} value={work.startPage} onChange={event => updateCompilationWork(itemIndex, workIndex, { startPage: event.target.value })}/></label>
+                    <label className="studio-wf-field"><span>Página física final</span><input type="number" min="1" max={item.pageCount} value={work.endPage} onChange={event => updateCompilationWork(itemIndex, workIndex, { endPage: event.target.value })}/></label>
+                  </div>
+                  <div className="studio-wf-work-row-foot"><small>{work.evidence || (work.needsReview ? "Requiere revisión docente." : "Propuesta automática.")}</small>
+                    <button className="studio-wf-danger" type="button" onClick={() => updateMaterialReviewItem(itemIndex, { works: item.works.filter((_, index) => index !== workIndex) })} disabled={busy}>Eliminar obra</button>
+                  </div>
+                </div>)}
+                {!isValidCompilationReview(item) && <small className="studio-wf-review-warning">Revisá los títulos y rangos: deben estar dentro del PDF y no superponerse.</small>}
+                {(item.works || []).length === 0 && <button className="ghost" type="button" onClick={() => updateMaterialReviewItem(itemIndex, { works: [{ id: "obra-manual-1", title: "Obra 1", author: "", year: "", startPage: 1, endPage: item.pageCount, needsReview: true }] })}>Agregar primera obra</button>}
+              </div>}
+            </article>)}
+          </div>}
           {materialSections.length ? <>
             <div className="studio-wf-stats">
               <div><strong>{materialSections.length}</strong><span>secciones estructurales</span></div>
