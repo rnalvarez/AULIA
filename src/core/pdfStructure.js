@@ -655,12 +655,21 @@ function tocPageScore(page) {
   return candidates * 2 + density * 10 + dotted * 1.5 + numbered;
 }
 
+function isDedicatedTocHeading(value) {
+  const text = cleanPdfLine(value?.text || value)
+    .replace(/[.:：]+$/u, "")
+    .trim();
+  return /^(?:índice|indice|contenido|contents|table of contents|sumario)(?:\s+(?:general|analítico|analitico))?$/iu.test(text);
+}
+
 function findTocWindow(pages) {
   let indexPage = -1;
 
-  for (let i = 0; i < Math.min(pages.length, 60); i += 1) {
-    const text = pages[i].lines.map((line) => line.text).join(" ");
-    if (/\b(?:índice|indice|contenido|contents|table of contents|sumario)\b/i.test(text)) {
+  // Do not mistake an ordinary mention of an "índice" in prose for the table
+  // of contents. A real TOC starts with a dedicated heading line.
+  for (let i = 0; i < pages.length; i += 1) {
+    const rows = orderedPageLines(pages[i]);
+    if (rows.some((line) => isDedicatedTocHeading(line))) {
       indexPage = i;
       break;
     }
