@@ -118,11 +118,15 @@ function splitAtNaturalBoundaries(text, maxChars = MAX_UNIT_CHARS) {
 }
 
 function makeSectionId(documentId, section, index) {
+  // Keep the ordinal before long titles/paths because slugify truncates IDs.
+  // Putting it last could remove it from the 56-character slug and make
+  // different sections share the same ID, so a button changed several at once.
   return slugify([
     documentId,
+    "seccion",
+    Number(index || 0) + 1,
     ...(section?.sectionPath || []),
     section?.title || "material",
-    Number(index || 0) + 1,
   ].join("-"));
 }
 
@@ -351,6 +355,20 @@ function isLocalTextPoor(value) {
     quality.singleRatio > 0.28 || /(?:\uFFFD|[\u0000-\u0008\u000B\u000C\u000E-\u001F])/.test(String(value || ""));
 }
 
+function looksLikeTocPage(value) {
+  const raw = String(value || "").replace(/\r/g, "");
+  const normalized = raw.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
+  // A table-of-contents page can have plenty of text characters and still be
+  // unusable for structure detection when text-layer coordinates are wrong.
+  // Only force OCR when the page begins with a dedicated TOC heading and has
+  // multiple page-number/leader signals, not merely because prose says "índice".
+  const hasDedicatedHeading = /^\s*(?:indice|contenido|sumario|contents|table of contents)\b/.test(normalized);
+  if (!hasDedicatedHeading) return false;
+  const pageNumbers = normalized.match(/\b\d{1,3}\b/g) || [];
+  const leaders = normalized.match(/(?:\.{2,}|…{2,}|·{2,})/g) || [];
+  return pageNumbers.length >= 5 || leaders.length >= 3;
+}
+
 function parseTesseractTsv(data) {
   const tsv = String(data?.tsv || "");
   if (!tsv.trim()) return [];
@@ -530,9 +548,13 @@ async function recognizeLocalCanvas(worker, canvas, viewport, scale) {
 }
 
 async function runLocalPdfOcr(pdf, pages, onProgress = () => {}, renderPdfiumFallback = null) {
-  const targets = (pages || []).filter(page =>
-    isLocalTextPoor((page.lines || []).map(line => line?.text || "").join("\n").trim())
-  );
+  const targets = (pages || []).filter(page => {
+    const text = (page.lines || []).map(line => line?.text || "").join("\n").trim();
+    // TOC pages need reliable line geometry for matching titles and page
+    // numbers. OCR them even when the native text layer has a high character
+    // count but its reading order or line boundaries are misleading.
+    return isLocalTextPoor(text) || looksLikeTocPage(text);
+  });
   if (!targets.length) return {
     attemptedPages: 0, recognizedPages: 0, improvedPages: 0, lowConfidencePages: [], spreadPages: [],
   };
@@ -647,10 +669,14 @@ async function runLocalPdfOcr(pdf, pages, onProgress = () => {}, renderPdfiumFal
         });
 
         const sourceWasPoor = isLocalTextPoor(originalText);
+        const forceStructureOcr = looksLikeTocPage(originalText);
         const ocrCanReplace = bestText.length > 0 &&
           (sourceWasPoor
             ? bestQuality.score >= Math.max(38, originalQuality.score - 4)
-            : bestQuality.score >= originalQuality.score + 3);
+            : forceStructureOcr
+              ? geometryLines.length >= 5 &&
+                bestQuality.score >= Math.max(42, originalQuality.score - 12)
+              : bestQuality.score >= originalQuality.score + 3);
         if (ocrCanReplace && finalLines.length) {
           target.lines = finalLines;
           target.ocrRecognized = true;
