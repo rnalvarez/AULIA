@@ -16,7 +16,7 @@ Comparar de forma reproducible la extracción de texto de un PDF y el OCR de Tes
 
 ## Privacidad y dependencias
 
-El código lee y procesa el PDF en el navegador. No envía el PDF ni sus transcripciones a servicios de AULIA. Para renderizar las páginas, el diagnóstico desactiva `ImageDecoder` y `OffscreenCanvas`, e indica explícitamente `canvas: null` cuando usa `canvasContext`, siguiendo la API actual de PDF.js. Esto permite aislar la ruta de renderizado asociada al elemento canvas. El informe incluye los operadores de imagen detectados en la página para diferenciar problemas de interpretación del PDF de problemas de pintura en el lienzo. En la primera ejecución, los motores pueden descargar código de ejecución, datos de idioma y modelos desde sus fuentes públicas. PaddleOCR.js utiliza ONNX Runtime Web. Para español se configura PP-OCRv6, cuyo selector de idioma admite `es`; PP-OCRv5 no admite esa combinación en la versión del SDK probada.
+El código lee y procesa el PDF en el navegador. No envía el PDF ni sus transcripciones a servicios de AULIA. Para renderizar las páginas, el diagnóstico usa PDF.js con `ImageDecoder` y `OffscreenCanvas` desactivados, e indica explícitamente `canvas: null` con `canvasContext`. Si el lienzo sigue vacío pese a que PDF.js detecta la imagen, intenta renderizar esa página con PDFium WebAssembly, una segunda implementación del motor PDF que también se ejecuta en el navegador. El informe registra qué motor produjo la imagen, su proporción de píxeles oscuros y los errores del fallback. El archivo y sus páginas se procesan localmente; el WASM se sirve desde los recursos estáticos de AULIA. En la primera ejecución, los motores pueden descargar código de ejecución, datos de idioma y modelos desde sus fuentes públicas. PaddleOCR.js utiliza ONNX Runtime Web. Para español se configura PP-OCRv6, cuyo selector de idioma admite `es`; PP-OCRv5 no admite esa combinación en la versión del SDK probada.
 
 La página de diagnóstico debe mantenerse como entrada independiente. No debe cargarse en el chat estudiantil ni convertirse en requisito del flujo de ingestión de producción.
 
@@ -25,7 +25,7 @@ La página de diagnóstico debe mantenerse como entrada independiente. No debe c
 - nombre y tamaño del archivo, cantidad de páginas y páginas de prueba;
 - motor, estrategia (página completa o mitades), duración y confianza declarada por el motor cuando existe;
 - texto resultante y errores de ejecución;
-- porcentaje de píxeles oscuros detectado antes del OCR, para distinguir un render vacío de un fallo de reconocimiento;
+- porcentaje de píxeles oscuros detectado antes del OCR, motor de renderizado usado (PDF.js o fallback PDFium) y errores de renderizado;
 - vista previa de la imagen que reciben los motores (solo en pantalla; no se incluye en el informe exportado);
 - WER y CER cuando hay una transcripción de referencia;
 - metadatos de tiempo de la comparación.
