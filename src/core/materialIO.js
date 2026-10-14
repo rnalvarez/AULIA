@@ -431,27 +431,17 @@ function enhanceLocalOcrCanvas(source) {
   return canvas;
 }
 
-function toPageGeometryLines(records, viewport, scale, canvasHeight, xOffset = 0) {
+function toPageGeometryLines(records, scale, canvasHeight, xOffset = 0) {
+  // page.lines uses displayed page coordinates (rotation already applied).
+  // Keep OCR boxes in that same coordinate system instead of converting back
+  // to the PDF's unrotated coordinate space.
   return (records || []).map((record, index) => {
-    const x0 = Number(record.left || 0) + xOffset;
-    const x1 = x0 + Number(record.width || 0);
-    const y0 = Number(record.top || 0);
-    const y1 = y0 + Number(record.height || 0);
-    let points;
-    try {
-      points = [
-        viewport.convertToPdfPoint(x0, y0), viewport.convertToPdfPoint(x1, y0),
-        viewport.convertToPdfPoint(x0, y1), viewport.convertToPdfPoint(x1, y1),
-      ];
-    } catch {
-      points = [[x0 / scale, (canvasHeight - y0) / scale], [x1 / scale, (canvasHeight - y0) / scale],
-        [x0 / scale, (canvasHeight - y1) / scale], [x1 / scale, (canvasHeight - y1) / scale]];
-    }
-    const xs = points.map(p => Number(p[0])).filter(Number.isFinite);
-    const ys = points.map(p => Number(p[1])).filter(Number.isFinite);
-    if (!xs.length || !ys.length) return null;
-    const xMin = Math.min(...xs), xMax = Math.max(...xs);
-    const yMin = Math.min(...ys), yMax = Math.max(...ys);
+    const x0 = (Number(record.left || 0) + xOffset) / scale;
+    const x1 = x0 + Number(record.width || 0) / scale;
+    const y0 = (canvasHeight - Number(record.top || 0)) / scale;
+    const y1 = (canvasHeight - (Number(record.top || 0) + Number(record.height || 0))) / scale;
+    const xMin = Math.min(x0, x1), xMax = Math.max(x0, x1);
+    const yMin = Math.min(y0, y1), yMax = Math.max(y0, y1);
     return {
       text: record.text, xMin, xMax, width: Math.max(0, xMax - xMin), y: (yMin + yMax) / 2,
       fontSize: Math.max(1, yMax - yMin), bold: false, boldRatio: 0,
@@ -642,7 +632,7 @@ async function runLocalPdfOcr(pdf, pages, onProgress = () => {}, renderPdfiumFal
         }
 
         const geometryLines = best.usedGeometry
-          ? toPageGeometryLines(best.records || [], viewport, scale, canvas.height)
+          ? toPageGeometryLines(best.records || [], scale, canvas.height)
           : [];
         const fallbackLines = bestText.split("\n").map(line => line.trim()).filter(Boolean);
         const finalLines = geometryLines.length ? geometryLines : fallbackLines.map((text, lineIndex) => {
@@ -735,9 +725,21 @@ async function readPdf(file, { includePageImages = false, includeAIPageText = fa
         normalizeWhitespace: true,
         disableCombineTextItems: false,
       });
-      // TextItem.transform uses the PDF page's native coordinate space. Keep extraction
-      // geometry unrotated; rendering below still honors the page's declared rotation.
-      const viewport = page.getViewport({ scale: 1, rotation: 0 });
+      // Normalize text geometry into the same displayed orientation used for page
+      // images and layout analysis. Many scanned books store landscape spreads with
+      // a 270° page rotation; grouping raw PDF coordinates breaks their lines.
+      const viewport = page.getViewport({ scale: 1 });
+      const displayTextItems = textContent.items.map((item) => {
+        const rawTransform = Array.isArray(item?.transform) ? item.transform : [1, 0, 0, 1, 0, 0];
+        const transform = pdfjsLib.Util.transform(viewport.transform, rawTransform);
+        return {
+          ...item,
+          transform: [
+            transform[0], transform[1], transform[2], transform[3],
+            transform[4], viewport.height - transform[5],
+          ],
+        };
+      });
 
       let structTree = null;
       try {
@@ -749,7 +751,7 @@ async function readPdf(file, { includePageImages = false, includeAIPageText = fa
       const structHeadings = countPdfStructHeadings(structTree);
       if (structHeadings > 0) structTreePages += 1;
 
-      const lines = groupPdfItems(textContent.items, viewport.width);
+      const lines = groupPdfItems(displayTextItems, viewport.width);
       const pageTextForImageDecision = lines
         .map(line => typeof line === "string" ? line : line?.text || "")
         .filter(Boolean)
