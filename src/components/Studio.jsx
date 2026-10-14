@@ -2227,16 +2227,20 @@ async function importExternalKnowledge(e) {
                         <div><span>Marcadores</span><strong>{documentGroup.analysis.outlineDetected ? "Detectados" : "No detectados"}</strong></div>
                         <div><span>Columnas</span><strong>{documentGroup.analysis.columns?.two ? (documentGroup.analysis.columns?.one ? "Mixto" : "Dos") : "Una"}</strong></div>
                         <div><span>Secciones</span><strong>{documentGroup.analysis.sectionCount || documentGroup.sections.length}</strong></div>
-                        <div><span>Revisión</span><strong>{documentGroup.analysis.lowConfidenceSections ? documentGroup.analysis.lowConfidenceSections + " requiere(n) atención" : "Sin alertas"}</strong></div>
+                        <div><span>Revisión</span><strong>{(!documentGroup.analysis.tocDetected && !documentGroup.analysis.outlineDetected) || Number(documentGroup.analysis.lowConfidenceSections || 0) > 0 || (documentGroup.analysis.warnings || []).length > 0 ? "Revisar estructura" : "Sin alertas"}</strong></div>
                       </div>
                       {documentGroup.analysis.warnings?.length > 0 && (
-                        <details className="studio-wf-details">
+                        <details className="studio-wf-details" open={!documentGroup.analysis.tocDetected && !documentGroup.analysis.outlineDetected}>
                           <summary>Advertencias del relevamiento ({documentGroup.analysis.warnings.length})</summary>
                           <ul className="studio-wf-pdf-warning-list">{documentGroup.analysis.warnings.map((warning) => <li key={warning}>{warning}</li>)}</ul>
                         </details>
                       )}
                     </div>
                   )}
+
+                  {documentGroup.analysis && <div className="studio-wf-structure-note">
+                    Este informe describe cómo AULIA leyó el archivo; no decide la importancia pedagógica. En cada sección de abajo elegí el <strong>alcance</strong> (Incluido, Referencial o Excluir) y la <strong>prioridad</strong> (Central, Complementario o Contexto). Como el índice no quedó detectado, verificá los títulos y las páginas antes de publicar.
+                  </div>}
 
                   <div className="studio-wf-corpus-list">
                     {documentGroup.sections.length ? documentGroup.sections.map((section, i) => (
