@@ -65,3 +65,10 @@ Cada formato debe tener un adaptador propio que produzca un modelo documental co
 - bloques en orden de lectura y referencias de página.
 
 El motor debe clasificar y tratar cada página individualmente; una sola estrategia no puede imponerse a todo el archivo. El índice temático generado por IA, el corpus recuperable y la publicación del asistente son etapas distintas. Si la interpretación temática se interrumpe por cuota, el corpus recuperado debe seguir disponible y el análisis tiene que poder reanudarse sin descartar el trabajo terminado.
+
+## Renderizado de páginas PDF en producción
+
+La extracción primaria continúa en PDF.js. Cuando una página necesita OCR local o una imagen para visión, AULIA comprueba si el lienzo realmente contiene tinta visible. Si PDF.js falla o devuelve un lienzo vacío, se carga de forma diferida PDFium WebAssembly y se intenta recuperar solo esa página. El PDF se procesa dentro del navegador y el renderizador alternativo se cierra al terminar el documento. Las páginas recuperadas se registran en el análisis para que el docente sepa qué contenido necesitó una ruta alternativa.
+
+El fallback de renderizado no garantiza que el OCR sea correcto. La aceptación depende también de la calidad del texto recuperado, del orden de lectura, de la separación de páginas enfrentadas y de la conservación de las referencias a páginas. El motor OCR alternativo del benchmark no debe activarse en producción por defecto: en la primera prueba, PaddleOCR.js fue sustancialmente más lento que Tesseract.js en este entorno.
+
