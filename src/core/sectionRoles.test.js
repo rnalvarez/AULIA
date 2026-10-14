@@ -54,3 +54,33 @@ test("la posición y una cantidad mínima de texto permiten detectar preliminare
   assert.equal(classified.role, "preliminares");
   assert.ok(classified.confidence < 0.8);
 });
+
+
+import { defaultScopeForRole, resolveSectionControls, preserveTeacherDecisions } from "./sectionRoles.js";
+
+test("el alcance predeterminado se deriva del rol", () => {
+  assert.equal(defaultScopeForRole("contenido"), "included");
+  assert.equal(defaultScopeForRole("anexo"), "reference");
+  assert.equal(defaultScopeForRole("actividades"), "reference");
+  assert.equal(defaultScopeForRole("preliminares"), "excluded");
+  assert.equal(defaultScopeForRole("indice"), "excluded");
+  assert.equal(defaultScopeForRole("referencias"), "excluded");
+});
+
+test("el alcance y la prioridad explícitos del docente prevalecen", () => {
+  const value = resolveSectionControls({ role: "referencias", scope: "included", scopeSource: "teacher", priority: "central", prioritySource: "teacher" }, "context");
+  assert.equal(value.scope, "included");
+  assert.equal(value.scopeSource, "teacher");
+  assert.equal(value.priority, "central");
+  assert.equal(value.prioritySource, "teacher");
+});
+
+test("reprocesar conserva decisiones docentes cuando coinciden título y páginas", () => {
+  const previous = [{ id: "old", title: "Referencias", sectionPath: ["Referencias"], sourcePageStart: 14, sourcePageEnd: 16, role: "referencias", scope: "reference", scopeSource: "teacher", priority: "central", prioritySource: "teacher" }];
+  const incoming = [{ id: "new", title: "Referencias", sectionPath: ["Referencias"], sourcePageStart: 14, sourcePageEnd: 16, role: "referencias", ...resolveSectionControls({ role: "referencias" }, "context") }];
+  const value = preserveTeacherDecisions(incoming, previous, { documentPriority: "context", previousDocumentPriority: "normal" })[0];
+  assert.equal(value.scope, "reference");
+  assert.equal(value.scopeSource, "teacher");
+  assert.equal(value.priority, "central");
+  assert.equal(value.prioritySource, "teacher");
+});

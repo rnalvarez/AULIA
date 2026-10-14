@@ -382,8 +382,14 @@ function buildMaterialStructure(course) {
         sourceTextOriginal: String(section.sourceTextOriginal || ""),
         visualElementCount: Number(section.visualElementCount || first.visualElementCount || 0),
         childrenCount: Number(section.childrenCount || 0),
-        scope: section.scope || "included",
-        priority: section.priority || "normal",
+        role: section.role || first.role || "",
+        roleSource: section.roleSource || first.roleSource || "",
+        roleConfidence: Number(section.roleConfidence ?? first.roleConfidence ?? 0),
+        roleEvidence: Array.isArray(section.roleEvidence) ? section.roleEvidence : [],
+        scope: section.scope || first.scope || "included",
+        scopeSource: section.scopeSource || first.scopeSource || "role-default",
+        priority: section.priority || first.priority || "normal",
+        prioritySource: section.prioritySource || first.prioritySource || "document",
         teacherTopic: section.teacherTopic || "",
         teacherConcepts: Array.isArray(section.teacherConcepts) ? section.teacherConcepts : [],
         teacherLimit: section.teacherLimit || "",
@@ -769,11 +775,78 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
   }
 
   function setMaterialScope(section, scope) {
-    updateMaterialSection(section, { scope });
+    updateMaterialSection(section, { scope, scopeSource: "teacher" });
   }
 
   function setMaterialPriority(section, priority) {
-    updateMaterialSection(section, { priority });
+    updateMaterialSection(section, { priority, prioritySource: "teacher" });
+  }
+
+  function updateMaterialDocument(documentId, patch) {
+    mutate(current => {
+      const selectedUnit = Object.prototype.hasOwnProperty.call(patch, "pedagogicalUnitId")
+        ? (current.pedagogicalUnits || []).find(unit => unit.id === patch.pedagogicalUnitId)
+        : null;
+      const nextPatch = { ...patch };
+      if (Object.prototype.hasOwnProperty.call(patch, "pedagogicalUnitId")) {
+        nextPatch.priorityInheritedFromUnit = Boolean(patch.pedagogicalUnitId);
+        if (selectedUnit && ["central", "normal", "context"].includes(selectedUnit.priority)) nextPatch.priority = selectedUnit.priority;
+      }
+      const documents = (current.documents || []).map(document => {
+        if (String(document.id || "") !== String(documentId || "")) return document;
+        const nextPriority = nextPatch.priority || document.priority || "normal";
+        return {
+          ...document,
+          ...nextPatch,
+          sections: (document.sections || []).map(section =>
+            section.prioritySource === "teacher" || !Object.prototype.hasOwnProperty.call(nextPatch, "priority")
+              ? section : { ...section, priority: nextPriority, prioritySource: "document" }
+          ),
+        };
+      });
+      const corpus = (current.corpus || []).map(chunk => {
+        if (String(chunk.documentId || "") !== String(documentId || "")) return chunk;
+        if (!Object.prototype.hasOwnProperty.call(nextPatch, "priority") || chunk.prioritySource === "teacher") return chunk;
+        return { ...chunk, priority: nextPatch.priority, prioritySource: "document" };
+      });
+      return { ...current, documents, corpus };
+    });
+  }
+
+  function setDocumentPriority(documentId, priority) {
+    updateMaterialDocument(documentId, { priority, priorityInheritedFromUnit: false });
+  }
+
+  function assignDocumentToUnit(documentId, unitId) {
+    const document = (draft.documents || []).find(item => item.id === documentId);
+    const unit = (draft.pedagogicalUnits || []).find(item => item.id === unitId);
+    updateMaterialDocument(documentId, {
+      pedagogicalUnitId: unitId || "",
+      priority: unit && ["central", "normal", "context"].includes(unit.priority) ? unit.priority : (document?.priority || "normal"),
+      priorityInheritedFromUnit: Boolean(unitId),
+    });
+  }
+
+  function setPedagogicalUnitPriority(unitId, priority) {
+    mutate(current => {
+      const pedagogicalUnits = (current.pedagogicalUnits || []).map(unit => unit.id === unitId ? { ...unit, priority } : unit);
+      const assignedDocuments = new Set();
+      const documents = (current.documents || []).map(document => {
+        if (document.pedagogicalUnitId !== unitId || !document.priorityInheritedFromUnit) return document;
+        assignedDocuments.add(String(document.id || ""));
+        return {
+          ...document,
+          priority,
+          sections: (document.sections || []).map(section => section.prioritySource === "teacher"
+            ? section : { ...section, priority, prioritySource: "document" }),
+        };
+      });
+      const corpus = (current.corpus || []).map(chunk =>
+        assignedDocuments.has(String(chunk.documentId || "")) && chunk.prioritySource !== "teacher"
+          ? { ...chunk, priority, prioritySource: "document" } : chunk
+      );
+      return { ...current, pedagogicalUnits, documents, corpus };
+    });
   }
 
   async function prepareMaterialForReview(files) {
@@ -1190,13 +1263,60 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
 
           const incomingDocumentId = String(prepared?.document?.id || "");
           const incomingSourceName = String(prepared?.sourceName || file.name || "").trim().toLocaleLowerCase();
+          const previousSourceDocuments = (workingDraft.documents || []).filter(document =>
+            String(document?.sourceName || "").trim().toLocaleLowerCase() === incomingSourceName
+          );
+          const previousSourceChunks = (workingDraft.corpus || []).filter(chunk =>
+            String(chunk?.source || "").trim().toLocaleLowerCase() === incomingSourceName ||
+            previousSourceDocuments.some(document => String(document.id || "") === String(chunk?.documentId || ""))
+          );
           const retainedCorpus = (workingDraft.corpus || []).filter(chunk =>
             String(chunk?.documentId || "") !== incomingDocumentId &&
             String(chunk?.source || "").trim().toLocaleLowerCase() !== incomingSourceName
           );
-          const incomingMaterials = selectedDocumentType === "compilacion"
+          const incomingMaterialsRaw = selectedDocumentType === "compilacion"
             ? splitCompilationIntoWorks({ ...prepared, aiPages: extracted.aiPages || prepared.aiPages || [] }, selectedWorks)
             : [prepared];
+          const incomingMaterials = incomingMaterialsRaw.map(item => {
+            const incomingDoc = item.document || {};
+            const rangeStart = Number(incomingDoc.sourcePageStart || incomingDoc.pageRange?.start || 0);
+            const rangeEnd = Number(incomingDoc.sourcePageEnd || incomingDoc.pageRange?.end || rangeStart);
+            const priorDoc = previousSourceDocuments.find(document => {
+              if (document.id === incomingDoc.id) return true;
+              const sameTitle = String(document.title || "").trim().toLowerCase() === String(incomingDoc.title || "").trim().toLowerCase();
+              const priorStart = Number(document.sourcePageStart || document.pageRange?.start || 0);
+              const priorEnd = Number(document.sourcePageEnd || document.pageRange?.end || priorStart);
+              const overlaps = rangeStart > 0 && priorStart > 0 && rangeStart <= priorEnd && priorStart <= rangeEnd;
+              return sameTitle && (!rangeStart || !priorStart || overlaps);
+            });
+            const unitId = priorDoc?.pedagogicalUnitId || incomingDoc.pedagogicalUnitId || "";
+            const unit = (workingDraft.pedagogicalUnits || []).find(candidate => candidate.id === unitId);
+            const priority = priorDoc?.priorityInheritedFromUnit && ["central", "normal", "context"].includes(unit?.priority)
+              ? unit.priority : (priorDoc?.priority || incomingDoc.priority || "normal");
+            const priorityInheritedFromUnit = priorDoc ? Boolean(priorDoc.priorityInheritedFromUnit) : Boolean(incomingDoc.priorityInheritedFromUnit);
+            const priorSections = priorDoc?.sections || [];
+            const newSections = preserveTeacherDecisions(incomingDoc.sections || [], priorSections, {
+              documentPriority: priority, previousDocumentPriority: priorDoc?.priority || "normal",
+            });
+            const priorChunks = previousSourceChunks.filter(chunk => {
+              if (priorDoc && String(chunk.documentId || "") === String(priorDoc.id || "")) return true;
+              const start = Number(chunk.sourcePageStart || chunk.sourcePage || 0);
+              const end = Number(chunk.sourcePageEnd || chunk.sourcePage || start);
+              return rangeStart > 0 && start > 0 && start <= rangeEnd && end >= rangeStart;
+            });
+            const newCorpus = preserveTeacherDecisions(item.corpus || [], priorChunks, {
+              documentPriority: priority, previousDocumentPriority: priorDoc?.priority || "normal",
+            });
+            return {
+              ...item,
+              document: {
+                ...incomingDoc,
+                ...((priorDoc?.pedagogicalUnitId || incomingDoc.pedagogicalUnitId) ? { pedagogicalUnitId: unitId } : {}),
+                priority, priorityInheritedFromUnit, sections: newSections,
+              },
+              corpus: newCorpus,
+            };
+          });
           const retainedDocuments = (workingDraft.documents || []).filter(document =>
             String(document?.id || "") !== incomingDocumentId &&
             String(document?.sourceName || "").trim().toLocaleLowerCase() !== incomingSourceName
@@ -2366,6 +2486,21 @@ async function importExternalKnowledge(e) {
                     <div>
                       <span className="eyebrow">DOCUMENTO {documentIndex + 1}</span>
                       <h3>{documentGroup.title}</h3>
+                      {draft.documents?.some(document => document.id === documentGroup.id) && <div className="studio-wf-document-controls">
+                        <label className="studio-wf-field">
+                          <span>Prioridad del documento</span>
+                          <select value={draft.documents.find(document => document.id === documentGroup.id)?.priority || "normal"} disabled={!canEdit || busy} onChange={event => setDocumentPriority(documentGroup.id, event.target.value)}>
+                            <option value="central">Central</option><option value="normal">Complementario</option><option value="context">Contexto</option>
+                          </select>
+                        </label>
+                        {(draft.pedagogicalUnits || []).length > 0 && <label className="studio-wf-field">
+                          <span>Unidad pedagógica</span>
+                          <select value={draft.documents.find(document => document.id === documentGroup.id)?.pedagogicalUnitId || ""} disabled={!canEdit || busy} onChange={event => assignDocumentToUnit(documentGroup.id, event.target.value)}>
+                            <option value="">Sin asignar</option>
+                            {(draft.pedagogicalUnits || []).map(unit => <option key={unit.id} value={unit.id}>{unit.title}</option>)}
+                          </select>
+                        </label>}
+                      </div>}
                       {documentGroup.sourceName && <small>{documentGroup.sourceName}{documentGroup.pages ? " · " + documentGroup.pages + " páginas" : ""}</small>}
                     </div>
                     <div className="studio-wf-material-document-count">
@@ -2620,6 +2755,12 @@ async function importExternalKnowledge(e) {
                         </div>
                       </div>
                       <div className="studio-wf-grid">
+                        <label className="studio-wf-field">
+                          <span>Prioridad heredable por los documentos</span>
+                          <select value={unit.priority || "normal"} disabled={!canEdit || busy} onChange={event => setPedagogicalUnitPriority(unit.id, event.target.value)}>
+                            <option value="central">Central</option><option value="normal">Complementario</option><option value="context">Contexto</option>
+                          </select>
+                        </label>
                         <Field
                           label="Nombre de la unidad"
                           value={unit.title}

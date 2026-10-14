@@ -142,3 +142,83 @@ export function classifySectionRole(section, context = {}) {
   evidence.push("sin señales suficientes para una clasificación más específica; se propone contenido para revisión");
   return result("contenido", 0.62, evidence);
 }
+
+
+const VALID_SCOPES = new Set(["included", "reference", "excluded"]);
+const VALID_PRIORITIES = new Set(["central", "normal", "context"]);
+
+export function defaultScopeForRole(role) {
+  if (role === "anexo" || role === "actividades") return "reference";
+  if (role === "preliminares" || role === "indice" || role === "referencias") return "excluded";
+  return "included";
+}
+
+export function resolveSectionControls(section = {}, documentPriority = "normal") {
+  const hasRole = SECTION_ROLES.has(section?.role);
+  const role = hasRole ? section.role : "contenido";
+  const roleDefault = defaultScopeForRole(role);
+  const explicitTeacherScope = section?.scopeSource === "teacher" ||
+    (!section?.scopeSource && VALID_SCOPES.has(section?.scope) && section.scope !== roleDefault);
+  const scope = explicitTeacherScope && VALID_SCOPES.has(section?.scope) ? section.scope : roleDefault;
+  const scopeSource = explicitTeacherScope ? "teacher" : "role-default";
+  const documentDefault = VALID_PRIORITIES.has(documentPriority) ? documentPriority : "normal";
+  const explicitTeacherPriority = section?.prioritySource === "teacher" ||
+    (!section?.prioritySource && VALID_PRIORITIES.has(section?.priority) && section.priority !== "normal");
+  const priority = explicitTeacherPriority && VALID_PRIORITIES.has(section?.priority) ? section.priority : documentDefault;
+  const prioritySource = explicitTeacherPriority ? "teacher" : "document";
+  return {
+    ...(hasRole ? { role, roleSource: ["rules", "ai", "teacher"].includes(section?.roleSource) ? section.roleSource : "rules" } : {}),
+    ...(hasRole && Number.isFinite(Number(section?.roleConfidence)) ? { roleConfidence: Math.max(0, Math.min(1, Number(section.roleConfidence))) } : {}),
+    scope, scopeSource, priority, prioritySource,
+  };
+}
+
+function decisionTitle(value) {
+  return String(value || "").replace(/\\s*·\\s*parte\\s+\\d+$/i, "").normalize("NFD")
+    .replace(/[\\u0300-\\u036f]/g, "").toLowerCase().replace(/\\s+/g, " ").trim();
+}
+function decisionPath(item) {
+  const path = Array.isArray(item?.sectionPath) ? item.sectionPath : Array.isArray(item?.path) ? item.path : [];
+  return path.map(decisionTitle).join(" › ");
+}
+function decisionRange(item) {
+  const start = Number(item?.sourcePageStart || item?.sourcePage || 0);
+  return { start, end: Number(item?.sourcePageEnd || item?.sourcePage || start) };
+}
+function matchingPriorDecision(item, previousItems) {
+  const exact = (previousItems || []).find(previous =>
+    (item?.id && previous?.id === item.id) || (item?.sectionId && previous?.sectionId === item.sectionId)
+  );
+  if (exact) return exact;
+  const title = decisionTitle(item?.title), path = decisionPath(item);
+  const candidates = (previousItems || []).filter(previous => {
+    if (!title || title !== decisionTitle(previous?.title)) return false;
+    const a = decisionRange(item), b = decisionRange(previous);
+    if (!a.start || !b.start || a.start > b.end || b.start > a.end) return false;
+    return !path || !decisionPath(previous) || path === decisionPath(previous);
+  });
+  return candidates.find(previous => decisionRange(previous).start === decisionRange(item).start) || (candidates.length === 1 ? candidates[0] : null);
+}
+
+export function preserveTeacherDecisions(incomingItems = [], previousItems = [], {
+  documentPriority = "normal", previousDocumentPriority = documentPriority,
+} = {}) {
+  return (incomingItems || []).map(item => {
+    const previous = matchingPriorDecision(item, previousItems);
+    if (!previous) return { ...item };
+    const updated = { ...item };
+    const oldScopeDefault = defaultScopeForRole(previous.role);
+    const legacyScopeLooksManual = !previous.scopeSource && VALID_SCOPES.has(previous.scope) && previous.scope !== oldScopeDefault;
+    if (previous.scopeSource === "teacher" || legacyScopeLooksManual) {
+      updated.scope = previous.scope;
+      updated.scopeSource = "teacher";
+    }
+    const oldPriority = VALID_PRIORITIES.has(previousDocumentPriority) ? previousDocumentPriority : "normal";
+    const legacyPriorityLooksManual = !previous.prioritySource && VALID_PRIORITIES.has(previous.priority) && previous.priority !== oldPriority;
+    if (previous.prioritySource === "teacher" || legacyPriorityLooksManual) {
+      updated.priority = previous.priority;
+      updated.prioritySource = "teacher";
+    }
+    return updated;
+  });
+}

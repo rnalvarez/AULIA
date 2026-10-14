@@ -1,4 +1,5 @@
 import { groupPdfItems, analyzePdfStructure } from "./pdfStructure.js";
+import { resolveSectionControls, preserveTeacherDecisions } from "./sectionRoles.js";
 import { createPdfiumRenderer, hasMeaningfulInk } from "./pdfiumFallback.js";
 
 function slugify(value) {
@@ -163,6 +164,7 @@ function buildSectionFragments({
   sourceName,
   documentId,
   sourcePageCount = null,
+  documentPriority = "normal",
 }) {
   const corpus = [];
   let index = 0;
@@ -206,8 +208,7 @@ function buildSectionFragments({
         ...(section.reviewNotes ? { reviewNotes: String(section.reviewNotes) } : {}),
         ...(section.childrenCount ? { childrenCount: section.childrenCount } : {}),
         ...copyRoleMetadata(section),
-        scope: section.scope || "included",
-        priority: section.priority || "normal",
+        ...resolveSectionControls(section, documentPriority),
         teacherTopic: section.teacherTopic || "",
         teacherConcepts: Array.isArray(section.teacherConcepts) ? section.teacherConcepts : [],
         teacherLimit: section.teacherLimit || "",
@@ -285,8 +286,7 @@ function buildDocumentMeta({
       ...(section.sourceTextOriginal ? { sourceTextOriginal: String(section.sourceTextOriginal) } : {}),
       childrenCount: Number(section.childrenCount || 0),
       ...copyRoleMetadata(section),
-      scope: section.scope || "included",
-      priority: section.priority || "normal",
+      ...resolveSectionControls(section, file?.priority),
       teacherTopic: section.teacherTopic || "",
       teacherConcepts: Array.isArray(section.teacherConcepts) ? section.teacherConcepts : [],
       teacherLimit: section.teacherLimit || "",
@@ -1379,13 +1379,13 @@ function normalizeChunk(item, index, sourceName = "") {
     ...(Number.isFinite(Number(item.confidence)) ? { confidence: Number(item.confidence) } : {}),
     ...(Array.isArray(item.structureEvidence) ? { structureEvidence: item.structureEvidence } : {}),
     ...(item.childrenCount ? { childrenCount: Number(item.childrenCount) } : {}),
-    scope: item.scope || "included",
-    priority: item.priority || "normal",
+    ...resolveSectionControls(item, item.documentPriority),
     teacherTopic: item.teacherTopic || "",
     teacherConcepts: Array.isArray(item.teacherConcepts) ? item.teacherConcepts : [],
     teacherLimit: item.teacherLimit || "",
     ...(item.sourceBibliographyId ? { sourceBibliographyId: item.sourceBibliographyId } : {}),
     ...copyRoleMetadata(item),
+    ...resolveSectionControls(item, item.documentPriority),
   };
 }
 
@@ -1397,7 +1397,7 @@ export function materialToCorpus(material, existing = []) {
     let suffix = 1;
     while (used.has(id)) id = base + "-" + suffix++;
     used.add(id);
-    return { ...chunk, ...copyRoleMetadata(chunk), id };
+    return { ...chunk, ...copyRoleMetadata(chunk), ...resolveSectionControls(chunk, material?.document?.priority), id };
   });
 
   return {
@@ -1602,8 +1602,7 @@ export function applyAISemanticSegmentation(material, semanticResult) {
     content: normalizeWhitespace(String(section?.content || "")),
     segmentationSource: "ai-text-first",
     confidence: Math.max(0.2, Math.min(0.99, Number(section?.confidence || 0.5))),
-    scope: section?.scope || "included",
-    priority: section?.priority || "normal",
+    ...resolveSectionControls(section, material?.document?.priority),
     evidence: Array.isArray(section?.evidence) ? section.evidence : [],
   }));
   if (!sections.length) throw new Error("La interpretación temática de la IA no devolvió secciones para revisar.");
@@ -1634,6 +1633,7 @@ export function applyAISemanticSegmentation(material, semanticResult) {
     sourceName,
     documentId,
     sourcePageCount: material?.pages || null,
+    documentPriority: material?.document?.priority || "normal",
   });
 
   // Keep visual descriptions/tables already extracted from Groq, but attach them
