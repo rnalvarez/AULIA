@@ -10,13 +10,13 @@ Comparar de forma reproducible la extracción de texto de un PDF y el OCR de Tes
 2. Seleccionar el PDF a evaluar.
 3. Elegir páginas que representen distintos casos (portada, texto corrido, páginas enfrentadas, índice, imágenes, baja calidad y páginas con poca tinta).
 4. Para libros digitalizados como dobles páginas, activar la comparación por mitades. Para páginas individuales convencionales, desactivarla.
-5. Comparar la extracción incrustada, Tesseract.js en español y PaddleOCR.js con PP-OCRv5 en español.
+5. Comparar la extracción incrustada, Tesseract.js en español y PaddleOCR.js con PP-OCRv6 y el modelo multilingüe para español.
 6. Cuando sea posible, introducir una transcripción corregida en el área de referencia. Para varias páginas, usar marcadores `=== N ===` con el número físico de página en cada línea.
 7. Exportar el informe JSON. El archivo contiene transcripciones OCR; tratarlo como material bibliográfico potencialmente protegido.
 
 ## Privacidad y dependencias
 
-El código lee y procesa el PDF en el navegador. No envía el PDF ni sus transcripciones a servicios de AULIA. En la primera ejecución, los motores pueden descargar código de ejecución, datos de idioma y modelos desde sus fuentes públicas. PaddleOCR.js utiliza ONNX Runtime Web y el modelo de reconocimiento configurado para español.
+El código lee y procesa el PDF en el navegador. No envía el PDF ni sus transcripciones a servicios de AULIA. En la primera ejecución, los motores pueden descargar código de ejecución, datos de idioma y modelos desde sus fuentes públicas. PaddleOCR.js utiliza ONNX Runtime Web. Para español se configura PP-OCRv6, cuyo selector de idioma admite `es`; PP-OCRv5 no admite esa combinación en la versión del SDK probada.
 
 La página de diagnóstico debe mantenerse como entrada independiente. No debe cargarse en el chat estudiantil ni convertirse en requisito del flujo de ingestión de producción.
 
@@ -25,6 +25,8 @@ La página de diagnóstico debe mantenerse como entrada independiente. No debe c
 - nombre y tamaño del archivo, cantidad de páginas y páginas de prueba;
 - motor, estrategia (página completa o mitades), duración y confianza declarada por el motor cuando existe;
 - texto resultante y errores de ejecución;
+- porcentaje de píxeles oscuros detectado antes del OCR, para distinguir un render vacío de un fallo de reconocimiento;
+- vista previa de la imagen que reciben los motores (solo en pantalla; no se incluye en el informe exportado);
 - WER y CER cuando hay una transcripción de referencia;
 - metadatos de tiempo de la comparación.
 
