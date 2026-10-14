@@ -142,3 +142,74 @@ export function classifySectionRole(section, context = {}) {
   evidence.push("sin señales suficientes para una clasificación más específica; se propone contenido para revisión");
   return result("contenido", 0.62, evidence);
 }
+
+
+export const ROLE_DEFAULT_SCOPE = Object.freeze({
+  contenido: "included",
+  preliminares: "excluded",
+  indice: "excluded",
+  referencias: "excluded",
+  anexo: "reference",
+  actividades: "reference",
+});
+
+const VALID_SCOPES = new Set(["included", "reference", "excluded"]);
+const VALID_ROLE_SOURCES = new Set(["rules", "ai", "teacher"]);
+const VALID_SCOPE_SOURCES = new Set(["role-default", "teacher"]);
+const VALID_PRIORITY_SOURCES = new Set(["document", "teacher"]);
+const VALID_PRIORITIES = new Set(["central", "normal", "context"]);
+const VALID_ROLES = new Set(Object.keys(ROLE_DEFAULT_SCOPE));
+
+export function applySectionRoleDefaults(section, context = {}) {
+  const item = section && typeof section === "object" ? section : {};
+  const classified = classifySectionRole(item, context);
+  const roleValid = VALID_ROLES.has(item.role);
+  const role = roleValid ? item.role : classified.role;
+  const roleSource = VALID_ROLE_SOURCES.has(item.roleSource)
+    ? item.roleSource
+    : roleValid
+      ? (item.segmentationSource === "ai-text-first" ? "ai" : "rules")
+      : "rules";
+  const givenConfidence = Number(item.roleConfidence);
+  const roleConfidence = Number.isFinite(givenConfidence) && givenConfidence >= 0 && givenConfidence <= 1
+    ? givenConfidence
+    : !roleValid || classified.role === role
+      ? classified.confidence
+      : roleSource === "teacher" ? 0.9 : 0.65;
+
+  const defaultScope = ROLE_DEFAULT_SCOPE[role] || "included";
+  const scopeValid = VALID_SCOPES.has(item.scope);
+  const inferredScopeOverride = scopeValid && item.scope !== "included" && item.scope !== defaultScope;
+  const requestedScopeSource = VALID_SCOPE_SOURCES.has(item.scopeSource)
+    ? item.scopeSource
+    : inferredScopeOverride ? "teacher" : "role-default";
+  const scopeSource = requestedScopeSource === "teacher" && scopeValid ? "teacher" : "role-default";
+  const scope = scopeSource === "teacher" ? item.scope : defaultScope;
+
+  const documentPriority = VALID_PRIORITIES.has(context.documentPriority) ? context.documentPriority : "normal";
+  const priorityValid = VALID_PRIORITIES.has(item.priority);
+  const inferredPriorityOverride = priorityValid && item.priority !== "normal" && item.priority !== documentPriority;
+  const requestedPrioritySource = VALID_PRIORITY_SOURCES.has(item.prioritySource)
+    ? item.prioritySource
+    : inferredPriorityOverride ? "teacher" : "document";
+  const prioritySource = requestedPrioritySource === "teacher" && priorityValid ? "teacher" : "document";
+  const priority = prioritySource === "teacher" ? item.priority : documentPriority;
+
+  const evidence = Array.from(new Set([
+    ...(Array.isArray(item.evidence) ? item.evidence : []),
+    ...(!roleValid ? classified.evidence : []),
+  ].filter(Boolean)));
+  const needsRoleReview = roleConfidence < 0.7;
+  let reviewNotes = String(item.reviewNotes || "").trim();
+  if (needsRoleReview && !/rol.{0,30}confianza|confianza.{0,30}rol/i.test(reviewNotes)) {
+    reviewNotes = [reviewNotes, "El rol tiene confianza menor a 0,7; revisá el título y el texto de la sección."].filter(Boolean).join(" ");
+  }
+  return {
+    ...item,
+    role, roleSource, roleConfidence,
+    scope, scopeSource,
+    priority, prioritySource,
+    evidence,
+    ...(needsRoleReview ? { needsReview: true, reviewNotes } : {}),
+  };
+}

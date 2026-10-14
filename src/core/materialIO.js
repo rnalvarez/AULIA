@@ -1,5 +1,6 @@
 import { groupPdfItems, analyzePdfStructure } from "./pdfStructure.js";
 import { createPdfiumRenderer, hasMeaningfulInk } from "./pdfiumFallback.js";
+import { applySectionRoleDefaults, classifySectionRole, ROLE_DEFAULT_SCOPE } from "./sectionRoles.js";
 
 function slugify(value) {
   return String(value ?? "")
@@ -158,16 +159,32 @@ function makeSectionId(documentId, section, index) {
   ].join("-"));
 }
 
+function normalizeSectionsByRole(sections, { pageCount = 0, documentPriority = "normal" } = {}) {
+  const items = Array.isArray(sections) ? sections : [];
+  return items.map((section, index) => applySectionRoleDefaults(section, {
+    pageCount: Number(pageCount || section?.sourcePageCount || 0),
+    sectionIndex: index,
+    sectionCount: items.length,
+    isFirstSection: index === 0,
+    isLastSection: index === items.length - 1,
+    startPage: section?.sourcePageStart || section?.sourcePage || 0,
+    endPage: section?.sourcePageEnd || section?.sourcePage || 0,
+    isContentsPage: Boolean(section?.isContentsPage),
+    documentPriority,
+  }));
+}
 function buildSectionFragments({
   sections,
   sourceName,
   documentId,
   sourcePageCount = null,
+  documentPriority = "normal",
 }) {
   const corpus = [];
   let index = 0;
+  const normalizedSections = normalizeSectionsByRole(sections, { pageCount: sourcePageCount || 0, documentPriority });
 
-  for (const [sectionIndex, section] of (sections || []).entries()) {
+  for (const [sectionIndex, section] of normalizedSections.entries()) {
     const content = normalizeWhitespace(repairHyphenation(section.content));
     if (!content) continue;
 
@@ -228,6 +245,8 @@ function buildDocumentMeta({
   format = "",
   analysis = null,
 }) {
+  const documentPriority = ["central", "normal", "context"].includes(file?.priority) ? file.priority : "normal";
+  const normalizedSections = normalizeSectionsByRole(sections, { pageCount: pages || analysis?.pageCount || 0, documentPriority });
   return {
     id: documentId,
     title: String(file?.name || "Material").replace(/\.[^.]+$/, ""),
@@ -237,7 +256,7 @@ function buildDocumentMeta({
       ? file.documentType
       : inferDocumentType(analysis?.documentType, format),
     documentTypeSource: file?.documentTypeSource === "teacher" ? "teacher" : "auto",
-    priority: ["central", "normal", "context"].includes(file?.priority) ? file.priority : "normal",
+    priority: documentPriority,
     pages: pages || null,
     analysis: analysis
       ? {
@@ -267,7 +286,7 @@ function buildDocumentMeta({
           },
         }
       : null,
-    sections: (sections || []).map((section, index) => ({
+    sections: normalizedSections.map((section, index) => ({
       id: makeSectionId(documentId, section, index),
       title: section.title || "Material",
       path: Array.isArray(section.sectionPath) ? section.sectionPath : [],
@@ -291,7 +310,7 @@ function buildDocumentMeta({
       teacherConcepts: Array.isArray(section.teacherConcepts) ? section.teacherConcepts : [],
       teacherLimit: section.teacherLimit || "",
     })),
-    sectionCount: (sections || []).length,
+    sectionCount: normalizedSections.length,
   };
 }
 function makeDocumentId(sourceName) {
@@ -1416,6 +1435,100 @@ function sameReference(a, b) {
   return x && y && x === y;
 }
 
+function validMaterialPriority(value) { return ["central", "normal", "context"].includes(value); }
+function sourceNameKey(item) { return String(item?.sourceName || item?.source || "").trim().toLocaleLowerCase(); }
+function materialRange(item) {
+  const start = Number(item?.sourcePageStart || item?.pageRange?.start || 0);
+  return { start, end: Number(item?.sourcePageEnd || item?.pageRange?.end || start || 0) };
+}
+function findPriorDocument(document, candidates) {
+  const a=materialRange(document);
+  const ranked=(candidates||[]).map(previous=>{
+    if(document?.id&&previous?.id&&String(document.id)===String(previous.id))return {previous,score:1000};
+    let score=sourceNameKey(document)&&sourceNameKey(document)===sourceNameKey(previous)?12:0;
+    if(normalizedKey(document?.title||"")&&normalizedKey(document?.title||"")===normalizedKey(previous?.title||""))score+=45;
+    const b=materialRange(previous);
+    if(a.start&&a.end&&b.start&&b.end){
+      const overlap=Math.max(0,Math.min(a.end,b.end)-Math.max(a.start,b.start)+1);
+      if(overlap)score+=45+Math.round(20*overlap/Math.max(1,Math.min(a.end-a.start+1,b.end-b.start+1)));
+    }
+    return {previous,score};
+  }).sort((x,y)=>y.score-x.score);
+  if(ranked[0]?.score>=20)return ranked[0].previous;
+  const sameSource=(candidates||[]).filter(item=>sourceNameKey(item)&&sourceNameKey(item)===sourceNameKey(document));
+  return sameSource.length===1?sameSource[0]:null;
+}
+function priorSectionScore(section, previous) {
+  let score=0;
+  const ids=[section?.id,section?.sectionId].filter(Boolean).map(String);
+  const oldIds=[previous?.id,previous?.sectionId].filter(Boolean).map(String);
+  if(ids.some(id=>oldIds.includes(id)))score+=120;
+  const title=value=>normalizedKey(String(value||"").replace(/\s*·\s*parte\s+\d+$/i,""));
+  if(title(section?.title||section?.chapter)&&title(section?.title||section?.chapter)===title(previous?.title||previous?.chapter))score+=30;
+  const path=item=>(Array.isArray(item?.sectionPath)?item.sectionPath:Array.isArray(item?.path)?item.path:[]).map(normalizedKey).join(">");
+  if(path(section)&&path(section)===path(previous))score+=22;
+  const a=materialRange(section),b=materialRange(previous);
+  if(a.start&&a.end&&b.start&&b.end){
+    const overlap=Math.max(0,Math.min(a.end,b.end)-Math.max(a.start,b.start)+1);
+    if(overlap)score+=8+Math.round(10*overlap/Math.max(1,Math.min(a.end-a.start+1,b.end-b.start+1)));
+  }
+  if(previous?.scopeSource==="teacher"||previous?.prioritySource==="teacher"||previous?.roleSource==="teacher")score+=6;
+  return score;
+}
+function findPriorSection(section, candidates) {
+  const ranked=(candidates||[]).map(previous=>({previous,score:priorSectionScore(section,previous)})).sort((a,b)=>b.score-a.score);
+  return ranked[0]?.score>=20?ranked[0].previous:null;
+}
+function keepPriorTeacherChoices(section, previous, documentPriority, context) {
+  if(!previous)return applySectionRoleDefaults(section,{...context,documentPriority});
+  const patch={};
+  if(previous.roleSource==="teacher"&&["contenido","preliminares","indice","referencias","anexo","actividades"].includes(previous.role)){
+    patch.role=previous.role;patch.roleSource="teacher";
+    if(Number.isFinite(Number(previous.roleConfidence)))patch.roleConfidence=Number(previous.roleConfidence);
+  }
+  const oldRole=["contenido","preliminares","indice","referencias","anexo","actividades"].includes(previous.role)?previous.role:classifySectionRole(previous,context).role;
+  const oldDefault=ROLE_DEFAULT_SCOPE[oldRole]||"included";
+  const scopeOverride=previous.scopeSource==="teacher"||
+    (!previous.scopeSource&&["included","reference","excluded"].includes(previous.scope)&&previous.scope!=="included"&&previous.scope!==oldDefault);
+  if(scopeOverride){patch.scope=previous.scope;patch.scopeSource="teacher";}
+  const priorityOverride=previous.prioritySource==="teacher"||
+    (!previous.prioritySource&&validMaterialPriority(previous.priority)&&previous.priority!=="normal"&&previous.priority!==documentPriority);
+  if(priorityOverride){patch.priority=previous.priority;patch.prioritySource="teacher";}
+  for(const field of ["teacherTopic","teacherLimit"])if(String(previous[field]||"").trim())patch[field]=previous[field];
+  if(Array.isArray(previous.teacherConcepts)&&previous.teacherConcepts.length)patch.teacherConcepts=previous.teacherConcepts;
+  if(previous.needsReview)patch.needsReview=true;
+  if(previous.reviewNotes&&!section.reviewNotes)patch.reviewNotes=previous.reviewNotes;
+  return applySectionRoleDefaults({...section,...patch},{...context,documentPriority});
+}
+export function preserveTeacherMaterialDecisions(material, previousDocuments = [], previousCorpus = [], pedagogicalUnits = []) {
+  if(!material||typeof material!=="object")return material;
+  const incoming=material.document&&typeof material.document==="object"?material.document:null;
+  const previous=findPriorDocument(incoming||{sourceName:material.sourceName},previousDocuments);
+  const unitId=previous?.pedagogicalUnitId||incoming?.pedagogicalUnitId||"";
+  const unit=(pedagogicalUnits||[]).find(item=>String(item?.id||"")===String(unitId));
+  const priority=validMaterialPriority(unit?.priority)?unit.priority:validMaterialPriority(previous?.priority)?previous.priority:validMaterialPriority(incoming?.priority)?incoming.priority:"normal";
+  const priorId=String(previous?.id||""),incomingRange=materialRange(incoming||{});
+  const oldCorpus=(previousCorpus||[]).filter(chunk=>{
+    if(priorId&&String(chunk?.documentId||"")===priorId)return true;
+    if(!priorId&&sourceNameKey(chunk)&&sourceNameKey(chunk)===sourceNameKey(incoming||material)){
+      const r=materialRange(chunk);
+      return !incomingRange.start||!r.start||(r.start<=(incomingRange.end||Infinity)&&(r.end||r.start)>=incomingRange.start);
+    }
+    return false;
+  });
+  const oldSections=[...(Array.isArray(previous?.sections)?previous.sections:[]),...oldCorpus];
+  const resolve=(section,index,total)=>keepPriorTeacherChoices(section,findPriorSection(section,oldSections),priority,{
+    pageCount:Number(incoming?.pages||section?.sourcePageCount||0),sectionIndex:index,sectionCount:total,
+    isFirstSection:index===0,isLastSection:index===total-1,
+    startPage:section?.sourcePageStart||section?.sourcePage||0,endPage:section?.sourcePageEnd||section?.sourcePage||0,
+    isContentsPage:Boolean(section?.isContentsPage),documentPriority:priority,
+  });
+  const document=incoming?{...incoming,priority,...(unitId?{pedagogicalUnitId:unitId}:{}),sections:(incoming.sections||[]).map((s,i,a)=>resolve(s,i,a.length))}:null;
+  const corpus=(material.corpus||[]).map((chunk,i,a)=>({...resolve(chunk,i,a.length),...(chunk.documentId?{documentId:chunk.documentId}:{})}));
+  return {...material,...(document?{document}:{}),corpus};
+}
+
+
 export function mergeImportedBibliography(existing, incoming) {
   const merged = [...existing];
   for (const item of incoming || []) {
@@ -1592,7 +1705,8 @@ export function applySelectiveVisualAnalysis(material, pageResults, model = "qwe
 export function applyAISemanticSegmentation(material, semanticResult) {
   const sourceName = String(material?.sourceName || material?.document?.sourceName || "material.pdf");
   const documentId = String(material?.document?.id || makeDocumentId(sourceName));
-  const sections = (semanticResult?.sections || []).map((section, index) => ({
+  const documentPriority = ["central", "normal", "context"].includes(material?.document?.priority) ? material.document.priority : "normal";
+  const rawSections = (semanticResult?.sections || []).map((section, index) => ({
     ...section,
     title: String(section?.title || "Sección " + (index + 1)).trim(),
     level: Math.max(1, Math.min(6, Number(section?.level || 1))),
@@ -1606,6 +1720,7 @@ export function applyAISemanticSegmentation(material, semanticResult) {
     priority: section?.priority || "normal",
     evidence: Array.isArray(section?.evidence) ? section.evidence : [],
   }));
+  const sections = normalizeSectionsByRole(rawSections, { pageCount: Number(material?.pages || 0), documentPriority });
   if (!sections.length) throw new Error("La interpretación temática de la IA no devolvió secciones para revisar.");
 
   const originalAnalysis = material?.analysis || material?.document?.analysis || {};
@@ -1634,6 +1749,7 @@ export function applyAISemanticSegmentation(material, semanticResult) {
     sourceName,
     documentId,
     sourcePageCount: material?.pages || null,
+    documentPriority,
   });
 
   // Keep visual descriptions/tables already extracted from Groq, but attach them
@@ -1673,8 +1789,11 @@ export function applyAISemanticSegmentation(material, semanticResult) {
         chapter: nextPath.join(" › "),
         sectionPath: [...nextPath],
         sectionLevel: Number(targetSection?.level || chunk.sectionLevel || 1),
-        scope: targetSection?.scope || "included",
-        priority: targetSection?.priority || "normal",
+        ...copyRoleMetadata(targetSection || chunk),
+        scope: targetSection?.scope || chunk.scope || "included",
+        scopeSource: targetSection?.scopeSource || chunk.scopeSource || "role-default",
+        priority: targetSection?.priority || chunk.priority || documentPriority,
+        prioritySource: targetSection?.prioritySource || chunk.prioritySource || "document",
         teacherTopic: targetSection?.teacherTopic || "",
         teacherConcepts: Array.isArray(targetSection?.teacherConcepts) ? targetSection.teacherConcepts : [],
         teacherLimit: targetSection?.teacherLimit || "",
@@ -1682,7 +1801,7 @@ export function applyAISemanticSegmentation(material, semanticResult) {
     });
 
   const document = buildDocumentMeta({
-    file: { name: sourceName },
+    file: { name: sourceName, priority: documentPriority, documentType: material?.document?.documentType, documentTypeSource: material?.document?.documentTypeSource },
     documentId,
     sections,
     pages: material?.pages || null,

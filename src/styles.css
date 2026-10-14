@@ -1998,3 +1998,9 @@ button { border: 0; }
 .studio-wf-review-warning{color:#a33b21}
 @media(max-width:850px){.studio-wf-work-fields{grid-template-columns:repeat(2,minmax(0,1fr))}}
 @media(max-width:520px){.studio-wf-work-fields{grid-template-columns:1fr}}
+
+
+/* T6 · Selectores de prioridad documental y de unidad pedagógica */
+.studio-wf-document-controls{margin:.85rem 0 1rem;align-items:start}
+.studio-wf-document-controls select,.studio-wf-concept .studio-wf-field select{width:100%;min-height:2.6rem;border:1px solid var(--line,#d7dce3);border-radius:8px;padding:.5rem .65rem;background:var(--panel,white);color:inherit}
+.studio-wf-document-controls small{display:block;margin-top:.35rem;color:var(--muted,#667085);font-size:.86rem}

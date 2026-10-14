@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { classifySectionRole } from "./sectionRoles.js";
+import { applySectionRoleDefaults, classifySectionRole, ROLE_DEFAULT_SCOPE } from "./sectionRoles.js";
 
 test("reconoce los seis roles a partir de títulos y estructura sintética", () => {
   const cases = [
@@ -53,4 +53,45 @@ test("la posición y una cantidad mínima de texto permiten detectar preliminare
   );
   assert.equal(classified.role, "preliminares");
   assert.ok(classified.confidence < 0.8);
+});
+
+
+test("aplica alcance predeterminado a los seis roles y hereda prioridad documental", () => {
+  const cases = [
+    ["Introducción", "contenido", "included"],
+    ["Portada", "preliminares", "excluded"],
+    ["Índice", "indice", "excluded"],
+    ["Referencias", "referencias", "excluded"],
+    ["Glosario", "anexo", "reference"],
+    ["Ejercicios", "actividades", "reference"],
+  ];
+  for (const [title, role, scope] of cases) {
+    const value = applySectionRoleDefaults({ title }, { documentPriority: "central", pageCount: 30 });
+    assert.equal(value.role, role);
+    assert.equal(value.scope, scope);
+    assert.equal(value.scopeSource, "role-default");
+    assert.equal(value.priority, "central");
+    assert.equal(value.prioritySource, "document");
+    assert.equal(ROLE_DEFAULT_SCOPE[value.role], scope);
+  }
+});
+
+test("las decisiones explícitas del docente no se pisan por los defaults", () => {
+  const value = applySectionRoleDefaults({
+    title: "Referencias", role: "referencias", roleSource: "rules", roleConfidence: 0.98,
+    scope: "included", scopeSource: "teacher", priority: "context", prioritySource: "teacher",
+  }, { documentPriority: "central" });
+  assert.equal(value.scope, "included");
+  assert.equal(value.scopeSource, "teacher");
+  assert.equal(value.priority, "context");
+  assert.equal(value.prioritySource, "teacher");
+});
+
+test("las secciones de rol ambiguo requieren revisión", () => {
+  const value = applySectionRoleDefaults({
+    title: "Nota breve", content: "Texto sin señales suficientes para decidir el rol.", sourcePageStart: 5,
+  }, { pageCount: 25, documentPriority: "normal" });
+  assert.equal(value.role, "contenido");
+  assert.ok(value.roleConfidence < 0.7);
+  assert.equal(value.needsReview, true);
 });

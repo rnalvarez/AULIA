@@ -107,6 +107,9 @@ export function validateCourse(course) {
 
   for (const unit of course?.pedagogicalUnits || []) {
     if (!unit?.title) errors.push(`Una unidad pedagógica no tiene title`);
+    if (unit?.priority && !validPriorities.has(unit.priority)) {
+      errors.push(`La unidad pedagógica "${unit?.id || "sin id"}" tiene priority inválida`);
+    }
     if (unit?.reviewStatus && !["pending", "approved"].includes(unit.reviewStatus)) {
       errors.push(`La unidad pedagógica "${unit?.id || "sin id"}" tiene reviewStatus inválido`);
     }

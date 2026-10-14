@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { cloneCourse, validateCourse } from "../core/courseContract.js";
 import { downloadCoursePack, readCoursePackFile } from "../core/coursePackIO.js";
-import { readMaterialFile, renderPdfPageImages, materialToCorpus, mergeImportedBibliography, mergeImportedDocuments, applySelectiveVisualAnalysis, applyAISemanticSegmentation } from "../core/materialIO.js";
+import { readMaterialFile, renderPdfPageImages, materialToCorpus, mergeImportedBibliography, mergeImportedDocuments, applySelectiveVisualAnalysis, applyAISemanticSegmentation, preserveTeacherMaterialDecisions } from "../core/materialIO.js";
 import { detectCompilationWorks, splitCompilationIntoWorks } from "../core/compilationWorks.js";
 import { savePendingPdf, getPendingPdf, getPendingPdfStatus, savePreparedPdf, getPreparedPdf, updatePendingPdfStatus, listPendingPdfs, deletePendingPdf } from "../core/studioPersistence.js";
 import { analyzePdfWithVision, getCachedVisionPageNumbers } from "../services/llm/multimodalIngestion.js";
@@ -77,6 +77,7 @@ function mergeTeacherProposal(course, proposal) {
       rationale: String(item.rationale || "").trim(),
       learningGoal: String(item.learningGoal || "").trim(),
       phase: String(item.phase || "").trim(),
+      priority: ["central", "normal", "context"].includes(item.priority) ? item.priority : "normal",
       suggestedSequence: Number.isFinite(Number(item.sequence)) ? Number(item.sequence) : 999,
       prerequisiteTitles: Array.isArray(item.prerequisiteTitles) ? item.prerequisiteTitles.filter(Boolean).slice(0, 5) : [],
       prerequisiteUnitIds: [],
@@ -382,8 +383,13 @@ function buildMaterialStructure(course) {
         sourceTextOriginal: String(section.sourceTextOriginal || ""),
         visualElementCount: Number(section.visualElementCount || first.visualElementCount || 0),
         childrenCount: Number(section.childrenCount || 0),
+        role: section.role || first.role || "contenido",
+        roleSource: section.roleSource || first.roleSource || "rules",
+        roleConfidence: Number(section.roleConfidence ?? first.roleConfidence ?? section.confidence ?? first.confidence ?? 0.5),
         scope: section.scope || "included",
+        scopeSource: section.scopeSource || first.scopeSource || "role-default",
         priority: section.priority || "normal",
+        prioritySource: section.prioritySource || first.prioritySource || "document",
         teacherTopic: section.teacherTopic || "",
         teacherConcepts: Array.isArray(section.teacherConcepts) ? section.teacherConcepts : [],
         teacherLimit: section.teacherLimit || "",
@@ -429,8 +435,13 @@ function buildMaterialStructure(course) {
       confidenceLabel: structureConfidenceLabel(confidence),
       evidence: Array.isArray(first.structureEvidence) ? first.structureEvidence : [],
       childrenCount: Number(first.childrenCount || 0),
+      role: first.role || "contenido",
+      roleSource: first.roleSource || "rules",
+      roleConfidence: Number(first.roleConfidence ?? first.confidence ?? 0.5),
       scope: first.scope || "included",
+      scopeSource: first.scopeSource || "role-default",
       priority: first.priority || "normal",
+      prioritySource: first.prioritySource || "document",
       teacherTopic: first.teacherTopic || "",
       teacherConcepts: Array.isArray(first.teacherConcepts) ? first.teacherConcepts : [],
       teacherLimit: first.teacherLimit || "",
@@ -441,6 +452,29 @@ function buildMaterialStructure(course) {
     };
   });
 }
+function validPriority(value){return ["central","normal","context"].includes(value);}
+function hasTeacherPriorityOverride(section,documentPriority){
+  if(section?.prioritySource==="teacher")return true;
+  if(section?.prioritySource==="document")return false;
+  return validPriority(section?.priority)&&section.priority!=="normal"&&section.priority!==documentPriority;
+}
+function applyDocumentPriorityToCourse(course,documentId,priority){
+  if(!validPriority(priority))return course;
+  const oldDocument=(course.documents||[]).find(item=>String(item?.id||"")===String(documentId||""));
+  const oldPriority=oldDocument?.priority||"normal";
+  const documents=(course.documents||[]).map(document=>{
+    if(String(document?.id||"")!==String(documentId||""))return document;
+    return {...document,priority,sections:(document.sections||[]).map(section=>hasTeacherPriorityOverride(section,document.priority)
+      ? {...section,prioritySource:"teacher"}:{...section,priority,prioritySource:"document"})};
+  });
+  const corpus=(course.corpus||[]).map(chunk=>{
+    if(String(chunk?.documentId||"")!==String(documentId||""))return chunk;
+    return hasTeacherPriorityOverride(chunk,oldPriority)?{...chunk,prioritySource:"teacher"}:{...chunk,priority,prioritySource:"document"};
+  });
+  return {...course,documents,corpus};
+}
+
+
 export default function Studio({ course, courseMeta = null, canEdit = true, onCourseChanged, onSaveCourse, onPublishCourse, onReloadCourse }) {
   const storageKey = useMemo(() => STORAGE_PREFIX + course.id, [course.id]);
   const knowledgeRetryStorageKey = useMemo(() => STORAGE_PREFIX + "groq-retry:" + course.id, [course.id]);
@@ -769,11 +803,39 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
   }
 
   function setMaterialScope(section, scope) {
-    updateMaterialSection(section, { scope });
+    updateMaterialSection(section, { scope, scopeSource: "teacher" });
   }
 
   function setMaterialPriority(section, priority) {
-    updateMaterialSection(section, { priority });
+    updateMaterialSection(section, { priority, prioritySource: "teacher" });
+  }
+
+  function setMaterialDocumentPriority(documentId, priority) {
+    const document=(draft.documents||[]).find(item=>String(item?.id||"")===String(documentId||""));
+    if(document?.pedagogicalUnitId){setStatus("La prioridad se hereda de la unidad pedagógica. Cambiala desde la unidad.");return;}
+    if(!validPriority(priority))return;
+    mutate(current=>applyDocumentPriorityToCourse(current,documentId,priority),"Prioridad del documento actualizada; se respetaron las excepciones por sección.");
+  }
+
+  function setMaterialDocumentUnit(documentId,pedagogicalUnitId) {
+    mutate(current=>{
+      const document=(current.documents||[]).find(item=>String(item?.id||"")===String(documentId||""));
+      if(!document)return current;
+      const unit=(current.pedagogicalUnits||[]).find(item=>String(item?.id||"")===String(pedagogicalUnitId||""));
+      const priority=validPriority(unit?.priority)?unit.priority:(validPriority(document.priority)?document.priority:"normal");
+      const assigned={...current,documents:(current.documents||[]).map(item=>String(item?.id||"")===String(documentId||"")?{...item,pedagogicalUnitId:pedagogicalUnitId||"",priority}:item)};
+      return applyDocumentPriorityToCourse(assigned,documentId,priority);
+    },"Unidad pedagógica actualizada; la prioridad se heredó de la unidad.");
+  }
+
+  function setPedagogicalUnitPriority(unitId,priority) {
+    if(!validPriority(priority))return;
+    mutate(current=>{
+      let next={...current,pedagogicalUnits:(current.pedagogicalUnits||[]).map(unit=>String(unit?.id||"")===String(unitId||"")?{...unit,priority}:unit)};
+      const ids=(next.documents||[]).filter(document=>String(document?.pedagogicalUnitId||"")===String(unitId||"")).map(document=>String(document.id||""));
+      for(const id of ids)next=applyDocumentPriorityToCourse(next,id,priority);
+      return next;
+    },"Prioridad de la unidad actualizada; se respetaron las excepciones docentes.");
   }
 
   async function prepareMaterialForReview(files) {
@@ -1190,13 +1252,17 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
 
           const incomingDocumentId = String(prepared?.document?.id || "");
           const incomingSourceName = String(prepared?.sourceName || file.name || "").trim().toLocaleLowerCase();
+          const priorDocuments=(workingDraft.documents||[]).filter(document=>String(document?.id||"")===incomingDocumentId||String(document?.sourceName||"").trim().toLocaleLowerCase()===incomingSourceName);
+          const priorIds=new Set(priorDocuments.map(document=>String(document?.id||"")).filter(Boolean));
+          const priorCorpus=(workingDraft.corpus||[]).filter(chunk=>priorIds.has(String(chunk?.documentId||""))||String(chunk?.documentId||"")===incomingDocumentId||String(chunk?.source||"").trim().toLocaleLowerCase()===incomingSourceName);
           const retainedCorpus = (workingDraft.corpus || []).filter(chunk =>
             String(chunk?.documentId || "") !== incomingDocumentId &&
             String(chunk?.source || "").trim().toLocaleLowerCase() !== incomingSourceName
           );
-          const incomingMaterials = selectedDocumentType === "compilacion"
+          const generatedMaterials = selectedDocumentType === "compilacion"
             ? splitCompilationIntoWorks({ ...prepared, aiPages: extracted.aiPages || prepared.aiPages || [] }, selectedWorks)
             : [prepared];
+          const incomingMaterials=generatedMaterials.map(item=>preserveTeacherMaterialDecisions(item,priorDocuments,priorCorpus,workingDraft.pedagogicalUnits||[]));
           const retainedDocuments = (workingDraft.documents || []).filter(document =>
             String(document?.id || "") !== incomingDocumentId &&
             String(document?.sourceName || "").trim().toLocaleLowerCase() !== incomingSourceName
@@ -2059,6 +2125,9 @@ async function importExternalKnowledge(e) {
         sourceName: document.sourceName || "",
         format: document.format || "",
         pages: document.pages || document.analysis?.pageCount || null,
+        priority: validPriority(document.priority) ? document.priority : "normal",
+        pedagogicalUnitId: document.pedagogicalUnitId || "",
+        hasDocument: true,
         analysis: document.analysis || null,
         sections,
         fragmentCount: fragments.length,
@@ -2077,6 +2146,9 @@ async function importExternalKnowledge(e) {
         sourceName: "",
         format: "",
         pages: null,
+        priority: "normal",
+        pedagogicalUnitId: "",
+        hasDocument: false,
         analysis: null,
         sections: orphanSections,
         fragmentCount: orphanSections.reduce((sum, section) => sum + Number(section.fragmentCount || 0), 0),
@@ -2284,7 +2356,7 @@ async function importExternalKnowledge(e) {
             </div>
 
             <div className="studio-wf-structure-note">
-              La interpretación temática se realiza documento por documento, antes del índice conceptual. Todo empieza como Incluido y Complementario. Los cambios de alcance o prioridad en un capítulo se aplican también a sus subsecciones; después podés ajustar cada apartado de forma independiente.
+              El cuerpo del texto, incluidas la introducción y las conclusiones, queda Incluido; anexos y actividades quedan Referenciales; preliminares, índices y referencias quedan Excluidos. La prioridad se hereda del documento o de su unidad pedagógica. Las excepciones definidas por el docente se conservan al reprocesar.
             </div>
 
             <section className="studio-wf-knowledge-setup">
@@ -2375,6 +2447,21 @@ async function importExternalKnowledge(e) {
                     </div>
                   </div>
 
+                  {documentGroup.hasDocument && <div className="studio-wf-grid studio-wf-document-controls">
+                    <label className="studio-wf-field"><span>Unidad pedagógica</span>
+                      <select value={documentGroup.pedagogicalUnitId || ""} onChange={event=>setMaterialDocumentUnit(documentGroup.id,event.target.value)} disabled={!canEdit||busy}>
+                        <option value="">Sin unidad asignada</option>
+                        {(draft.pedagogicalUnits||[]).map(unit=><option key={unit.id} value={unit.id}>{unit.title||"Unidad sin título"}</option>)}
+                      </select>
+                      <small>El documento puede heredar la prioridad de una unidad.</small>
+                    </label>
+                    <label className="studio-wf-field"><span>Prioridad del documento</span>
+                      <select value={documentGroup.priority||"normal"} onChange={event=>setMaterialDocumentPriority(documentGroup.id,event.target.value)} disabled={!canEdit||busy||Boolean(documentGroup.pedagogicalUnitId)}>
+                        {MATERIAL_PRIORITY_OPTIONS.map(([value,label])=><option key={value} value={value}>{label}</option>)}
+                      </select>
+                      <small>{documentGroup.pedagogicalUnitId?"Prioridad heredada de la unidad; editá la unidad para cambiarla.":"Las secciones la heredan, salvo excepciones del docente."}</small>
+                    </label>
+                  </div>}
                   {documentGroup.analysis && (
                     <div className={"studio-wf-pdf-diagnostic confidence-" + structureConfidenceLabel(documentGroup.analysis.confidence).toLowerCase()}>
                       <div className="studio-wf-pdf-diagnostic-head">
@@ -2638,6 +2725,12 @@ async function importExternalKnowledge(e) {
                           onChange={(v) => edit("pedagogicalUnits", i, { rationale: v })}
                           multiline
                         />
+                        <label className="studio-wf-field"><span>Prioridad de la unidad</span>
+                          <select value={validPriority(unit.priority)?unit.priority:"normal"} onChange={event=>setPedagogicalUnitPriority(unit.id,event.target.value)} disabled={!canEdit||busy}>
+                            {MATERIAL_PRIORITY_OPTIONS.map(([value,label])=><option key={value} value={value}>{label}</option>)}
+                          </select>
+                          <small>Los documentos asignados a esta unidad heredan su prioridad, salvo excepciones por sección.</small>
+                        </label>
                       </div>
                       {unitConcepts.length > 0 && (
                         <div className="studio-wf-concept-source">
