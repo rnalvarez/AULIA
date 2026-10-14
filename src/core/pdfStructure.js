@@ -24,6 +24,66 @@ function classifyHeadingRole(title, page, pageCount, context = {}) {
     ...context,
   });
 }
+
+function detectFirstPagePreliminaries(pages) {
+  const page = pages?.[0];
+  if (!page) return null;
+  const lines = orderedPageLines(page);
+  const visibleLines = lines.filter((line) => {
+    const text = cleanPdfLine(line.text);
+    return text && !PAGE_NUMBER_RE.test(text) && !/^[-–—]?\\s*\\d+\\s*[-–—]?$/.test(text);
+  });
+  if (!visibleLines.length) return null;
+
+  const pageText = visibleLines.map((line) => cleanPdfLine(line.text)).join(" ");
+  if (pageText.length > 180) return null;
+
+  const titleLine = visibleLines[0];
+  const title = cleanPdfLine(titleLine.text);
+  // A cover often contains only a large title and imprint, with no literal
+  // heading "Portada". Use the first physical page only, require sparse text
+  // and a typographic title signal, and keep confidence conservative.
+  const fontSizes = visibleLines.map((line) => Number(line.fontSize || 0)).filter((size) => size > 0).sort((a, b) => a - b);
+  const medianFont = fontSizes.length ? fontSizes[Math.floor(fontSizes.length / 2)] : 0;
+  const fontRatio = medianFont && Number(titleLine.fontSize || 0)
+    ? Number(titleLine.fontSize) / medianFont
+    : 1;
+  const hasCoverTypography = Boolean(titleLine.bold) || fontRatio >= 1.18;
+  if (!hasCoverTypography || SECTION_WORD_RE.test(title) || numberingInfo(title)) return null;
+
+  const classified = classifySectionRole({
+    title,
+    content: pageText,
+    sourcePageStart: Number(page.pageNumber || 1),
+    sourcePageEnd: Number(page.pageNumber || 1),
+    sourcePageCount: pages.length,
+  }, {
+    pageCount: pages.length,
+    totalPages: pages.length,
+    sectionIndex: 0,
+    sectionCount: pages.length,
+    isFirstSection: true,
+  });
+
+  if (classified.role !== "preliminares" || classified.confidence < 0.7) return null;
+  const lineIndex = lines.findIndex((line) => line === titleLine);
+  return {
+    pageNumber: Number(page.pageNumber || 1),
+    lineIndex: Math.max(0, lineIndex),
+    endLineIndex: Math.max(0, lineIndex),
+    title,
+    level: 1,
+    number: "",
+    score: 10,
+    confidence: classified.confidence,
+    styleKey: styleKey(titleLine),
+    evidence: [...classified.evidence, "portada detectada por posición y texto escaso"],
+    role: "preliminares",
+    roleSource: "rules",
+    roleConfidence: classified.confidence,
+    roleEvidence: classified.evidence,
+  };
+}
 const NUMBERING_RE = /^(\d+(?:\.\d+){0,8})[.)]?\s+(.+)$/;
 const SECTION_WORD_RE = /^(?:PARTE|PART|CAP[ÍI]TULO|CHAPTER|UNIDAD|UNIT|MÓDULO|MODULE|SECCIÓN|SECTION|TEMA|LECCIÓN|LECCION|INTRODUCCIÓN|INTRODUCCION|CONCLUSIÓN|CONCLUSION|PREFACIO|PRÓLOGO|PROLOGO|APÉNDICE|APENDICE)\b/i;
 const SENTENCE_END_RE = /[.!?;:]$/;
@@ -1389,6 +1449,12 @@ export async function analyzePdfStructure({ pdf, pages, structTreePages = 0 }) {
       Number(page.pageNumber) <= tocWindow.end);
   }
   const headingCandidates = detectHeadingCandidates(pages, repeatedFurniture, 1, tocWindow);
+  const coverBoundary = detectFirstPagePreliminaries(pages);
+  if (coverBoundary && !headingCandidates.some((candidate) =>
+    candidate.pageNumber === coverBoundary.pageNumber && candidate.role === "preliminares"
+  )) {
+    headingCandidates.unshift(coverBoundary);
+  }
   // A conservative fallback must never silently discard the first part of
   // the uploaded document. Front matter can be identified separately later;
   // until then, keep page 1 as the source of truth.
