@@ -169,6 +169,10 @@ function showMetric(value) {
   return (value * 100).toFixed(1) + "%";
 }
 
+function serializableResults() {
+  return results.map(({ previewDataUrl, ...item }) => ({ ...item }));
+}
+
 function renderResults() {
   resultNode.replaceChildren();
   if (!results.length) {
@@ -206,6 +210,17 @@ function renderResults() {
     badge.className = "badge";
     badge.textContent = item.status === "ok" ? "Listo" : "Falló";
     card.append(top, badge);
+    if (item.previewDataUrl) {
+      const details = document.createElement("details");
+      details.className = "image-preview";
+      const summary = document.createElement("summary");
+      summary.textContent = "Ver imagen original usada en esta página";
+      const image = document.createElement("img");
+      image.src = item.previewDataUrl;
+      image.alt = "Página renderizada que reciben los motores OCR";
+      details.append(summary, image);
+      card.append(details);
+    }
     const pre = document.createElement("pre");
     pre.textContent = item.text || item.error || "(Sin texto)";
     card.append(pre);
@@ -504,6 +519,9 @@ async function runComparison() {
       const pageResult = await renderPdfPage(loadedPdf, pageNumber, maxSide);
       const reference = referenceByPage[pageNumber] || "";
       const embedStats = textStats(pageResult.embeddedText);
+      const imageInkRatio = foregroundRatio(pageResult.canvas);
+      let previewDataUrl = "";
+      try { previewDataUrl = pageResult.canvas.toDataURL("image/jpeg", 0.62); } catch {}
       addResult({
         pageNumber,
         method: "Capa de texto incrustada (PDF.js)",
@@ -511,9 +529,33 @@ async function runComparison() {
         text: pageResult.embeddedText,
         error: pageResult.embeddedText ? "" : "La página no contiene texto extraíble.",
         elapsedMs: 0,
-        sourceMetrics: { ...embedStats, imageWidth: pageResult.width, imageHeight: pageResult.height },
+        sourceMetrics: {
+          ...embedStats,
+          imageWidth: pageResult.width,
+          imageHeight: pageResult.height,
+          renderedInkRatio: imageInkRatio,
+        },
+        previewDataUrl,
         ...(reference ? { errorRates: errorMetrics(reference, pageResult.embeddedText) } : {}),
       });
+
+      // Never classify zero OCR output as an engine-quality result when PDF.js has rendered a blank image.
+      if (imageInkRatio < 0.0007) {
+        addResult({
+          pageNumber,
+          method: "Preflight de imagen renderizada",
+          status: "error",
+          text: "",
+          error: "PDF.js extrajo texto, pero el lienzo renderizado no contiene suficientes píxeles oscuros. Se omitió OCR para no producir una comparación falsa.",
+          renderedInkRatio: imageInkRatio,
+          imageWidth: pageResult.width,
+          imageHeight: pageResult.height,
+          elapsedMs: 0,
+        });
+        clearCanvas(pageResult.canvas);
+        progressNode.value = index + 1;
+        continue;
+      }
 
       if (useTesseract && tesseract) {
         const full = await runTesseract(tesseract, pageResult.canvas, pageNumber, "Tesseract.js · página completa");
@@ -595,7 +637,7 @@ async function runComparison() {
 
     reportMetadata.completedAt = new Date().toISOString();
     reportMetadata.durationMs = new Date(reportMetadata.completedAt).getTime() - new Date(started).getTime();
-    reportMetadata.results = results.map((item) => ({ ...item }));
+    reportMetadata.results = serializableResults();
     reportMetadata.note = "Resultados experimentales. Las métricas de error solo aparecen si se entregó una transcripción de referencia por página.";
     setStatus(
       "Comparación terminada. " + results.filter((item) => item.status === "ok").length + " resultados listos; " +
@@ -660,7 +702,7 @@ byId("clear").addEventListener("click", () => {
 downloadButton.addEventListener("click", () => {
   const report = {
     ...reportMetadata,
-    results: results.map((item) => ({ ...item })),
+    results: serializableResults(),
     exportedAt: new Date().toISOString(),
   };
   const blob = new Blob([JSON.stringify(report, null, 2)], { type: "application/json;charset=utf-8" });
