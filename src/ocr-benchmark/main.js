@@ -269,7 +269,9 @@ async function renderPdfPage(pdf, pageNumber, maxSide) {
   if (!context) throw new Error("No se pudo preparar la imagen de la página " + pageNumber + ".");
   context.fillStyle = "#fff";
   context.fillRect(0, 0, canvas.width, canvas.height);
-  await page.render({ canvasContext: context, viewport }).promise;
+  // PDF.js v6 documents canvas:null when rendering through canvasContext.
+  // Otherwise the new canvas-backed renderer path may be selected instead.
+  await page.render({ canvas: null, canvasContext: context, viewport }).promise;
   const textContent = await page.getTextContent({ normalizeWhitespace: true });
   const embeddedText = textContent.items
     .map((item) => typeof item.str === "string" ? item.str : "")
