@@ -2091,8 +2091,10 @@ async function importExternalKnowledge(e) {
     try { return createExternalDocumentAnalysisPackage({course:draft,documentId:externalAnalysisDocumentId}); }
     catch { return null; }
   }, [draft, externalAnalysisDocumentId]);
-  const externalAnalysisProgress = externalAnalysisSelectedDocument?.externalAnalysis?.sourceSignature === externalAnalysisSource?.sourceSignature
-    ? externalAnalysisSelectedDocument.externalAnalysis : null;
+  const externalAnalysisProgress = externalAnalysisSelectedDocument && externalAnalysisSource &&
+    externalAnalysisSelectedDocument.externalAnalysis?.sourceSignature === externalAnalysisSource.sourceSignature
+    ? externalAnalysisSelectedDocument.externalAnalysis
+    : null;
   const externalAnalysisPrompt = useMemo(() => externalAnalysisSource ? createExternalDocumentAnalysisPrompt({
     courseTitle:draft.title, documentTitle:externalAnalysisSource.document.title,
     documentType:externalAnalysisSource.document.documentType, documentId:externalAnalysisSource.document.id,
