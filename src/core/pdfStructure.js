@@ -1,4 +1,89 @@
+import { classifySectionRole } from "./sectionRoles.js";
+
 const NOISE_TITLE_RE = /^(?:índice|indice|contenido|contents|table of contents|sumario|bibliografía|bibliografia|referencias|references|índice analítico|indice analitico)$/i;
+
+const STRUCTURAL_ROLES = new Set(["preliminares", "indice", "referencias", "anexo", "actividades"]);
+
+function classifyHeadingRole(title, page, pageCount, context = {}) {
+  const pageText = orderedPageLines(page)
+    .map((line) => cleanPdfLine(line.text))
+    .filter(Boolean)
+    .join(" ");
+  return classifySectionRole({
+    title,
+    content: pageText,
+    sourcePageStart: page?.pageNumber || 0,
+    sourcePageEnd: page?.pageNumber || 0,
+    sourcePageCount: pageCount,
+  }, {
+    pageCount,
+    totalPages: pageCount,
+    sectionIndex: Number(page?.pageNumber || 1) - 1,
+    sectionCount: pageCount,
+    isFirstSection: Number(page?.pageNumber || 1) === 1,
+    ...context,
+  });
+}
+
+function detectFirstPagePreliminaries(pages) {
+  const page = pages?.[0];
+  if (!page) return null;
+  const lines = orderedPageLines(page);
+  const visibleLines = lines.filter((line) => {
+    const text = cleanPdfLine(line.text);
+    return text && !PAGE_NUMBER_RE.test(text) && !/^[-–—]?\\s*\\d+\\s*[-–—]?$/.test(text);
+  });
+  if (!visibleLines.length) return null;
+
+  const pageText = visibleLines.map((line) => cleanPdfLine(line.text)).join(" ");
+  if (pageText.length > 180) return null;
+
+  const titleLine = visibleLines[0];
+  const title = cleanPdfLine(titleLine.text);
+  // A cover often contains only a large title and imprint, with no literal
+  // heading "Portada". Use the first physical page only, require sparse text
+  // and a typographic title signal, and keep confidence conservative.
+  const fontSizes = visibleLines.map((line) => Number(line.fontSize || 0)).filter((size) => size > 0).sort((a, b) => a - b);
+  const medianFont = fontSizes.length ? fontSizes[Math.floor(fontSizes.length / 2)] : 0;
+  const fontRatio = medianFont && Number(titleLine.fontSize || 0)
+    ? Number(titleLine.fontSize) / medianFont
+    : 1;
+  const hasCoverTypography = Boolean(titleLine.bold) || fontRatio >= 1.18;
+  if (!hasCoverTypography || SECTION_WORD_RE.test(title) || numberingInfo(title)) return null;
+
+  const classified = classifySectionRole({
+    title,
+    content: pageText,
+    sourcePageStart: Number(page.pageNumber || 1),
+    sourcePageEnd: Number(page.pageNumber || 1),
+    sourcePageCount: pages.length,
+  }, {
+    pageCount: pages.length,
+    totalPages: pages.length,
+    sectionIndex: 0,
+    sectionCount: pages.length,
+    isFirstSection: true,
+  });
+
+  if (classified.role !== "preliminares" || classified.confidence < 0.7) return null;
+  const lineIndex = lines.findIndex((line) => line === titleLine);
+  return {
+    pageNumber: Number(page.pageNumber || 1),
+    lineIndex: Math.max(0, lineIndex),
+    endLineIndex: Math.max(0, lineIndex),
+    title,
+    level: 1,
+    number: "",
+    score: 10,
+    confidence: classified.confidence,
+    styleKey: styleKey(titleLine),
+    evidence: [...classified.evidence, "portada detectada por posición y texto escaso"],
+    role: "preliminares",
+    roleSource: "rules",
+    roleConfidence: classified.confidence,
+    roleEvidence: classified.evidence,
+  };
+}
 const NUMBERING_RE = /^(\d+(?:\.\d+){0,8})[.)]?\s+(.+)$/;
 const SECTION_WORD_RE = /^(?:PARTE|PART|CAP[ÍI]TULO|CHAPTER|UNIDAD|UNIT|MÓDULO|MODULE|SECCIÓN|SECTION|TEMA|LECCIÓN|LECCION|INTRODUCCIÓN|INTRODUCCION|CONCLUSIÓN|CONCLUSION|PREFACIO|PRÓLOGO|PROLOGO|APÉNDICE|APENDICE)\b/i;
 const SENTENCE_END_RE = /[.!?;:]$/;
@@ -483,7 +568,7 @@ function buildMultiLineHeadingCandidates(page, lines, bodySize, repeatedFurnitur
   return output;
 }
 
-function detectHeadingCandidates(pages, repeatedFurniture, minPage = 1) {
+function detectHeadingCandidates(pages, repeatedFurniture, minPage = 1, tocWindow = null) {
   const candidates = [];
   const styleUse = new Map();
 
@@ -499,7 +584,30 @@ function detectHeadingCandidates(pages, repeatedFurniture, minPage = 1) {
       const line = lines[index];
       const text = cleanPdfLine(line.text);
       if (!text || page.pageNumber < minPage || isNoiseLine(line, repeatedFurniture)) continue;
-      if (NOISE_TITLE_RE.test(text) || paragraphLike(line)) continue;
+      const roleResult = classifyHeadingRole(text, page, pages.length);
+      const titleOnlyRole = classifySectionRole({ title: text, content: text });
+      const firstVisibleLineIndex = lines.findIndex((candidate) => {
+        const candidateText = cleanPdfLine(candidate.text);
+        return candidateText && !isNoiseLine(candidate, repeatedFurniture) && !PAGE_NUMBER_RE.test(candidateText);
+      });
+      // Page-position evidence can classify a sparse first page as preliminaries,
+      // but must not turn every imprint line into a separate section boundary.
+      const isFirstPageCoverTitle = Number(page.pageNumber) === 1 && index === firstVisibleLineIndex;
+      const isStructuralRole = STRUCTURAL_ROLES.has(roleResult.role) &&
+        roleResult.confidence >= 0.7 &&
+        (roleResult.role !== "preliminares" ||
+          titleOnlyRole.role === "preliminares" ||
+          isFirstPageCoverTitle);
+      if ((NOISE_TITLE_RE.test(text) && !isStructuralRole) || paragraphLike(line)) continue;
+
+      // The page's contents-list rows have a role as index entries, not as
+      // physical section headings. Only the dedicated index title remains a
+      // structural candidate; mapped entries become boundaries at their real
+      // body-page headings later in buildTocBoundaries.
+      const onContentsPage = tocWindow &&
+        page.pageNumber >= tocWindow.start + 1 &&
+        page.pageNumber <= tocWindow.end;
+      if (onContentsPage && parseTocLine(line, pages.length, page.width)) continue;
 
       const numbered = numberingInfo(text);
       const sectionWord = SECTION_WORD_RE.test(text);
@@ -523,6 +631,11 @@ function detectHeadingCandidates(pages, repeatedFurniture, minPage = 1) {
       if (afterGap >= Math.max(line.fontSize * 0.9, 7)) { score += 1; evidence.push("espacio inferior"); }
       if (!SENTENCE_END_RE.test(text)) { score += 1; evidence.push("forma de título"); }
       if (text.length <= 85) score += 1;
+      if (isStructuralRole) {
+        score = Math.max(score, 10);
+        evidence.push(...roleResult.evidence);
+        evidence.push("límite documental identificado por reglas");
+      }
 
       const uppercaseRatio = (() => {
         const letters = text.match(/[A-Za-zÁÉÍÓÚÜÑáéíóúüñ]/g) || [];
@@ -543,7 +656,8 @@ function detectHeadingCandidates(pages, repeatedFurniture, minPage = 1) {
         Boolean(numbered) ||
         sectionWord ||
         (sizeRatio >= 1.22 && (line.bold || beforeGap >= Math.max(line.fontSize * 1.4, 10))) ||
-        (topRatio <= 0.22 && (line.bold || sizeRatio >= 1.18));
+        (topRatio <= 0.22 && (line.bold || sizeRatio >= 1.18)) ||
+        isStructuralRole;
 
       if (score < 7 || !structuralSignal) continue;
 
@@ -558,6 +672,11 @@ function detectHeadingCandidates(pages, repeatedFurniture, minPage = 1) {
         confidence: Math.max(0, Math.min(0.99, 0.42 + score * 0.045)),
         styleKey: styleKey(line),
         evidence,
+        role: roleResult.role,
+        roleSource: "rules",
+        roleConfidence: roleResult.confidence,
+        roleEvidence: roleResult.evidence,
+        ...(roleResult.role === "indice" ? { isContentsPage: true } : {}),
       };
 
       styleUse.set(candidate.styleKey, (styleUse.get(candidate.styleKey) || 0) + 1);
@@ -606,7 +725,7 @@ function parseTocLine(line, pageCount, pageWidth) {
     title.length < 3 ||
     printedPage < 1 ||
     printedPage > Math.max(pageCount, 5000) ||
-    NOISE_TITLE_RE.test(title)
+    (NOISE_TITLE_RE.test(title) && classifySectionRole({ title, content: title }).role !== "referencias")
   ) return null;
 
   const items = Array.isArray(line?.items) ? line.items : [];
@@ -636,14 +755,22 @@ function parseTocLine(line, pageCount, pageWidth) {
 
   const numbered = numberingInfo(title);
   const sectionWord = SECTION_WORD_RE.test(title);
+  const roleResult = classifySectionRole({ title, content: title });
+  const role = STRUCTURAL_ROLES.has(roleResult.role) ? roleResult.role : undefined;
 
   return {
     title,
     printedPage,
-    level: numbered?.level || (sectionWord ? 1 : 2),
+    level: role === "referencias" ? 1 : (numbered?.level || (sectionWord ? 1 : 2)),
     number: numbered?.number || "",
     xMin: Number(line?.xMin || 0),
     tocLine: clean,
+    ...(role ? {
+      role,
+      roleSource: "rules",
+      roleConfidence: roleResult.confidence,
+      roleEvidence: roleResult.evidence,
+    } : {}),
   };
 }
 
@@ -911,10 +1038,84 @@ function buildSectionsFromBoundaries(pages, boundaries, repeatedFurniture, sourc
       evidence: Array.from(new Set(current.evidence || [])),
       ...(current.childrenCount ? { childrenCount: current.childrenCount } : {}),
       ...(current.structuralOnly ? { structuralOnly: true } : {}),
+      ...(current.role ? { role: current.role } : {}),
+      ...(current.roleSource ? { roleSource: current.roleSource } : {}),
+      ...(Number.isFinite(Number(current.roleConfidence)) ? { roleConfidence: Number(current.roleConfidence) } : {}),
+      ...(Array.isArray(current.roleEvidence) ? { roleEvidence: current.roleEvidence } : {}),
+      ...(current.isContentsPage || current.role === "indice" ? { isContentsPage: true } : {}),
     });
   }
 
   return sections;
+}
+
+function mergeRoleBoundaries(boundaries, headingCandidates) {
+  const merged = (boundaries || []).map((entry) => ({ ...entry }));
+  for (const candidate of headingCandidates || []) {
+    const role = candidate?.role;
+    if (!STRUCTURAL_ROLES.has(role) || Number(candidate.roleConfidence || 0) < 0.7) continue;
+    const page = Number(candidate.pageNumber);
+    const lineIndex = Number(candidate.lineIndex ?? 0);
+    if (!Number.isFinite(page) || page < 1) continue;
+
+    const existing = merged.find((entry) =>
+      Number(entry.page) === page && (
+        Number(entry.lineIndex ?? -1) === lineIndex ||
+        coreTitle(entry.title) === coreTitle(candidate.title)
+      )
+    );
+    const roleFields = {
+      role,
+      roleSource: candidate.roleSource || "rules",
+      roleConfidence: Number(candidate.roleConfidence),
+      roleEvidence: Array.isArray(candidate.roleEvidence) ? candidate.roleEvidence : [],
+      ...(role === "indice" ? { isContentsPage: true } : {}),
+    };
+    if (existing) {
+      Object.assign(existing, roleFields);
+      existing.evidence = Array.from(new Set([
+        ...(existing.evidence || []),
+        ...(candidate.roleEvidence || []),
+        "límite documental identificado por reglas",
+      ]));
+      // A section role is a document-level boundary; it must close the
+      // preceding chapter rather than become a child that absorbs references.
+      existing.level = 1;
+      existing.path = [existing.title || candidate.title];
+      continue;
+    }
+
+    merged.push({
+      ...candidate,
+      page,
+      lineIndex,
+      endLineIndex: Number(candidate.endLineIndex ?? lineIndex),
+      title: candidate.title,
+      level: 1,
+      path: [candidate.title],
+      confidence: Math.max(Number(candidate.confidence || 0), Number(candidate.roleConfidence)),
+      evidence: Array.from(new Set([
+        ...(candidate.evidence || []),
+        ...(candidate.roleEvidence || []),
+        "límite documental identificado por reglas",
+      ])),
+      ...roleFields,
+    });
+  }
+
+  const deduped = [];
+  for (const entry of merged.sort((a, b) => a.page - b.page || a.lineIndex - b.lineIndex)) {
+    const previous = deduped[deduped.length - 1];
+    if (previous &&
+      Number(previous.page) === Number(entry.page) &&
+      Number(previous.lineIndex) === Number(entry.lineIndex) &&
+      coreTitle(previous.title) === coreTitle(entry.title)) {
+      Object.assign(previous, entry);
+      continue;
+    }
+    deduped.push(entry);
+  }
+  return deduped;
 }
 
 function hierarchyChildrenCount(entries) {
@@ -949,11 +1150,23 @@ async function resolveOutlinePage(pdf, destination) {
 async function flattenOutline(pdf, items, level = 1, path = [], output = []) {
   for (const item of items || []) {
     const title = cleanPdfLine(item?.title || "");
-    if (!title || NOISE_TITLE_RE.test(title)) continue;
+    if (!title) continue;
+    const roleResult = classifySectionRole({ title, content: title });
+    const role = STRUCTURAL_ROLES.has(roleResult.role) ? roleResult.role : undefined;
+    if (NOISE_TITLE_RE.test(title) && !role) continue;
 
     const page = await resolveOutlinePage(pdf, item?.dest);
     const nextPath = [...path, title];
-    output.push({ title, level, path: nextPath, page });
+    output.push({
+      title, level, path: nextPath, page,
+      ...(role ? {
+        role,
+        roleSource: "rules",
+        roleConfidence: roleResult.confidence,
+        roleEvidence: roleResult.evidence,
+        ...(role === "indice" ? { isContentsPage: true } : {}),
+      } : {}),
+    });
 
     if (Array.isArray(item?.items) && item.items.length) {
       await flattenOutline(pdf, item.items, level + 1, nextPath, output);
@@ -1010,8 +1223,8 @@ async function buildOutlineBoundaries(pdf, pages, headingCandidates) {
   };
 }
 
-async function buildTocBoundaries(pdf, pages, headingCandidates) {
-  const toc = findTocWindow(pages);
+async function buildTocBoundaries(pdf, pages, headingCandidates, tocWindow = null) {
+  const toc = tocWindow || findTocWindow(pages);
   if (!toc) return null;
 
   const tocPageNumbers = new Set(
@@ -1082,6 +1295,12 @@ async function buildTocBoundaries(pdf, pages, headingCandidates) {
       evidence: match
         ? ["índice del documento", ...match.candidate.evidence]
         : ["índice del documento", "paginación estimada; encabezado no confirmado"],
+      ...(entry.role ? {
+        role: entry.role,
+        roleSource: entry.roleSource || "rules",
+        roleConfidence: entry.roleConfidence || entry.confidence,
+        roleEvidence: entry.roleEvidence || [],
+      } : {}),
     };
   });
 
@@ -1235,13 +1454,25 @@ export async function analyzePdfStructure({ pdf, pages, structTreePages = 0 }) {
   }
 
   const repeatedFurniture = findRepeatedFurniture(pages);
-  const headingCandidates = detectHeadingCandidates(pages, repeatedFurniture, 1);
+  const tocWindow = findTocWindow(pages);
+  for (const page of pages) {
+    page.isContentsPage = Boolean(tocWindow &&
+      Number(page.pageNumber) >= tocWindow.start + 1 &&
+      Number(page.pageNumber) <= tocWindow.end);
+  }
+  const headingCandidates = detectHeadingCandidates(pages, repeatedFurniture, 1, tocWindow);
+  const coverBoundary = detectFirstPagePreliminaries(pages);
+  if (coverBoundary && !headingCandidates.some((candidate) =>
+    candidate.pageNumber === coverBoundary.pageNumber && candidate.role === "preliminares"
+  )) {
+    headingCandidates.unshift(coverBoundary);
+  }
   // A conservative fallback must never silently discard the first part of
   // the uploaded document. Front matter can be identified separately later;
   // until then, keep page 1 as the source of truth.
   const bodyPage = 1;
 
-  const tocResult = await buildTocBoundaries(pdf, pages, headingCandidates);
+  const tocResult = await buildTocBoundaries(pdf, pages, headingCandidates, tocWindow);
   const outlineResult = tocResult ? null : await buildOutlineBoundaries(pdf, pages, headingCandidates);
   const fallbackStart = tocResult?.toc?.end + 1 || bodyPage;
   const heuristicResult = tocResult || outlineResult ? null : buildHeuristicBoundaries(pages, headingCandidates, fallbackStart);
@@ -1257,7 +1488,8 @@ export async function analyzePdfStructure({ pdf, pages, structTreePages = 0 }) {
         level: 1,
         path: ["Material general"],
         page: bodyPage,
-        lineIndex: 0,
+        lineIndex: -1,
+        endLineIndex: -1,
         confidence: 0.34,
         evidence: ["no se encontró una estructura suficientemente confiable"],
         allowEmpty: false,
@@ -1266,7 +1498,8 @@ export async function analyzePdfStructure({ pdf, pages, structTreePages = 0 }) {
     };
   }
 
-  const sections = sourceResult.boundaries.length === 1 && sourceResult.boundaries[0].title === "Material general"
+  const finalBoundaries = mergeRoleBoundaries(sourceResult.boundaries, headingCandidates);
+  const sections = finalBoundaries.length === 1 && finalBoundaries[0].title === "Material general"
     ? [{
         title: "Material general",
         level: 1,
@@ -1283,7 +1516,7 @@ export async function analyzePdfStructure({ pdf, pages, structTreePages = 0 }) {
         confidence: 0.34,
         evidence: sourceResult.boundaries[0].evidence,
       }]
-    : buildSectionsFromBoundaries(pages, sourceResult.boundaries, repeatedFurniture, source);
+    : buildSectionsFromBoundaries(pages, finalBoundaries, repeatedFurniture, source);
 
   const tocDetected = Boolean(tocResult);
   const outlineDetected = Boolean(outlineResult);
