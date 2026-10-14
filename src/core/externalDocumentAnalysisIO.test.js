@@ -54,7 +54,7 @@ test("conserva texto y decisiones docentes tras completar la estructura",()=>{
   s3:item("s3","Referencias","referencias",["Referencias"]),s4:item("s4","Caso","contenido",["Caso"])
  }),s),s);
  assert.equal(done.status,"complete");
- const next=apply(c,"d",s,checked);
+ const next=apply(c,"d",s,done);
  assert.deepEqual(next.corpus.map(x=>x.content),c.corpus.map(x=>x.content));
  assert.equal(next.corpus.find(x=>x.id==="s3").scope,"excluded");
  assert.equal(next.corpus.find(x=>x.id==="s4").priority,"context");
