@@ -585,7 +585,19 @@ function detectHeadingCandidates(pages, repeatedFurniture, minPage = 1, tocWindo
       const text = cleanPdfLine(line.text);
       if (!text || page.pageNumber < minPage || isNoiseLine(line, repeatedFurniture)) continue;
       const roleResult = classifyHeadingRole(text, page, pages.length);
-      const isStructuralRole = STRUCTURAL_ROLES.has(roleResult.role) && roleResult.confidence >= 0.7;
+      const titleOnlyRole = classifySectionRole({ title: text, content: text });
+      const firstVisibleLineIndex = lines.findIndex((candidate) => {
+        const candidateText = cleanPdfLine(candidate.text);
+        return candidateText && !isNoiseLine(candidate, repeatedFurniture) && !PAGE_NUMBER_RE.test(candidateText);
+      });
+      // Page-position evidence can classify a sparse first page as preliminaries,
+      // but must not turn every imprint line into a separate section boundary.
+      const isFirstPageCoverTitle = Number(page.pageNumber) === 1 && index === firstVisibleLineIndex;
+      const isStructuralRole = STRUCTURAL_ROLES.has(roleResult.role) &&
+        roleResult.confidence >= 0.7 &&
+        (roleResult.role !== "preliminares" ||
+          titleOnlyRole.role === "preliminares" ||
+          isFirstPageCoverTitle);
       if ((NOISE_TITLE_RE.test(text) && !isStructuralRole) || paragraphLike(line)) continue;
 
       // The page's contents-list rows have a role as index entries, not as
