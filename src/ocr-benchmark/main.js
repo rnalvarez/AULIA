@@ -75,6 +75,7 @@ const summaryNode = byId("summary");
 
 let selectedFile = null;
 let loadedPdf = null;
+let pdfjsLibModule = null;
 let results = [];
 let reportMetadata = {};
 let activeRun = false;
@@ -239,7 +240,8 @@ function parsePageNumbers(raw, totalPages) {
 }
 
 async function loadPdf(file) {
-  const pdfjsLib = await import("pdfjs-dist/legacy/build/pdf.mjs");
+  pdfjsLibModule = await import("pdfjs-dist/legacy/build/pdf.mjs");
+  const pdfjsLib = pdfjsLibModule;
   pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
     "pdfjs-dist/legacy/build/pdf.worker.min.mjs",
     import.meta.url
@@ -249,6 +251,9 @@ async function loadPdf(file) {
     // Force PDF.js's own image decoding. Browser ImageDecoder can yield white
     // canvases for some CCITT-fax scanned PDFs, even while text extraction works.
     isImageDecoderSupported: false,
+    // Avoid browser OffscreenCanvas image-conversion path while diagnosing
+    // scans that are present in the PDF but render to an all-white canvas.
+    isOffscreenCanvasSupported: false,
   }).promise;
 }
 
@@ -272,8 +277,35 @@ async function renderPdfPage(pdf, pageNumber, maxSide) {
     .join(" ")
     .replace(/\s+/gu, " ")
     .trim();
+
+  // Record whether PDF.js parsed and scheduled image paint operators. These
+  // diagnostics distinguish a missing image operator from a blank paint result.
+  const operatorList = await page.getOperatorList();
+  const ops = pdfjsLibModule?.OPS || {};
+  const opNames = new Map(Object.entries(ops).filter(([, value]) => Number.isInteger(value)).map(([name, value]) => [value, name]));
+  const imageOperatorNames = new Set([
+    "paintImageXObject",
+    "paintImageXObjectRepeat",
+    "paintInlineImageXObject",
+    "paintInlineImageXObjectGroup",
+    "paintImageMaskXObject",
+    "paintImageMaskXObjectGroup",
+    "paintSolidColorImageMask",
+  ]);
+  const imageOperators = operatorList.fnArray
+    .map((fn, i) => ({ name: opNames.get(fn) || String(fn), args: operatorList.argsArray?.[i] }))
+    .filter((op) => imageOperatorNames.has(op.name));
+  const renderDiagnostics = {
+    operatorCount: operatorList.fnArray.length,
+    imageOperatorCount: imageOperators.length,
+    imageOperatorNames: imageOperators.slice(0, 12).map((op) => op.name),
+    renderOptions: {
+      isImageDecoderSupported: false,
+      isOffscreenCanvasSupported: false,
+    },
+  };
   page.cleanup?.();
-  return { canvas, embeddedText, width: viewport.width, height: viewport.height, scale };
+  return { canvas, embeddedText, width: viewport.width, height: viewport.height, scale, renderDiagnostics };
 }
 
 function cropCanvas(source, startRatio, endRatio) {
@@ -494,7 +526,8 @@ async function runComparison() {
       localOnly: true,
       pdfRenderOptions: {
         isImageDecoderSupported: false,
-        reason: "Usar el decodificador interno de PDF.js para evitar lienzos blancos con algunos escaneos CCITT Fax.",
+        isOffscreenCanvasSupported: false,
+        reason: "Forzar las rutas internas de decodificación y conversión de imágenes de PDF.js para diagnosticar escaneos CCITT Fax que producen lienzos blancos.",
       },
       referencesProvidedForPages: Object.keys(referenceByPage).map(Number),
     };
@@ -545,6 +578,7 @@ async function runComparison() {
           imageWidth: pageResult.width,
           imageHeight: pageResult.height,
           renderedInkRatio: imageInkRatio,
+          renderDiagnostics: pageResult.renderDiagnostics,
         },
         previewDataUrl,
         ...(reference ? { errorRates: errorMetrics(reference, pageResult.embeddedText) } : {}),
