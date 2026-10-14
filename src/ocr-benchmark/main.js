@@ -34,7 +34,7 @@ root.innerHTML = `
       <label class="check"><input id="splitSpread" type="checkbox" checked /> <span>Comparar también las dos mitades por separado, leyendo primero la izquierda y después la derecha. Desmarcá esto para páginas individuales convencionales.</span></label>
       <div class="grid">
         <label class="check"><input id="useTesseract" type="checkbox" checked /> <span><strong>Tesseract.js · español</strong><br><span class="subtle">Motor utilizado actualmente por AULIA.</span></span></label>
-        <label class="check"><input id="usePaddle" type="checkbox" checked /> <span><strong>PaddleOCR.js · PP-OCRv5 · español</strong><br><span class="subtle">Motor alternativo, ejecutado en el navegador. Requiere descargar sus modelos al iniciar.</span></span></label>
+        <label class="check"><input id="usePaddle" type="checkbox" checked /> <span><strong>PaddleOCR.js · PP-OCRv6 · español</strong><br><span class="subtle">Motor alternativo, ejecutado en el navegador. Requiere descargar sus modelos al iniciar.</span></span></label>
       </div>
       <label for="referenceText">Transcripción de referencia (opcional)</label>
       <textarea id="referenceText" placeholder="Pegá una transcripción corregida para calcular errores. Para varias páginas, separalas así:
@@ -169,6 +169,10 @@ function showMetric(value) {
   return (value * 100).toFixed(1) + "%";
 }
 
+function serializableResults() {
+  return results.map(({ previewDataUrl, ...item }) => ({ ...item }));
+}
+
 function renderResults() {
   resultNode.replaceChildren();
   if (!results.length) {
@@ -198,6 +202,8 @@ function renderResults() {
       Number(item.elapsedMs || 0).toFixed(0) + " ms",
     ];
     if (Number.isFinite(item.confidence)) parts.push("confianza del motor " + item.confidence.toFixed(1) + "%");
+    if (Number.isFinite(item.sourceMetrics?.renderedInkRatio)) parts.push("tinta detectada " + (item.sourceMetrics.renderedInkRatio * 100).toFixed(2) + "%");
+    if (Number.isFinite(item.inputInkRatio)) parts.push("tinta en entrada OCR " + (item.inputInkRatio * 100).toFixed(2) + "%");
     if (item.errorRates) parts.push("WER " + showMetric(item.errorRates.wer) + " · CER " + showMetric(item.errorRates.cer));
     if (item.status !== "ok") parts.push("ERROR");
     metrics.textContent = parts.join(" · ");
@@ -206,6 +212,17 @@ function renderResults() {
     badge.className = "badge";
     badge.textContent = item.status === "ok" ? "Listo" : "Falló";
     card.append(top, badge);
+    if (item.previewDataUrl) {
+      const details = document.createElement("details");
+      details.className = "image-preview";
+      const summary = document.createElement("summary");
+      summary.textContent = "Ver imagen original usada en esta página";
+      const image = document.createElement("img");
+      image.src = item.previewDataUrl;
+      image.alt = "Página renderizada que reciben los motores OCR";
+      details.append(summary, image);
+      card.append(details);
+    }
     const pre = document.createElement("pre");
     pre.textContent = item.text || item.error || "(Sin texto)";
     card.append(pre);
@@ -270,7 +287,7 @@ function cropCanvas(source, startRatio, endRatio) {
 function foregroundRatio(canvas) {
   const context = canvas.getContext("2d", { willReadFrequently: true });
   if (!context) return 1;
-  const step = 12;
+  const step = 4;
   const image = context.getImageData(0, 0, canvas.width, canvas.height).data;
   let sampled = 0;
   let foreground = 0;
@@ -283,6 +300,18 @@ function foregroundRatio(canvas) {
     }
   }
   return foreground / Math.max(1, sampled);
+}
+
+function cloneCanvas(source) {
+  const copy = document.createElement("canvas");
+  copy.width = source.width;
+  copy.height = source.height;
+  const context = copy.getContext("2d", { alpha: false });
+  if (!context) throw new Error("No se pudo copiar la imagen para el motor OCR.");
+  context.fillStyle = "#fff";
+  context.fillRect(0, 0, copy.width, copy.height);
+  context.drawImage(source, 0, 0);
+  return copy;
 }
 
 function centerOrderedPaddleText(items) {
@@ -304,30 +333,56 @@ function centerOrderedPaddleText(items) {
 
 async function runTesseract(worker, canvas, pageNumber, method) {
   const started = performance.now();
+  let input = null;
   try {
+    input = cloneCanvas(canvas);
+    const inputInkRatio = foregroundRatio(input);
+    if (inputInkRatio < 0.0007) {
+      return {
+        pageNumber, method, status: "error", text: "",
+        error: "La imagen entregada a Tesseract aparece vacía antes del reconocimiento.",
+        inputInkRatio, elapsedMs: performance.now() - started,
+      };
+    }
     await worker.setParameters({
       tessedit_pageseg_mode: "3",
       preserve_interword_spaces: "1",
     });
-    const result = await worker.recognize(canvas, {}, { blocks: true, tsv: true });
+    const result = await worker.recognize(input, {}, { blocks: true, tsv: true });
+    const text = String(result?.data?.text || "").trim();
     return {
       pageNumber,
       method,
-      status: "ok",
-      text: String(result?.data?.text || "").trim(),
+      status: text ? "ok" : "error",
+      text,
+      ...(text ? {} : { error: "Tesseract terminó, pero devolvió cero caracteres pese a recibir una imagen con contenido." }),
+      inputInkRatio,
       confidence: Number(result?.data?.confidence ?? NaN),
       elapsedMs: performance.now() - started,
     };
   } catch (error) {
     return { pageNumber, method, status: "error", text: "", error: error?.message || String(error), elapsedMs: performance.now() - started };
+  } finally {
+    clearCanvas(input);
   }
 }
 
 async function runPaddle(ocr, canvas, pageNumber, method) {
   const started = performance.now();
+  let input = null;
   try {
-    const [result] = await ocr.predict(canvas);
+    input = cloneCanvas(canvas);
+    const inputInkRatio = foregroundRatio(input);
+    if (inputInkRatio < 0.0007) {
+      return {
+        pageNumber, method, status: "error", text: "",
+        error: "La imagen entregada a PaddleOCR aparece vacía antes del reconocimiento.",
+        inputInkRatio, elapsedMs: performance.now() - started,
+      };
+    }
+    const [result] = await ocr.predict(input);
     const lines = centerOrderedPaddleText(result?.items);
+    const text = lines.map((item) => item.text).join("\\n").trim();
     const scored = lines.filter((item) => Number.isFinite(item.score));
     const confidence = scored.length
       ? 100 * scored.reduce((sum, item) => sum + item.score, 0) / scored.length
@@ -335,8 +390,10 @@ async function runPaddle(ocr, canvas, pageNumber, method) {
     return {
       pageNumber,
       method,
-      status: "ok",
-      text: lines.map((item) => item.text).join("\n").trim(),
+      status: text ? "ok" : "error",
+      text,
+      ...(text ? {} : { error: "PaddleOCR terminó, pero no detectó texto en una imagen con contenido visual." }),
+      inputInkRatio,
       confidence,
       elapsedMs: Number(result?.metrics?.totalMs) || performance.now() - started,
       engineMetrics: result?.metrics || null,
@@ -344,6 +401,8 @@ async function runPaddle(ocr, canvas, pageNumber, method) {
     };
   } catch (error) {
     return { pageNumber, method, status: "error", text: "", error: error?.message || String(error), elapsedMs: performance.now() - started };
+  } finally {
+    clearCanvas(input);
   }
 }
 
@@ -367,7 +426,7 @@ async function ensurePaddle() {
   const { PaddleOCR } = await import("@paddleocr/paddleocr-js");
   const ocr = await PaddleOCR.create({
     lang: "es",
-    ocrVersion: "PP-OCRv5",
+    ocrVersion: "PP-OCRv6",
     textDetectionBatchSize: 1,
     textRecognitionBatchSize: 1,
     ortOptions: {
@@ -462,6 +521,9 @@ async function runComparison() {
       const pageResult = await renderPdfPage(loadedPdf, pageNumber, maxSide);
       const reference = referenceByPage[pageNumber] || "";
       const embedStats = textStats(pageResult.embeddedText);
+      const imageInkRatio = foregroundRatio(pageResult.canvas);
+      let previewDataUrl = "";
+      try { previewDataUrl = pageResult.canvas.toDataURL("image/jpeg", 0.62); } catch {}
       addResult({
         pageNumber,
         method: "Capa de texto incrustada (PDF.js)",
@@ -469,9 +531,33 @@ async function runComparison() {
         text: pageResult.embeddedText,
         error: pageResult.embeddedText ? "" : "La página no contiene texto extraíble.",
         elapsedMs: 0,
-        sourceMetrics: { ...embedStats, imageWidth: pageResult.width, imageHeight: pageResult.height },
+        sourceMetrics: {
+          ...embedStats,
+          imageWidth: pageResult.width,
+          imageHeight: pageResult.height,
+          renderedInkRatio: imageInkRatio,
+        },
+        previewDataUrl,
         ...(reference ? { errorRates: errorMetrics(reference, pageResult.embeddedText) } : {}),
       });
+
+      // Never classify zero OCR output as an engine-quality result when PDF.js has rendered a blank image.
+      if (imageInkRatio < 0.0007) {
+        addResult({
+          pageNumber,
+          method: "Preflight de imagen renderizada",
+          status: "error",
+          text: "",
+          error: "PDF.js extrajo texto, pero el lienzo renderizado no contiene suficientes píxeles oscuros. Se omitió OCR para no producir una comparación falsa.",
+          renderedInkRatio: imageInkRatio,
+          imageWidth: pageResult.width,
+          imageHeight: pageResult.height,
+          elapsedMs: 0,
+        });
+        clearCanvas(pageResult.canvas);
+        progressNode.value = index + 1;
+        continue;
+      }
 
       if (useTesseract && tesseract) {
         const full = await runTesseract(tesseract, pageResult.canvas, pageNumber, "Tesseract.js · página completa");
@@ -553,7 +639,7 @@ async function runComparison() {
 
     reportMetadata.completedAt = new Date().toISOString();
     reportMetadata.durationMs = new Date(reportMetadata.completedAt).getTime() - new Date(started).getTime();
-    reportMetadata.results = results.map((item) => ({ ...item }));
+    reportMetadata.results = serializableResults();
     reportMetadata.note = "Resultados experimentales. Las métricas de error solo aparecen si se entregó una transcripción de referencia por página.";
     setStatus(
       "Comparación terminada. " + results.filter((item) => item.status === "ok").length + " resultados listos; " +
@@ -618,7 +704,7 @@ byId("clear").addEventListener("click", () => {
 downloadButton.addEventListener("click", () => {
   const report = {
     ...reportMetadata,
-    results: results.map((item) => ({ ...item })),
+    results: serializableResults(),
     exportedAt: new Date().toISOString(),
   };
   const blob = new Blob([JSON.stringify(report, null, 2)], { type: "application/json;charset=utf-8" });
