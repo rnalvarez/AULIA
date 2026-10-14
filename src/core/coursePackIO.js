@@ -1,6 +1,7 @@
 import { cloneCourse, validateCourse } from "./courseContract.js";
 
-export const COURSE_PACK_VERSION = "1.0";
+export const COURSE_PACK_VERSION = "1.1";
+export const SUPPORTED_COURSE_PACK_VERSIONS = new Set(["1.0", "1.1"]);
 
 export function courseToPack(course) {
   return {
@@ -35,6 +36,9 @@ export function courseToPack(course) {
 export function packToCourse(pack) {
   if (!pack || pack.format !== "aulia-course-pack") {
     throw new Error("El archivo no parece ser un course pack de AULIA.");
+  }
+  if (pack.version != null && !SUPPORTED_COURSE_PACK_VERSIONS.has(String(pack.version))) {
+    throw new Error("La versión de course pack \"" + pack.version + "\" no es compatible. Versiones admitidas: 1.0 y 1.1.");
   }
 
   const course = {
