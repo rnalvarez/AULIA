@@ -9,6 +9,7 @@ import { analyzeDocumentSemantics } from "../services/llm/semanticSegmentation.j
 import { requestTeacherProposal } from "../services/llm/teacherProposal.js";
 import { buildKnowledgeBase, buildKnowledgePassages, isSupportedKnowledgeExcerpt, normalizeExternalKnowledgeEntries, mergeKnowledgeBaseEntries } from "../services/llm/knowledgeBase.js";
 import { createExternalKnowledgePackage, createExternalKnowledgePrompt, downloadJsonFile, EXTERNAL_KNOWLEDGE_OUTPUT_FORMAT } from "../core/externalKnowledgeBaseIO.js";
+import { createExternalDocumentAnalysisPackage, createExternalDocumentAnalysisPrompt, validateExternalDocumentAnalysisBatch, mergeExternalDocumentAnalysis, applyExternalDocumentAnalysis } from "../core/externalDocumentAnalysisIO.js";
 import { KNOWLEDGE_BASE_VERSION, isKnowledgeBaseCurrent, summarizeKnowledgeBase, knowledgeCorpusSignature, legacyKnowledgeCorpusSignature } from "../core/knowledgeBase.js";
 import { clearStudioApiKey, isGroqApiKey, loadStudioApiKey, saveStudioApiKey } from "../utils/studioStorage.js";
 import LegalNotice from "./LegalNotice.jsx";
@@ -497,6 +498,8 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
   const [analysisReport, setAnalysisReport] = useState(null);
   const [knowledgeBaseReport, setKnowledgeBaseReport] = useState(null);
   const [showExternalPrompt, setShowExternalPrompt] = useState(false);
+  const [externalDocumentId, setExternalDocumentId] = useState("");
+  const [showExternalDocumentPrompt, setShowExternalDocumentPrompt] = useState(false);
   const [knowledgeProvider, setKnowledgeProvider] = useState("groq");
   const [ingestionProvider, setIngestionProvider] = useState(() => loadStudioApiKey(course.id) ? "groq" : "local");
   const [uploadProgress, setUploadProgress] = useState(null);
@@ -561,6 +564,8 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
     setAnalysisReport(null);
     setKnowledgeBaseReport(null);
     setShowExternalPrompt(false);
+    setExternalDocumentId("");
+    setShowExternalDocumentPrompt(false);
     setIngestionProvider(loadStudioApiKey(course.id) ? "groq" : "local");
     setUploadProgress(null);
   }, [course.id]);
@@ -1655,6 +1660,94 @@ export default function Studio({ course, courseMeta = null, canEdit = true, onCo
     setStatus("Se eliminó la clave de IA docente de esta sesión.");
   }
 
+  function downloadExternalDocumentAnalysisSource() {
+    if (!externalAnalysisSource) {
+      setStatus("Elegí un documento con fragmentos de texto para preparar el análisis externo.");
+      return;
+    }
+    downloadJsonFile(externalAnalysisSource, slug(externalAnalysisSource.document.title) + "-aulia-fuente-analisis-externo.json");
+    setStatus("Paquete descargado. Adjuntalo a una IA externa con las instrucciones de AULIA; también podés adjuntar el PDF original para contrastar títulos.");
+  }
+
+  async function copyExternalDocumentAnalysisPrompt() {
+    try {
+      if (!externalAnalysisPrompt || !navigator.clipboard?.writeText) throw new Error("No se habilitó el portapapeles.");
+      await navigator.clipboard.writeText(externalAnalysisPrompt);
+      setShowExternalDocumentPrompt(false);
+      setStatus("Instrucciones copiadas. Pegalas en el chat externo después de adjuntar el paquete JSON.");
+    } catch {
+      setShowExternalDocumentPrompt(true);
+      setStatus("No se pudieron copiar las instrucciones automáticamente. Seleccioná el texto que aparece abajo y copialo manualmente.");
+    }
+  }
+
+  async function importExternalDocumentAnalysis(e) {
+    const files = Array.from(e.target.files || []);
+    e.target.value = "";
+    if (!files.length) return;
+    const selectedId = externalAnalysisDocumentId;
+    const sourcePackage = externalAnalysisSource;
+    if (!selectedId || !sourcePackage) {
+      setStatus("Elegí un documento antes de importar resultados.");
+      return;
+    }
+    setBusy(true);
+    setStatus("Validando tandas de segmentación externa…");
+    const selected = (draft.documents || []).find(item => String(item?.id || "") === selectedId);
+    let merged = selected?.externalAnalysis?.sourceSignature === sourcePackage.sourceSignature
+      ? cloneCourse(selected.externalAnalysis)
+      : null;
+    const failures = [];
+    let imported = 0;
+
+    try {
+      for (const file of files) {
+        try {
+          const raw = await file.text();
+          let parsed;
+          try {
+            parsed = JSON.parse(raw.replace(/^\uFEFF/, "").trim()
+              .replace(/^\x60{3}(?:json)?\s*/i, "").replace(/\s*\x60{3}$/, "").trim());
+          } catch {
+            throw new Error("El archivo no contiene JSON válido. Guardá la respuesta como .json, sin texto adicional.");
+          }
+          const batch = validateExternalDocumentAnalysisBatch(parsed, sourcePackage);
+          merged = mergeExternalDocumentAnalysis(merged, batch, sourcePackage);
+          imported += 1;
+        } catch (error) {
+          failures.push(file.name + ": " + (error?.message || "no se pudo importar"));
+        }
+      }
+      if (!imported || !merged) throw new Error(failures.join(" ") || "No se pudo importar ninguna tanda válida.");
+
+      let nextDraft;
+      if (merged.status === "complete") {
+        nextDraft = applyExternalDocumentAnalysis(draft, selectedId, sourcePackage, merged);
+      } else {
+        const snapshot = cloneCourse(draft);
+        nextDraft = {
+          ...snapshot,
+          documents: (snapshot.documents || []).map(document =>
+            String(document?.id || "") === selectedId ? { ...document, externalAnalysis: merged } : document
+          ),
+        };
+      }
+      localStorage.setItem(storageKey, JSON.stringify({ version: courseMeta?.updatedAt || "", draft: nextDraft }));
+      setDraft(cloneCourse(nextDraft));
+      setValidation(null);
+      setShowExternalDocumentPrompt(false);
+      const coverage = merged.processedSegmentIds.length + "/" + merged.totalSegments;
+      const message = merged.status === "complete"
+        ? "Segmentación externa aplicada (" + coverage + " fragmentos). Se conservó el texto original. Regenerá la base conceptual para que use la nueva estructura."
+        : "Análisis externo guardado (" + coverage + " fragmentos). Importá las próximas tandas para completar la cobertura.";
+      setStatus(message + (failures.length ? " Archivos con errores: " + failures.join(" ") : ""));
+    } catch (error) {
+      setStatus(error?.message || "No se pudo importar el análisis externo.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   function downloadExternalKnowledgeSource() {
     if (!externalPassages.length) {
       setStatus("No hay pasajes activos para preparar. Revisá la bibliografía y el alcance de las secciones.");
@@ -2087,6 +2180,30 @@ async function importExternalKnowledge(e) {
 
   const externalPassages = useMemo(() => buildKnowledgePassages(draft.corpus || []), [draft.corpus]);
   const externalSourceSignature = useMemo(() => knowledgeCorpusSignature(draft.corpus || []), [draft.corpus]);
+  const externalAnalysisDocuments = useMemo(() => (draft.documents || []).map(document => {
+    const id = String(document?.id || "");
+    const sourceName = String(document?.sourceName || "").trim().toLocaleLowerCase();
+    const fragmentCount = (draft.corpus || []).filter(chunk =>
+      (id && String(chunk?.documentId || "") === id) ||
+      (!chunk?.documentId && sourceName && String(chunk?.source || chunk?.sourceName || "").trim().toLocaleLowerCase() === sourceName)
+    ).length;
+    return {id, title:String(document?.title || document?.sourceName || "Documento"), sourceName, fragmentCount, externalAnalysis:document?.externalAnalysis || null};
+  }).filter(document => document.id && document.fragmentCount > 0), [draft.documents, draft.corpus]);
+  const externalAnalysisDocumentId = externalDocumentId && externalAnalysisDocuments.some(document => document.id === externalDocumentId)
+    ? externalDocumentId : (externalAnalysisDocuments[0]?.id || "");
+  const externalAnalysisSelectedDocument = externalAnalysisDocuments.find(document => document.id === externalAnalysisDocumentId) || null;
+  const externalAnalysisSource = useMemo(() => {
+    if (!externalAnalysisDocumentId) return null;
+    try { return createExternalDocumentAnalysisPackage({course:draft,documentId:externalAnalysisDocumentId}); }
+    catch { return null; }
+  }, [draft, externalAnalysisDocumentId]);
+  const externalAnalysisProgress = externalAnalysisSelectedDocument?.externalAnalysis?.sourceSignature === externalAnalysisSource?.sourceSignature
+    ? externalAnalysisSelectedDocument.externalAnalysis : null;
+  const externalAnalysisPrompt = useMemo(() => externalAnalysisSource ? createExternalDocumentAnalysisPrompt({
+    courseTitle:draft.title, documentTitle:externalAnalysisSource.document.title,
+    documentType:externalAnalysisSource.document.documentType, documentId:externalAnalysisSource.document.id,
+    sourceSignature:externalAnalysisSource.sourceSignature, totalSegments:externalAnalysisSource.totalSegments,
+  }) : "", [draft.title, externalAnalysisSource]);
   const externalPrompt = useMemo(() => createExternalKnowledgePrompt({
     courseTitle: draft.title,
     sourceSignature: externalSourceSignature,
@@ -2358,6 +2475,33 @@ async function importExternalKnowledge(e) {
             <div className="studio-wf-structure-note">
               El cuerpo del texto, incluidas la introducción y las conclusiones, queda Incluido; anexos y actividades quedan Referenciales; preliminares, índices y referencias quedan Excluidos. La prioridad se hereda del documento o de su unidad pedagógica. Las excepciones definidas por el docente se conservan al reprocesar.
             </div>
+
+            {externalAnalysisDocuments.length > 0 && <section className="studio-wf-knowledge-setup">
+              <div className="studio-wf-knowledge-setup-head">
+                <div className="eyebrow">ESTRUCTURA DOCUMENTAL · IA EXTERNA</div>
+                <h3>Reconstruí la segmentación con una IA externa</h3>
+                <p>Flujo independiente del índice conceptual. Exportá el texto de un documento para que una IA proponga títulos, jerarquías y roles. AULIA valida los IDs y usa el texto fuente sin reescribirlo.</p>
+              </div>
+              <label className="studio-wf-field">
+                <span>Documento para analizar</span>
+                <select value={externalAnalysisDocumentId} onChange={event=>setExternalDocumentId(event.target.value)} disabled={!canEdit||busy}>
+                  {externalAnalysisDocuments.map(document=><option key={document.id} value={document.id}>{document.title}{document.sourceName ? " · "+document.sourceName : ""}</option>)}
+                </select>
+              </label>
+              {externalAnalysisSource && <div className={"studio-wf-ai-report "+(externalAnalysisProgress?.status==="complete"?"ok":externalAnalysisProgress?.status==="partial"?"error":"")}>
+                <strong>{externalAnalysisProgress?.status==="complete"?"✓ Segmentación externa aplicada":externalAnalysisProgress?.status==="partial"?"Análisis parcial; podés continuar":"Listo para preparar el análisis externo"}</strong>
+                <span>{externalAnalysisProgress?.processedSegmentIds?.length||0}/{externalAnalysisSource.totalSegments} fragmentos cubiertos · {externalAnalysisSource.document.pageCount||"?"} páginas físicas</span>
+                <small>Firma de origen: {externalAnalysisSource.sourceSignature}</small>
+                {externalAnalysisProgress?.status==="complete"&&<small>Revisá títulos, roles y páginas; después regenerá la base conceptual.</small>}
+              </div>}
+              <div className="studio-wf-tool-row">
+                <button className="primary" type="button" onClick={downloadExternalDocumentAnalysisSource} disabled={!canEdit||!externalAnalysisSource||busy}>1. Descargar paquete (.json)</button>
+                <button className="ghost" type="button" onClick={copyExternalDocumentAnalysisPrompt} disabled={!canEdit||!externalAnalysisSource||busy}>2. Copiar instrucciones</button>
+                <label className={"ghost studio-file"+(!canEdit||busy||!externalAnalysisSource?" disabled":"")}>3. Importar tanda(s)<input type="file" accept="application/json,.json,text/plain,.txt" multiple onChange={importExternalDocumentAnalysis} disabled={!canEdit||busy||!externalAnalysisSource}/></label>
+              </div>
+              <small className="studio-wf-external-note">Procesá tandas consecutivas de hasta 20 fragmentos. También podés adjuntar el PDF original al servicio externo para contrastar títulos. No subas materiales que no estés autorizado a compartir.</small>
+              {showExternalDocumentPrompt&&<label className="studio-wf-external-prompt"><span>Instrucciones para copiar manualmente</span><textarea value={externalAnalysisPrompt} readOnly onFocus={event=>event.target.select()} rows={13}/></label>}
+            </section>}
 
             <section className="studio-wf-knowledge-setup">
               <div className="studio-wf-knowledge-setup-head">
