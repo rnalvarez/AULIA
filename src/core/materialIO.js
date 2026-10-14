@@ -1,4 +1,5 @@
 import { groupPdfItems, analyzePdfStructure } from "./pdfStructure.js";
+import { createPdfiumRenderer, hasMeaningfulInk } from "./pdfiumFallback.js";
 
 function slugify(value) {
   return String(value ?? "")
@@ -538,7 +539,7 @@ async function recognizeLocalCanvas(worker, canvas, viewport, scale) {
   };
 }
 
-async function runLocalPdfOcr(pdf, pages, onProgress = () => {}) {
+async function runLocalPdfOcr(pdf, pages, onProgress = () => {}, renderPdfiumFallback = null) {
   const targets = (pages || []).filter(page =>
     isLocalTextPoor((page.lines || []).map(line => line?.text || "").join("\n").trim())
   );
@@ -579,7 +580,44 @@ async function runLocalPdfOcr(pdf, pages, onProgress = () => {}) {
         canvas.height = Math.max(1, Math.ceil(viewport.height));
         const context = canvas.getContext("2d", { willReadFrequently: true });
         if (!context) throw new Error("No se pudo preparar la imagen de la página.");
-        await page.render({ canvasContext: context, viewport }).promise;
+        let pdfJsRenderError = null;
+        try {
+          await page.render({ canvasContext: context, viewport }).promise;
+        } catch (error) {
+          pdfJsRenderError = error;
+        }
+
+        if (pdfJsRenderError || !hasMeaningfulInk(canvas)) {
+          if (renderPdfiumFallback) {
+            try {
+              const fallback = await renderPdfiumFallback(activePage, {
+                scale,
+                width: canvas.width,
+                height: canvas.height,
+                rotation: Number(page.rotate || 0),
+              });
+              if (hasMeaningfulInk(fallback.canvas)) {
+                canvas.width = 0;
+                canvas.height = 0;
+                canvas = fallback.canvas;
+                target.pdfiumFallbackUsed = true;
+                target.pdfiumFallbackDiagnostics = fallback.diagnostics;
+              } else {
+                fallback.canvas.width = 0;
+                fallback.canvas.height = 0;
+                if (pdfJsRenderError) throw pdfJsRenderError;
+              }
+            } catch (fallbackError) {
+              if (pdfJsRenderError) {
+                throw new Error("PDF.js y PDFium no pudieron renderizar la página: " +
+                  (fallbackError?.message || pdfJsRenderError?.message || "error de renderizado"));
+              }
+              throw fallbackError;
+            }
+          } else if (pdfJsRenderError) {
+            throw pdfJsRenderError;
+          }
+        }
 
         const originalText = (target.lines || []).map(line => line?.text || "").join("\n").trim();
         const originalQuality = measureLocalTextQuality(originalText, 65);
@@ -682,6 +720,11 @@ async function readPdf(file, { includePageImages = false, includeAIPageText = fa
   const pageCount = pdf.numPages;
   const pages = [];
   let structTreePages = 0;
+  let pdfiumRenderer = null;
+  const renderPdfiumFallback = async (pageNumber, options = {}) => {
+    if (!pdfiumRenderer) pdfiumRenderer = await createPdfiumRenderer(file);
+    return pdfiumRenderer.renderPage(pageNumber, options);
+  };
 
   try {
     for (let pageNumber = 1; pageNumber <= pageCount; pageNumber += 1) {
@@ -748,6 +791,9 @@ async function readPdf(file, { includePageImages = false, includeAIPageText = fa
         (includePageImagesForLowText && (textLooksUnreliable || hasEmbeddedImage || hasComplexVectorGraphics));
       const renderPageImage = needsVisualAnalysis;
       let imageDataUrl = "";
+      let pdfiumFallbackUsed = false;
+      let pdfiumFallbackDiagnostics = null;
+      let pdfiumFallbackError = "";
       if (renderPageImage) {
         let canvas = null;
         try {
@@ -759,10 +805,43 @@ async function readPdf(file, { includePageImages = false, includeAIPageText = fa
           canvas.height = Math.max(1, Math.ceil(imageViewport.height));
           const context = canvas.getContext("2d");
           if (!context) throw new Error("No se pudo crear el lienzo de la página.");
-          await page.render({ canvasContext: context, viewport: imageViewport }).promise;
-          imageDataUrl = canvas.toDataURL("image/jpeg", 0.68);
-        } catch {
+
+          let pdfJsRenderError = null;
+          try {
+            await page.render({ canvasContext: context, viewport: imageViewport }).promise;
+          } catch (error) {
+            pdfJsRenderError = error;
+          }
+
+          if (pdfJsRenderError || !hasMeaningfulInk(canvas)) {
+            try {
+              const fallback = await renderPdfiumFallback(pageNumber, {
+                scale,
+                width: canvas.width,
+                height: canvas.height,
+                rotation: Number(page.rotate || 0),
+              });
+              if (hasMeaningfulInk(fallback.canvas)) {
+                canvas.width = 0;
+                canvas.height = 0;
+                canvas = fallback.canvas;
+                pdfiumFallbackUsed = true;
+                pdfiumFallbackDiagnostics = fallback.diagnostics;
+              } else {
+                fallback.canvas.width = 0;
+                fallback.canvas.height = 0;
+                if (pdfJsRenderError) throw pdfJsRenderError;
+              }
+            } catch (error) {
+              pdfiumFallbackError = error?.message || pdfJsRenderError?.message || "Error de renderizado.";
+              if (pdfJsRenderError && !pdfiumFallbackError) pdfiumFallbackError = pdfJsRenderError.message;
+            }
+          }
+
+          if (hasMeaningfulInk(canvas)) imageDataUrl = canvas.toDataURL("image/jpeg", 0.68);
+        } catch (error) {
           imageDataUrl = "";
+          pdfiumFallbackError = error?.message || "No se pudo renderizar la página.";
         } finally {
           if (canvas) {
             canvas.width = 0;
@@ -778,6 +857,9 @@ async function readPdf(file, { includePageImages = false, includeAIPageText = fa
         structHeadings,
         imageDataUrl,
         needsVisualAnalysis,
+        pdfiumFallbackUsed,
+        pdfiumFallbackDiagnostics,
+        pdfiumFallbackError,
       });
 
       onProgress({ phase: includePageImages ? "rendering" : "extracting", processed: pageNumber, total: pageCount, pageNumber });
@@ -787,7 +869,7 @@ async function readPdf(file, { includePageImages = false, includeAIPageText = fa
     const localTextOnlyMode = !includePageImages && !includeAIPageText && !includePageImagesForLowText;
     let localOcr = { attemptedPages: 0, recognizedPages: 0 };
     if (localTextOnlyMode) {
-      localOcr = await runLocalPdfOcr(pdf, pages, onProgress);
+      localOcr = await runLocalPdfOcr(pdf, pages, onProgress, renderPdfiumFallback);
     }
 
     const hasExtractableText = pages.some((page) =>
@@ -802,6 +884,27 @@ async function readPdf(file, { includePageImages = false, includeAIPageText = fa
       pages,
       structTreePages,
     });
+    const pdfiumFallbackPages = pages.filter(page => page.pdfiumFallbackUsed).map(page => page.pageNumber);
+    const pdfiumFallbackErrors = pages.filter(page => page.pdfiumFallbackError).map(page => ({
+      pageNumber: page.pageNumber,
+      error: page.pdfiumFallbackError,
+    }));
+    if (pdfiumFallbackPages.length) {
+      analysis.pdfiumFallbackPages = pdfiumFallbackPages;
+      analysis.warnings = [
+        ...(analysis.warnings || []),
+        "PDFium recuperó la imagen de las páginas físicas " + pdfiumFallbackPages.join(", ") +
+          " porque PDF.js no pudo dibujarlas. El texto OCR de esas páginas debe verificarse contra el documento original.",
+      ];
+    }
+    if (pdfiumFallbackErrors.length) {
+      analysis.pdfiumFallbackErrors = pdfiumFallbackErrors;
+      analysis.warnings = [
+        ...(analysis.warnings || []),
+        "No se pudo recuperar con PDFium el renderizado de las páginas físicas " +
+          pdfiumFallbackErrors.map(item => item.pageNumber).join(", ") + ". Revisá esas páginas visualmente.",
+      ];
+    }
     if (localOcr.attemptedPages > 0) {
       analysis.localOcrPages = localOcr.attemptedPages;
       analysis.localOcrRecognizedPages = localOcr.recognizedPages;
@@ -874,6 +977,11 @@ async function readPdf(file, { includePageImages = false, includeAIPageText = fa
           layoutConfidence: Number(page.layoutConfidence || 0),
           imageDataUrl: page.imageDataUrl || "",
           needsVisualAnalysis: Boolean(page.needsVisualAnalysis),
+          pdfiumFallbackUsed: Boolean(page.pdfiumFallbackUsed || page.ocrPdfiumFallbackUsed),
+          ...(page.pdfiumFallbackDiagnostics || page.ocrPdfiumFallbackDiagnostics
+            ? { pdfiumFallbackDiagnostics: page.pdfiumFallbackDiagnostics || page.ocrPdfiumFallbackDiagnostics }
+            : {}),
+          ...(page.pdfiumFallbackError ? { pdfiumFallbackError: page.pdfiumFallbackError } : {}),
         };
       }) : undefined,
       bibliography: [],
@@ -891,6 +999,10 @@ async function readPdf(file, { includePageImages = false, includeAIPageText = fa
       warnings: Array.isArray(analysis.warnings) ? analysis.warnings : [],
     };
   } finally {
+    if (pdfiumRenderer) {
+      try { pdfiumRenderer.dispose(); } catch {}
+      pdfiumRenderer = null;
+    }
     await pdf.cleanup?.();
     await pdf.destroy?.();
   }
@@ -1017,6 +1129,11 @@ export async function renderPdfPageImages(file, pageNumbers, onProgress = () => 
   const pdf = await pdfjsLib.getDocument({
     data: new Uint8Array(await file.arrayBuffer()),
   }).promise;
+  let pdfiumRenderer = null;
+  const renderPdfiumFallback = async (pageNumber, options = {}) => {
+    if (!pdfiumRenderer) pdfiumRenderer = await createPdfiumRenderer(file);
+    return pdfiumRenderer.renderPage(pageNumber, options);
+  };
   try {
     const rendered = [];
     for (let index = 0; index < requested.length; index += 1) {
@@ -1035,8 +1152,38 @@ export async function renderPdfPageImages(file, pageNumbers, onProgress = () => 
         canvas.height = Math.max(1, Math.ceil(imageViewport.height));
         const context = canvas.getContext("2d");
         if (!context) throw new Error("No se pudo crear la imagen de la página " + pageNumber + ".");
-        await page.render({ canvasContext: context, viewport: imageViewport }).promise;
-        rendered.push({ pageNumber, imageDataUrl: canvas.toDataURL("image/jpeg", 0.68) });
+        let pdfJsRenderError = null;
+        try {
+          await page.render({ canvasContext: context, viewport: imageViewport }).promise;
+        } catch (error) {
+          pdfJsRenderError = error;
+        }
+        let pdfiumFallbackUsed = false;
+        let pdfiumFallbackError = "";
+        if (pdfJsRenderError || !hasMeaningfulInk(canvas)) {
+          try {
+            const fallback = await renderPdfiumFallback(pageNumber, {
+              scale,
+              width: canvas.width,
+              height: canvas.height,
+              rotation: Number(page.rotate || 0),
+            });
+            if (hasMeaningfulInk(fallback.canvas)) {
+              canvas.width = 0;
+              canvas.height = 0;
+              canvas = fallback.canvas;
+              pdfiumFallbackUsed = true;
+            } else {
+              fallback.canvas.width = 0;
+              fallback.canvas.height = 0;
+              if (pdfJsRenderError) throw pdfJsRenderError;
+            }
+          } catch (error) {
+            pdfiumFallbackError = error?.message || pdfJsRenderError?.message || "Error de renderizado.";
+          }
+        }
+        const imageDataUrl = hasMeaningfulInk(canvas) ? canvas.toDataURL("image/jpeg", 0.68) : "";
+        rendered.push({ pageNumber, imageDataUrl, pdfiumFallbackUsed, ...(pdfiumFallbackError ? { pdfiumFallbackError } : {}) });
       } finally {
         if (canvas) {
           canvas.width = 0;
@@ -1048,6 +1195,10 @@ export async function renderPdfPageImages(file, pageNumbers, onProgress = () => 
     }
     return rendered;
   } finally {
+    if (pdfiumRenderer) {
+      try { pdfiumRenderer.dispose(); } catch {}
+      pdfiumRenderer = null;
+    }
     await pdf.cleanup?.();
     await pdf.destroy?.();
   }
