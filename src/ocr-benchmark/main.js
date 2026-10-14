@@ -76,6 +76,8 @@ const summaryNode = byId("summary");
 let selectedFile = null;
 let loadedPdf = null;
 let pdfjsLibModule = null;
+let pdfiumLibrary = null;
+let pdfiumDocument = null;
 let results = [];
 let reportMetadata = {};
 let activeRun = false;
@@ -306,8 +308,94 @@ async function renderPdfPage(pdf, pageNumber, maxSide) {
       isOffscreenCanvasSupported: false,
     },
   };
+  const rotation = Number(page.rotate || 0);
   page.cleanup?.();
-  return { canvas, embeddedText, width: viewport.width, height: viewport.height, scale, renderDiagnostics };
+  return { canvas, embeddedText, width: canvas.width, height: canvas.height, scale, rotation, renderDiagnostics };
+}
+
+async function ensurePdfiumDocument(file) {
+  if (!pdfiumLibrary) {
+    setStatus("PDF.js produjo una imagen vacía. Inicializando PDFium WebAssembly como renderizador alternativo…", "");
+    const [pdfiumModule, wasmModule] = await Promise.all([
+      import("@hyzyla/pdfium"),
+      import("@hyzyla/pdfium/pdfium.wasm?url"),
+    ]);
+    const wasmUrl = new URL(wasmModule.default, document.baseURI).href;
+    pdfiumLibrary = await pdfiumModule.PDFiumLibrary.init({ wasmUrl });
+  }
+  if (!pdfiumDocument) {
+    pdfiumDocument = await pdfiumLibrary.loadDocument(new Uint8Array(await file.arrayBuffer()));
+  }
+  return pdfiumDocument;
+}
+
+async function renderPdfiumPage(file, pageNumber, maxSide, targetWidth, targetHeight, rotation) {
+  const libraryDocument = await ensurePdfiumDocument(file);
+  const pdfiumPage = libraryDocument.getPage(pageNumber - 1);
+  try {
+    const size = pdfiumPage.getOriginalSize();
+    const scale = Math.min(1, maxSide / Math.max(size.originalWidth, size.originalHeight));
+    const rendered = await pdfiumPage.render({
+      scale,
+      colorSpace: "RGBA",
+      render: "bitmap",
+    });
+    const rawCanvas = document.createElement("canvas");
+    rawCanvas.width = rendered.width;
+    rawCanvas.height = rendered.height;
+    const rawContext = rawCanvas.getContext("2d", { alpha: false });
+    if (!rawContext) throw new Error("PDFium no pudo crear el contexto de imagen.");
+    const imageData = rawContext.createImageData(rendered.width, rendered.height);
+    imageData.data.set(rendered.data);
+    rawContext.putImageData(imageData, 0, 0);
+
+    // PDFium may return the unrotated page bitmap. Match PDF.js's display
+    // orientation only when the output aspect ratio proves a quarter-turn is needed.
+    const rawLandscape = rawCanvas.width > rawCanvas.height;
+    const targetLandscape = targetWidth > targetHeight;
+    const needsQuarterTurn = rotation % 180 !== 0 && rawLandscape !== targetLandscape;
+    let canvas = rawCanvas;
+    if (needsQuarterTurn) {
+      canvas = document.createElement("canvas");
+      canvas.width = targetWidth;
+      canvas.height = targetHeight;
+      const context = canvas.getContext("2d", { alpha: false });
+      if (!context) throw new Error("No se pudo preparar la imagen rotada de PDFium.");
+      if (rotation === 270) {
+        context.translate(0, targetHeight);
+        context.rotate(-Math.PI / 2);
+      } else {
+        context.translate(targetWidth, 0);
+        context.rotate(Math.PI / 2);
+      }
+      context.drawImage(rawCanvas, 0, 0, targetHeight, targetWidth);
+      clearCanvas(rawCanvas);
+    } else if (rawCanvas.width !== targetWidth || rawCanvas.height !== targetHeight) {
+      canvas = document.createElement("canvas");
+      canvas.width = targetWidth;
+      canvas.height = targetHeight;
+      const context = canvas.getContext("2d", { alpha: false });
+      if (!context) throw new Error("No se pudo ajustar el tamaño de la imagen de PDFium.");
+      context.drawImage(rawCanvas, 0, 0, targetWidth, targetHeight);
+      clearCanvas(rawCanvas);
+    }
+
+    return {
+      canvas,
+      width: canvas.width,
+      height: canvas.height,
+      scale,
+      diagnostics: {
+        renderer: "PDFium WebAssembly",
+        pdfiumWidth: rendered.width,
+        pdfiumHeight: rendered.height,
+        pageRotation: rotation,
+        rotationAppliedByFallback: needsQuarterTurn ? rotation : 0,
+      },
+    };
+  } finally {
+    pdfiumPage.close();
+  }
 }
 
 function cropCanvas(source, startRatio, endRatio) {
@@ -526,10 +614,13 @@ async function runComparison() {
       },
       startedAt: started,
       localOnly: true,
+      diagnosticBuild: "pdfium-fallback-2026-10-14-v1",
       pdfRenderOptions: {
         isImageDecoderSupported: false,
         isOffscreenCanvasSupported: false,
-        reason: "Forzar las rutas internas de decodificación y conversión de imágenes de PDF.js para diagnosticar escaneos CCITT Fax que producen lienzos blancos.",
+        pdfjsCanvasContextMode: "canvas:null",
+        fallbackRenderer: "@hyzyla/pdfium · PDFium WebAssembly, solo si PDF.js devuelve lienzo vacío",
+        reason: "PDF.js detecta el XObject de imagen, pero no dibuja escaneos CCITT Fax en ciertos casos; se activa un segundo renderizador solo como recuperación.",
       },
       referencesProvidedForPages: Object.keys(referenceByPage).map(Number),
     };
@@ -565,7 +656,49 @@ async function runComparison() {
       const pageResult = await renderPdfPage(loadedPdf, pageNumber, maxSide);
       const reference = referenceByPage[pageNumber] || "";
       const embedStats = textStats(pageResult.embeddedText);
-      const imageInkRatio = foregroundRatio(pageResult.canvas);
+      let imageInkRatio = foregroundRatio(pageResult.canvas);
+      if (imageInkRatio < 0.0007) {
+        const pdfjsBlankCanvas = pageResult.canvas;
+        try {
+          const fallback = await renderPdfiumPage(
+            selectedFile,
+            pageNumber,
+            maxSide,
+            pageResult.width,
+            pageResult.height,
+            pageResult.rotation
+          );
+          const fallbackInk = foregroundRatio(fallback.canvas);
+          pageResult.renderDiagnostics = {
+            ...pageResult.renderDiagnostics,
+            pdfjsRenderedInkRatio: imageInkRatio,
+            pdfiumFallback: {
+              ...fallback.diagnostics,
+              renderedInkRatio: fallbackInk,
+              status: fallbackInk >= 0.0007 ? "recovered" : "blank",
+            },
+          };
+          if (fallbackInk >= 0.0007) {
+            pageResult.canvas = fallback.canvas;
+            pageResult.width = fallback.width;
+            pageResult.height = fallback.height;
+            imageInkRatio = fallbackInk;
+            clearCanvas(pdfjsBlankCanvas);
+          } else {
+            clearCanvas(fallback.canvas);
+          }
+        } catch (error) {
+          pageResult.renderDiagnostics = {
+            ...pageResult.renderDiagnostics,
+            pdfjsRenderedInkRatio: imageInkRatio,
+            pdfiumFallback: {
+              renderer: "PDFium WebAssembly",
+              status: "error",
+              error: error?.message || String(error),
+            },
+          };
+        }
+      }
       let previewDataUrl = "";
       try { previewDataUrl = pageResult.canvas.toDataURL("image/jpeg", 0.62); } catch {}
       addResult({
@@ -593,7 +726,7 @@ async function runComparison() {
           method: "Preflight de imagen renderizada",
           status: "error",
           text: "",
-          error: "PDF.js extrajo texto, pero el lienzo renderizado no contiene suficientes píxeles oscuros. Se omitió OCR para no producir una comparación falsa.",
+          error: "Ni PDF.js ni el renderizador de respaldo consiguieron producir píxeles oscuros suficientes. Se omitió OCR para no producir una comparación falsa.",
           renderedInkRatio: imageInkRatio,
           imageWidth: pageResult.width,
           imageHeight: pageResult.height,
@@ -703,6 +836,14 @@ async function runComparison() {
     }
     if (paddle) {
       try { await paddle.dispose(); } catch {}
+    }
+    if (pdfiumDocument) {
+      try { pdfiumDocument.destroy(); } catch {}
+      pdfiumDocument = null;
+    }
+    if (pdfiumLibrary) {
+      try { pdfiumLibrary.destroy(); } catch {}
+      pdfiumLibrary = null;
     }
     activeRun = false;
     runButton.disabled = !selectedFile;
