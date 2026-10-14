@@ -605,17 +605,19 @@ async function runLocalPdfOcr(pdf, pages, onProgress = () => {}, renderPdfiumFal
               } else {
                 fallback.canvas.width = 0;
                 fallback.canvas.height = 0;
-                if (pdfJsRenderError) throw pdfJsRenderError;
+                target.pdfiumFallbackError = "PDFium no produjo píxeles legibles en la página " + activePage + ".";
               }
             } catch (fallbackError) {
+              target.pdfiumFallbackError = "PDFium no pudo recuperar la página " + activePage + ": " +
+                (fallbackError?.message || "error de renderizado");
               if (pdfJsRenderError) {
-                throw new Error("PDF.js y PDFium no pudieron renderizar la página: " +
-                  (fallbackError?.message || pdfJsRenderError?.message || "error de renderizado"));
+                target.pdfiumFallbackError = "PDF.js: " + (pdfJsRenderError?.message || "lienzo vacío") +
+                  "; PDFium: " + (fallbackError?.message || "error de renderizado");
               }
-              throw fallbackError;
             }
           } else if (pdfJsRenderError) {
-            throw pdfJsRenderError;
+            target.pdfiumFallbackError = "PDF.js no pudo renderizar la página " + activePage + ": " +
+              (pdfJsRenderError?.message || "error de renderizado");
           }
         }
 
@@ -830,11 +832,11 @@ async function readPdf(file, { includePageImages = false, includeAIPageText = fa
               } else {
                 fallback.canvas.width = 0;
                 fallback.canvas.height = 0;
-                if (pdfJsRenderError) throw pdfJsRenderError;
+                throw new Error("PDFium también devolvió una imagen vacía.");
               }
             } catch (error) {
-              pdfiumFallbackError = error?.message || pdfJsRenderError?.message || "Error de renderizado.";
-              if (pdfJsRenderError && !pdfiumFallbackError) pdfiumFallbackError = pdfJsRenderError.message;
+              pdfiumFallbackError = (pdfJsRenderError ? "PDF.js: " + (pdfJsRenderError?.message || "lienzo vacío") + "; " : "") +
+                (error?.message || "Error de renderizado.");
             }
           }
 
@@ -1176,10 +1178,11 @@ export async function renderPdfPageImages(file, pageNumbers, onProgress = () => 
             } else {
               fallback.canvas.width = 0;
               fallback.canvas.height = 0;
-              if (pdfJsRenderError) throw pdfJsRenderError;
+              throw new Error("PDFium también devolvió una imagen vacía.");
             }
           } catch (error) {
-            pdfiumFallbackError = error?.message || pdfJsRenderError?.message || "Error de renderizado.";
+            pdfiumFallbackError = (pdfJsRenderError ? "PDF.js: " + (pdfJsRenderError?.message || "lienzo vacío") + "; " : "") +
+              (error?.message || "Error de renderizado.");
           }
         }
         const imageDataUrl = hasMeaningfulInk(canvas) ? canvas.toDataURL("image/jpeg", 0.68) : "";
