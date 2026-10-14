@@ -210,10 +210,12 @@ function rank(items, question, optionsIncludeReference = false) {
   return available
     .map(item => {
       const value = score(question, item, corpusStats);
-      let adjusted = value;
-      if (item.priority === "central") adjusted += 1.5;
-      if (item.priority === "context") adjusted += 0.15;
-      return { item, score: adjusted };
+      const priorityAdjustment = item.priority === "central"
+        ? 1.5
+        : item.priority === "context"
+          ? -1.5
+          : 0;
+      return { item, score: value + priorityAdjustment };
     })
     .filter(({ score: value }) => value > 0)
     .sort((a, b) => b.score - a.score)
