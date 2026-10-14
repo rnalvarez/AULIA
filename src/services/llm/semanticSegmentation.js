@@ -1,4 +1,5 @@
 import { readStudioRecord, writeStudioRecord } from "../../core/studioPersistence.js";
+import { classifySectionRole } from "../../core/sectionRoles.js";
 import {
   estimateGroqRequestTokens,
   waitForGroqCapacity,
@@ -8,11 +9,64 @@ import {
 
 const ENDPOINT = "https://api.groq.com/openai/v1/chat/completions";
 const MODELS = ["qwen/qwen3.8-27b", "openai/gpt-oss-20b"];
-const CACHE_PREFIX = "aulia:semantic-segmentation:v1:";
+const CACHE_PREFIX = "aulia:semantic-segmentation:v2:";
 const MAX_TASK_CHARS = 6200;
 const MAX_TASK_LINES = 80;
 const OUTLINE_MAX_TOKENS = 800; // Mantener margen bajo el límite gratuito de salida de algunos modelos Groq (1.000 OTPM).
 const BOUNDARY_MAX_TOKENS = 800; // Reserva por solicitud por debajo del límite gratuito de salida de 1.000 tokens/minuto.
+const DOCUMENT_TYPES = new Set(["libro", "articulo", "compilacion", "apunte"]);
+const SECTION_ROLES = new Set(["contenido", "preliminares", "indice", "referencias", "anexo", "actividades"]);
+
+function normalizeDeclaredDocumentType(value) {
+  const normalized = String(value || "").trim().toLowerCase();
+  return DOCUMENT_TYPES.has(normalized) ? normalized : "";
+}
+
+function hasLikelyHeadingSignal(line) {
+  const text = clean(line?.text, 180);
+  if (!text || text.length > 120 || /[.!?;:]$/.test(text)) return false;
+  return Boolean(line?.bold) ||
+    /^\d+(?:\.\d+)*[.)]?\s+/.test(text) ||
+    /^(?:parte|part|cap[ií]tulo|chapter|unidad|unit|secci[oó]n|section|m[oó]dulo|module|anexo|appendix)\b/i.test(text) ||
+    (/^[A-ZÁÉÍÓÚÜÑ0-9 \-/]+$/.test(text) && text.length >= 8 && text.split(/\s+/).length <= 12);
+}
+
+export function resolveBoundaryRole({ title, line = {}, proposedRole, proposedConfidence } = {}) {
+  const local = classifySectionRole({ title: title || line?.text, content: line?.text || title || "" });
+  if (local.confidence >= 0.7) {
+    return {
+      role: local.role,
+      roleSource: "rules",
+      roleConfidence: local.confidence,
+      roleEvidence: local.evidence,
+    };
+  }
+  if (!line?.isContentsPage && SECTION_ROLES.has(proposedRole)) {
+    const confidence = Number(proposedConfidence);
+    return {
+      role: proposedRole,
+      roleSource: "ai",
+      roleConfidence: Number.isFinite(confidence) ? Math.max(0, Math.min(1, confidence)) : local.confidence,
+      roleEvidence: [...local.evidence, "rol propuesto por IA ante ambigüedad de las reglas"],
+    };
+  }
+  return {
+    role: "contenido",
+    roleSource: "rules",
+    roleConfidence: local.confidence,
+    roleEvidence: [...local.evidence, "rol ambiguo: requiere revisión docente"],
+  };
+}
+
+function roleCueForLine(line) {
+  if (line?.isContentsPage || !hasLikelyHeadingSignal(line)) return "";
+  const classified = classifySectionRole({ title: line.text, content: line.text });
+  if (classified.confidence >= 0.7 && classified.role !== "contenido") {
+    return "rol-reglas=" + classified.role;
+  }
+  if (classified.confidence < 0.7) return "rol-ambiguo-reglas<0.7";
+  return "";
+}
 
 function hashString(value) {
   let hash = 2166136261;
@@ -85,6 +139,16 @@ function normalizeSourcePages(pages, visionPages = []) {
     ).length;
     const isContentsPage = /\b(?:índice|indice|contenidos|contents|table of contents|sumario)\b/i.test(lines.slice(0, 8).map(line => line.text).join(" ")) ||
       (tocSignals >= 3 && tocSignals / Math.max(1, lines.length) >= 0.14);
+    const linesWithRoleHints = lines.map((line) => {
+      const local = classifySectionRole({ title: line.text, content: line.text });
+      return {
+        ...line,
+        isContentsPage,
+        roleRule: local.role,
+        roleRuleConfidence: local.confidence,
+        roleNeedsAI: !isContentsPage && local.confidence < 0.7 && hasLikelyHeadingSignal(line),
+      };
+    });
     const width = Number(page?.width || 0);
     const height = Number(page?.height || 0);
     const aspectRatio = Number(page?.aspectRatio || (width / Math.max(1, height)) || 0);
@@ -105,7 +169,7 @@ function normalizeSourcePages(pages, visionPages = []) {
       layoutKind,
       layoutConfidence,
       isContentsPage,
-      lines: lines.map(line => ({ ...line, isContentsPage })),
+      lines: linesWithRoleHints,
       sourceText: useTranscription ? transcription : raw,
       usedVisualTranscription: useTranscription,
     };
@@ -175,11 +239,23 @@ function structureHints(sections) {
     title: clean(section?.title, 100),
     level: Number(section?.level || 1),
     page: Number(section?.sourcePageStart || 0) || null,
+    ...(SECTION_ROLES.has(section?.role) ? { role: section.role } : {}),
+    ...(Number.isFinite(Number(section?.roleConfidence)) ? { roleConfidence: Number(section.roleConfidence) } : {}),
     evidence: Array.isArray(section?.evidence) ? section.evidence.slice(0, 2) : [],
   })).filter(section => section.title);
 }
 
-function buildOutlinePrompt({ title, pageCount, samples, hints }) {
+export function buildOutlinePrompt({ title, pageCount, samples, hints, declaredDocumentType = "" }) {
+  const declaredType = normalizeDeclaredDocumentType(declaredDocumentType);
+  const typeGuidance = declaredType === "articulo"
+    ? "Tipo artículo: no inventes capítulos de libro; organizá solo los apartados académicos visibles."
+    : declaredType === "compilacion"
+      ? "Tipo compilación: tratá una obra por vez; no mezcles títulos, capítulos ni referencias de artículos distintos en una jerarquía única."
+      : declaredType === "libro"
+        ? "Tipo libro: reconstruí partes y capítulos únicamente cuando haya evidencia visible."
+        : declaredType === "apunte"
+          ? "Tipo apunte: proponé apartados temáticos reales; no fuerces una estructura de libro."
+          : "El docente todavía no declaró el tipo: no lo infieras como dato confirmado y no fuerces una estructura documental por defecto.";
   return [
     "Vas a reconstruir la organización de un material académico. El texto fue extraído automáticamente y puede contener errores.",
     "Todavía NO segmentes el libro. Inferí un mapa global tentativo a partir de la evidencia distribuida en varias páginas.",
@@ -187,10 +263,13 @@ function buildOutlinePrompt({ title, pageCount, samples, hints }) {
     "Los indicios estructurales locales son orientativos y pueden estar equivocados: corregilos cuando contradigan el contenido.",
     "No agregues capítulos que no tengan apoyo visible. Si no se puede inferir un mapa, devolvé outline vacío y explicá la incertidumbre en notes.",
     "Documento: " + clean(title, 180),
+    "Tipo documental declarado por el docente: " + (declaredType || "sin declarar"),
+    typeGuidance,
     "Páginas físicas del PDF: " + pageCount,
     "INDICIOS LOCALES (no asumir que son correctos):\n" + JSON.stringify(hints),
     "MUESTRA DISTRIBUIDA DEL DOCUMENTO:\n" + JSON.stringify(samples),
-    'Devolvé solo JSON: {"documentType":"libro|articulo|apunte|manual|otro","outline":[{"title":"título respaldado","level":1,"parentTitle":"","purpose":"función del apartado en una frase"}],"notes":"incertidumbres relevantes"}.',
+    'Devolvé solo JSON: {"documentType":"libro|articulo|compilacion|apunte","outline":[{"title":"título respaldado","level":1,"parentTitle":"","purpose":"función del apartado en una frase"}],"notes":"incertidumbres relevantes"}.',
+    declaredType ? "Si incluís documentType, copiá exactamente el tipo declarado por el docente: " + declaredType + "." : "Si el tipo no está declarado, no lo presentes como una decisión docente.",
     "Máximo 25 entradas. level debe estar entre 1 y 4. No inventes números de página ni autores.",
   ].join("\n\n");
 }
@@ -212,6 +291,8 @@ function buildBoundaryPrompt({ title, outline, task, currentPath }) {
     if (line.logicalSide) cues.push("zona-" + line.logicalSide);
     if (line.bold) cues.push("negrita");
     if (line.isContentsPage) cues.push("página-de-índice-no-usar-como-límite");
+    const roleCue = roleCueForLine(line);
+    if (roleCue) cues.push(roleCue);
     return "P" + line.pageNumber + "L" + line.lineNumber + (cues.length ? " [" + cues.join(",") + "]" : "") + ": " + line.text;
   }).join("\n");
   return [
@@ -226,9 +307,10 @@ function buildBoundaryPrompt({ title, outline, task, currentPath }) {
     "3. level 1 = parte/capítulo principal; 2 = sección dentro del capítulo; 3 = subsección; 4 = subapartado. Usá la jerarquía del mapa global cuando corresponda, pero no fuerces todos los títulos a pertenecer al índice.",
     "4. No repitas encabezados corrientes de página ni el título del libro salvo que realmente inauguren una sección. No crees límites de capítulo a partir de una página de índice/tabla de contenidos; las líneas con puntos guía y número de página al final son referencias del índice, no encabezados del cuerpo. Si hay un pliego horizontal, las líneas se presentan de izquierda a derecha; los marcadores de zona ayudan a evitar mezclar páginas enfrentadas.",
     "5. Si la lectura no permite decidir, omití el límite y registrá la incertidumbre en notes. No resumas el texto ni inventes contenido.",
+    "6. El rol es opcional y usa solo este enum: contenido, preliminares, indice, referencias, anexo, actividades. Incluí role y roleConfidence únicamente para un encabezado real marcado rol-ambiguo-reglas<0.7; omitilos cuando el rol esté resuelto por reglas. No reemplaces los roles claros señalados por rol-reglas=...",
     "LÍNEAS DEL FRAGMENTO:\n" + lines,
-    'Devolvé solo JSON: {"boundaries":[{"pageNumber":1,"lineNumber":1,"title":"título visible","level":1,"confidence":0.9,"evidence":"por qué es encabezado"}],"notes":""}.',
-    "boundaries puede estar vacío. confidence debe estar entre 0 y 1. Máximo 12 límites por tanda.",
+    'Devolvé solo JSON: {"boundaries":[{"pageNumber":1,"lineNumber":1,"title":"título visible","level":1,"confidence":0.9,"evidence":"por qué es encabezado","role":"contenido|preliminares|indice|referencias|anexo|actividades","roleConfidence":0.75}],"notes":""}.',
+    "role y roleConfidence son opcionales. confidence y roleConfidence deben estar entre 0 y 1. Máximo 12 límites por tanda.",
   ].join("\n\n");
 }
 
@@ -574,7 +656,7 @@ function normalizeBoundaries(raw, task) {
     const line = lineMap.get(pageNumber + ":" + lineNumber);
     const title = clean(item?.title, 150);
     const key = pageNumber + ":" + lineNumber;
-    if (!line || !title || seen.has(key)) continue;
+    if (!line || line.isContentsPage || !title || seen.has(key)) continue;
     const lineText = norm(line.text);
     const titleText = norm(title);
     const sharesAnchor = lineText && titleText && (
@@ -587,6 +669,12 @@ function normalizeBoundaries(raw, task) {
     if (line.text.length > 170) continue;
     const level = Math.max(1, Math.min(4, Number(item?.level || 1)));
     const confidence = Math.max(0.2, Math.min(0.99, Number(item?.confidence ?? 0.65) || 0.65));
+    const roleMetadata = resolveBoundaryRole({
+      title,
+      line,
+      proposedRole: item?.role,
+      proposedConfidence: item?.roleConfidence,
+    });
     seen.add(key);
     result.push({
       pageNumber,
@@ -595,6 +683,7 @@ function normalizeBoundaries(raw, task) {
       level,
       confidence,
       evidence: clean(item?.evidence, 180) || "encabezado semántico localizado en el texto original",
+      ...roleMetadata,
       layoutKind: (task.layoutKinds || []).join(" / "),
     });
   }
@@ -695,6 +784,10 @@ function makeSections(pages, boundaries, title) {
       segmentationSource: "ai-text-first",
       confidence: Number(boundary.confidence || 0.65),
       evidence: [boundary.evidence || "encabezado localizado en el texto original", "mapa global contrastado por tandas"],
+      ...(boundary.role ? { role: boundary.role } : {}),
+      ...(boundary.roleSource ? { roleSource: boundary.roleSource } : {}),
+      ...(Number.isFinite(Number(boundary.roleConfidence)) ? { roleConfidence: Number(boundary.roleConfidence) } : {}),
+      ...(Array.isArray(boundary.roleEvidence) ? { roleEvidence: boundary.roleEvidence } : {}),
       childrenCount: directChildren,
       ...(content.length < 24 ? { structuralOnly: true } : {}),
       ...(Number(boundary.confidence || 0.65) < 0.62 ? {
@@ -734,10 +827,12 @@ export async function analyzeDocumentSemantics({
   visionPages = [],
   existingSections = [],
   sourceFingerprint = "",
+  declaredDocumentType = "",
   onProgress = () => {},
   signal,
 } = {}) {
   if (!apiKey) throw new Error("Configurá una clave personal de Groq para reconstruir la estructura temática del documento.");
+  const declaredType = normalizeDeclaredDocumentType(declaredDocumentType);
   const normalizedPages = normalizeSourcePages(pages, visionPages);
   const allLines = normalizedPages.reduce((sum, page) => sum + page.lines.length, 0);
   if (!normalizedPages.length || !allLines) {
@@ -745,6 +840,7 @@ export async function analyzeDocumentSemantics({
   }
   const signature = hashString(JSON.stringify({
     title: documentTitle,
+    declaredDocumentType: declaredType,
     pages: normalizedPages.map(page => [page.pageNumber, page.layoutKind, page.lines.map(line => [line.lineNumber, line.text])]),
   }));
   const cacheKey = CACHE_PREFIX + hashString(String(sourceFingerprint || documentTitle)) + ":" + signature;
@@ -763,6 +859,7 @@ export async function analyzeDocumentSemantics({
       pageCount: normalizedPages.length,
       samples: samplePages(normalizedPages),
       hints,
+      declaredDocumentType: declaredType,
     });
     const result = await postJson({
       apiKey,
@@ -778,7 +875,7 @@ export async function analyzeDocumentSemantics({
       parentTitle: clean(item?.parentTitle, 140),
       purpose: clean(item?.purpose, 220),
     })).filter(item => item.title) : [];
-    cache.documentType = clean(result.parsed?.documentType, 40) || "documento";
+    cache.documentType = declaredType || clean(result.parsed?.documentType, 40) || "documento";
     cache.outlineNotes = clean(result.parsed?.notes, 600);
     cache.model = result.model;
     model = result.model;
