@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { preserveTeacherMaterialDecisions, measureLocalTextQuality } from "./materialIO.js";
+import { preserveTeacherMaterialDecisions, measureLocalTextQuality, shouldRunLocalPdfOcr } from "./materialIO.js";
 test("el reprocesamiento conserva elecciones explícitas de alcance y prioridad",()=>{
  const oldDocument={id:"doc-synthetic",title:"Libro sintético",sourceName:"libro-sintetico.pdf",priority:"central",sections:[{id:"references-section",title:"Referencias",path:["Referencias"],role:"referencias",roleSource:"rules",roleConfidence:0.98,scope:"included",scopeSource:"teacher",priority:"context",prioritySource:"teacher",sourcePageStart:8,sourcePageEnd:9}]};
  const oldCorpus=[{id:"old-reference",sectionId:"references-section",documentId:"doc-synthetic",title:"Referencias",sectionPath:["Referencias"],role:"referencias",roleSource:"rules",roleConfidence:0.98,scope:"included",scopeSource:"teacher",priority:"context",prioritySource:"teacher",sourcePageStart:8,sourcePageEnd:9,content:"Cita sintética inventada."}];
@@ -35,4 +35,12 @@ test("no confunde prosa académica normal con palabras fragmentadas", () => {
  ].join("\n");
  const quality = measureLocalTextQuality(clean, 65);
  assert.equal(quality.brokenSpacing, false);
+});
+
+
+test("el OCR local se ejecuta aunque se pidan páginas de texto para análisis semántico",()=>{
+ assert.equal(shouldRunLocalPdfOcr({includeAIPageText:true}),true);
+ assert.equal(shouldRunLocalPdfOcr({includeAIPageText:true,includePageImagesForLowText:false}),true);
+ assert.equal(shouldRunLocalPdfOcr({includePageImages:true,includeAIPageText:true}),false);
+ assert.equal(shouldRunLocalPdfOcr({includePageImagesForLowText:true,includeAIPageText:true}),false);
 });

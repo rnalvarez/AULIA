@@ -828,6 +828,12 @@ async function runLocalPdfOcr(pdf, pages, onProgress = () => {}, renderPdfiumFal
   };
 }
 
+export function shouldRunLocalPdfOcr({ includePageImages = false, includePageImagesForLowText = false } = {}) {
+  // AI text segmentation should not disable local OCR. Only a caller that
+  // explicitly requests rendered pages owns the OCR/recovery path instead.
+  return !includePageImages && !includePageImagesForLowText;
+}
+
 async function readPdf(file, { includePageImages = false, includeAIPageText = false, includePageImagesForLowText = false, onProgress = () => {} } = {}) {
   const pdfjsLib = await import("pdfjs-dist/legacy/build/pdf.mjs");
   pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
@@ -1000,9 +1006,8 @@ async function readPdf(file, { includePageImages = false, includeAIPageText = fa
       page.cleanup?.();
     }
 
-    const localTextOnlyMode = !includePageImages && !includeAIPageText && !includePageImagesForLowText;
     let localOcr = { attemptedPages: 0, recognizedPages: 0, spacingSuspectPages: [] };
-    if (localTextOnlyMode) {
+    if (shouldRunLocalPdfOcr({ includePageImages, includePageImagesForLowText })) {
       localOcr = await runLocalPdfOcr(pdf, pages, onProgress, renderPdfiumFallback);
     }
 
@@ -1018,6 +1023,9 @@ async function readPdf(file, { includePageImages = false, includeAIPageText = fa
       pages,
       structTreePages,
     });
+    // Version cached preparation so older records that skipped local OCR are
+    // re-extracted once before semantic analysis resumes.
+    analysis.localOcrPolicyVersion = 1;
     const pdfiumFallbackPages = pages.filter(page => page.pdfiumFallbackUsed).map(page => page.pageNumber);
     const pdfiumFallbackErrors = pages.filter(page => page.pdfiumFallbackError).map(page => ({
       pageNumber: page.pageNumber,
