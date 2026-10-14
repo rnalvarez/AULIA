@@ -509,7 +509,7 @@ async function runPaddle(ocr, canvas, pageNumber, method) {
     }
     const [result] = await ocr.predict(input);
     const lines = centerOrderedPaddleText(result?.items);
-    const text = lines.map((item) => item.text).join("\\n").trim();
+    const text = lines.map((item) => item.text).join("\n").trim();
     const scored = lines.filter((item) => Number.isFinite(item.score));
     const confidence = scored.length
       ? 100 * scored.reduce((sum, item) => sum + item.score, 0) / scored.length
