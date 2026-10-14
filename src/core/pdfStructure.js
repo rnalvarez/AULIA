@@ -623,7 +623,7 @@ function parseTocLine(line, pageCount, pageWidth) {
   // OCR rows do not expose the original PDF text items; use their measured
   // row geometry as evidence when they end at the gutter of the left page.
   const rowEndsAtLeftSpreadEdge = Boolean(pageWidth) &&
-    rowWidth >= pageWidth * 0.18 &&
+    rowWidth >= pageWidth * 0.06 &&
     rowWidth <= pageWidth * 0.58 &&
     rowRight >= pageWidth * 0.40 &&
     rowRight <= pageWidth * 0.60;
