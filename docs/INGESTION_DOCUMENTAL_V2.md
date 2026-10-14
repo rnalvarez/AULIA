@@ -66,6 +66,10 @@ Cada formato debe tener un adaptador propio que produzca un modelo documental co
 
 El motor debe clasificar y tratar cada página individualmente; una sola estrategia no puede imponerse a todo el archivo. El índice temático generado por IA, el corpus recuperable y la publicación del asistente son etapas distintas. Si la interpretación temática se interrumpe por cuota, el corpus recuperado debe seguir disponible y el análisis tiene que poder reanudarse sin descartar el trabajo terminado.
 
+## Geometría y detección de índice
+
+La geometría del texto se normaliza según la rotación que el PDF declara y se expresa en las mismas coordenadas visibles que utiliza el renderizado. Así, los documentos con páginas físicas apaisadas almacenadas con rotación de 90° o 270° no se agrupan como si sus renglones fueran verticales. La detección del índice requiere una línea que actúe como título independiente (por ejemplo, «ÍNDICE»), no una mención de la palabra en el cuerpo del texto. El índice puede aparecer tanto al principio como al final del libro; si está al final, sus entradas se contrastan con encabezados reales anteriores y no se permite que el propio índice se convierta en una sección del cuerpo.
+
 ## Renderizado de páginas PDF en producción
 
 La extracción primaria continúa en PDF.js. Cuando una página necesita OCR local o una imagen para visión, AULIA comprueba si el lienzo realmente contiene tinta visible. Si PDF.js falla o devuelve un lienzo vacío, se carga de forma diferida PDFium WebAssembly y se intenta recuperar solo esa página. El PDF se procesa dentro del navegador y el renderizador alternativo se cierra al terminar el documento. Las páginas recuperadas se registran en el análisis para que el docente sepa qué contenido necesitó una ruta alternativa.
