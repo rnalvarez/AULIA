@@ -609,10 +609,17 @@ function parseTocLine(line, pageCount, pageWidth) {
     NOISE_TITLE_RE.test(title)
   ) return null;
 
-  const lastItem = line?.items?.[line.items.length - 1];
-  const pageNumberAtRight = pageWidth
-    ? Number(lastItem?.x || 0) >= pageWidth * 0.58
-    : true;
+  const items = Array.isArray(line?.items) ? line.items : [];
+  const lastItem = items[items.length - 1];
+  const previousItem = items[items.length - 2];
+  const gapBeforePageNumber = previousItem && lastItem
+    ? Number(lastItem.x || 0) - (Number(previousItem.x || 0) + Number(previousItem.width || 0))
+    : 0;
+  // In a landscape scan the index may occupy only one half of the physical
+  // page. A page number aligned at the edge of that half is not necessarily
+  // beyond 58% of the full spread width; accept clear local right alignment too.
+  const pageNumberAtRight = !pageWidth || Number(lastItem?.x || 0) >= pageWidth * 0.58 ||
+    gapBeforePageNumber >= Math.max(12, pageWidth * 0.008);
 
   if (!dotted && !pageNumberAtRight) return null;
   if (SENTENCE_END_RE.test(title) && !/^\d+(?:\.\d+)*\s+/.test(title)) return null;
@@ -988,6 +995,10 @@ async function buildTocBoundaries(pdf, pages, headingCandidates) {
   const toc = findTocWindow(pages);
   if (!toc) return null;
 
+  const tocPageNumbers = new Set(
+    Array.from({ length: Math.max(0, toc.end - toc.start) }, (_, index) => toc.start + index + 1)
+  );
+  const tocIsBackMatter = toc.start >= pages.length * 0.55;
   const entries = [];
   for (let pageIndex = toc.start; pageIndex < toc.end; pageIndex += 1) {
     const page = pages[pageIndex];
@@ -996,7 +1007,7 @@ async function buildTocBoundaries(pdf, pages, headingCandidates) {
       if (!parsed) continue;
 
       const duplicate = entries.some(
-        (entry) => entry.title === parsed.title && entry.printedPage === parsed.printedPage
+        (entry) => coreTitle(entry.title) === coreTitle(parsed.title) && entry.printedPage === parsed.printedPage
       );
       if (!duplicate) entries.push({ ...parsed, tocPage: pageIndex + 1 });
     }
@@ -1005,10 +1016,41 @@ async function buildTocBoundaries(pdf, pages, headingCandidates) {
   if (entries.length < 3) return null;
 
   const enriched = buildHierarchy(inferIndentLevels(entries));
-  const bodyMinPage = toc.end + 1;
+  // Some books place the index in the back matter. In that case the content
+  // and its headings precede the index, so do not constrain matching to pages
+  // after the TOC and never allow the TOC itself to match its own entries.
+  const bodyCandidates = headingCandidates.filter((candidate) =>
+    !tocPageNumbers.has(Number(candidate.pageNumber)) &&
+    (tocIsBackMatter
+      ? Number(candidate.pageNumber) < toc.start + 1
+      : Number(candidate.pageNumber) >= toc.end + 1)
+  );
+  if (bodyCandidates.length < 3) return null;
+
+  const candidatePages = bodyCandidates.map((candidate) => Number(candidate.pageNumber)).filter(Number.isFinite);
+  const sourcePageMin = tocIsBackMatter
+    ? Math.min(...candidatePages)
+    : toc.end + 1;
+  const sourcePageMax = tocIsBackMatter
+    ? Math.max(...candidatePages)
+    : pages.length;
+  const printedPages = enriched.map((entry) => Number(entry.printedPage)).filter(Number.isFinite);
+  const printedMin = printedPages.length ? Math.min(...printedPages) : 1;
+  const printedMax = printedPages.length ? Math.max(...printedPages) : pages.length;
+
   const mapped = enriched.map((entry) => {
-    const target = Math.max(bodyMinPage, Math.min(pages.length, entry.printedPage));
-    const match = findBestHeadingPage(entry, headingCandidates, bodyMinPage, target);
+    let target;
+    if (tocIsBackMatter && printedMax > printedMin) {
+      // A scanned spread can contain two printed pages on one physical PDF
+      // page. Estimate proximity from the observed range, then prefer the
+      // actual matching heading wherever it is found.
+      const normalizedPage = (Number(entry.printedPage) - printedMin) / (printedMax - printedMin);
+      target = sourcePageMin + normalizedPage * Math.max(0, sourcePageMax - sourcePageMin);
+    } else {
+      target = Math.max(sourcePageMin, Math.min(sourcePageMax, Number(entry.printedPage)));
+    }
+
+    const match = findBestHeadingPage(entry, bodyCandidates, sourcePageMin, target);
     return {
       ...entry,
       physicalPage: match?.candidate?.pageNumber || null,
@@ -1026,28 +1068,48 @@ async function buildTocBoundaries(pdf, pages, headingCandidates) {
 
   const offset = extractOffset(mapped);
   const remapped = mapped.map((entry) => {
-    const fallbackPage = Math.max(bodyMinPage, Math.min(pages.length, Math.round(entry.printedPage + offset)));
+    const targetPage = tocIsBackMatter
+      ? sourcePageMin + (
+          printedMax > printedMin
+            ? ((Number(entry.printedPage) - printedMin) / (printedMax - printedMin)) * (sourcePageMax - sourcePageMin)
+            : 0
+        )
+      : Number(entry.printedPage) + offset;
+    const fallbackPage = Math.max(sourcePageMin, Math.min(sourcePageMax, Math.round(targetPage)));
+    const page = entry.physicalPage || fallbackPage;
     return {
       ...entry,
-      page: entry.physicalPage || fallbackPage,
-      lineIndex: entry.lineIndex >= 0 ? entry.lineIndex : lineIndexForCandidate(pages[(entry.physicalPage || fallbackPage) - 1], entry.title),
+      page,
+      lineIndex: entry.lineIndex >= 0
+        ? entry.lineIndex
+        : lineIndexForCandidate(pages[page - 1], entry.title),
     };
   });
 
-  // Never turn an unconfirmed TOC page estimate into a structural boundary.
-  // A title must be located in the body with a real heading candidate. Otherwise
-  // we fall back to another structural source instead of inventing a section.
-  const confirmed = remapped.filter(
-    (entry) => entry.page >= bodyMinPage && Number.isFinite(entry.physicalPage) && entry.confidence >= 0.72
+  // The TOC is primary evidence, but a boundary is used only when its title
+  // matches a real heading in the body. Back-of-book indices often contain
+  // useful subheadings that are not styled strongly enough to be found by the
+  // typographic detector; require a smaller, but non-trivial, confirmation set.
+  const minimumConfirmed = Math.max(3, Math.ceil(remapped.length * (tocIsBackMatter ? 0.20 : 0.55)));
+  const confirmed = remapped.filter((entry) =>
+    Number.isFinite(entry.physicalPage) &&
+    entry.confidence >= 0.72 &&
+    (tocIsBackMatter
+      ? entry.page < toc.start + 1
+      : entry.page >= toc.end + 1)
   );
 
-  if (confirmed.length < Math.max(3, Math.ceil(remapped.length * 0.55))) return null;
+  if (confirmed.length < minimumConfirmed) return null;
 
   const ordered = [];
   for (const entry of remapped) {
     if (!Number.isFinite(entry.physicalPage) || entry.confidence < 0.72) continue;
+    if (tocPageNumbers.has(Number(entry.page))) continue;
+    if (tocIsBackMatter ? entry.page >= toc.start + 1 : entry.page < toc.end + 1) continue;
     const lineIndex = entry.lineIndex >= 0 ? entry.lineIndex : 0;
-    if (!ordered.length || entry.page > ordered[ordered.length - 1].page || (entry.page === ordered[ordered.length - 1].page && lineIndex >= ordered[ordered.length - 1].lineIndex)) {
+    if (!ordered.length ||
+      entry.page > ordered[ordered.length - 1].page ||
+      (entry.page === ordered[ordered.length - 1].page && lineIndex >= ordered[ordered.length - 1].lineIndex)) {
       ordered.push({ ...entry, lineIndex });
     }
   }
@@ -1056,7 +1118,6 @@ async function buildTocBoundaries(pdf, pages, headingCandidates) {
 
   const hierarchy = buildHierarchy(ordered);
   const childCounts = hierarchyChildrenCount(hierarchy);
-
   const boundaries = hierarchy.map((entry, index) => ({
     ...entry,
     childrenCount: childCounts.get(index) || 0,
@@ -1065,6 +1126,7 @@ async function buildTocBoundaries(pdf, pages, headingCandidates) {
   return {
     boundaries,
     toc,
+    tocLocation: tocIsBackMatter ? "back-matter" : "front-matter",
     confidence: Math.min(
       0.99,
       Math.max(0.65, (toc.confidence + (median(boundaries.map((entry) => entry.confidence)) || 0.65)) / 2)
