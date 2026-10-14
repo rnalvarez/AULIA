@@ -34,7 +34,7 @@ root.innerHTML = `
       <label class="check"><input id="splitSpread" type="checkbox" checked /> <span>Comparar también las dos mitades por separado, leyendo primero la izquierda y después la derecha. Desmarcá esto para páginas individuales convencionales.</span></label>
       <div class="grid">
         <label class="check"><input id="useTesseract" type="checkbox" checked /> <span><strong>Tesseract.js · español</strong><br><span class="subtle">Motor utilizado actualmente por AULIA.</span></span></label>
-        <label class="check"><input id="usePaddle" type="checkbox" checked /> <span><strong>PaddleOCR.js · PP-OCRv5 · español</strong><br><span class="subtle">Motor alternativo, ejecutado en el navegador. Requiere descargar sus modelos al iniciar.</span></span></label>
+        <label class="check"><input id="usePaddle" type="checkbox" checked /> <span><strong>PaddleOCR.js · PP-OCRv6 · español</strong><br><span class="subtle">Motor alternativo, ejecutado en el navegador. Requiere descargar sus modelos al iniciar.</span></span></label>
       </div>
       <label for="referenceText">Transcripción de referencia (opcional)</label>
       <textarea id="referenceText" placeholder="Pegá una transcripción corregida para calcular errores. Para varias páginas, separalas así:
@@ -202,6 +202,8 @@ function renderResults() {
       Number(item.elapsedMs || 0).toFixed(0) + " ms",
     ];
     if (Number.isFinite(item.confidence)) parts.push("confianza del motor " + item.confidence.toFixed(1) + "%");
+    if (Number.isFinite(item.sourceMetrics?.renderedInkRatio)) parts.push("tinta detectada " + (item.sourceMetrics.renderedInkRatio * 100).toFixed(2) + "%");
+    if (Number.isFinite(item.inputInkRatio)) parts.push("tinta en entrada OCR " + (item.inputInkRatio * 100).toFixed(2) + "%");
     if (item.errorRates) parts.push("WER " + showMetric(item.errorRates.wer) + " · CER " + showMetric(item.errorRates.cer));
     if (item.status !== "ok") parts.push("ERROR");
     metrics.textContent = parts.join(" · ");
