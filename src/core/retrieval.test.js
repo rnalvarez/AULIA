@@ -127,6 +127,63 @@ test("una consulta específica no queda desviada por el contexto anterior", () =
   assert.equal(results[0]?.id, "resonancia");
 });
 
+
+test("el índice conceptual amplía la búsqueda hacia la terminología de la bibliografía", () => {
+  const corpus = [{
+    id: "p-conservacion",
+    title: "Principio de conservación",
+    sectionPath: ["Principios generales"],
+    content: "El principio de conservación establece que una cantidad permanece constante durante el proceso descrito.",
+    scope: "included",
+    priority: "central",
+    source: "Manual de teoría",
+    sourcePageStart: 18,
+  }];
+  const entry = {
+    id: "kb-conservacion",
+    term: "Principio de conservación",
+    aliases: ["invariancia"],
+    category: "principio",
+    definition: "Una cantidad permanece constante durante un proceso.",
+    explanation: "El valor de la cantidad no cambia bajo las condiciones descritas.",
+    relatedTerms: ["cantidad constante"],
+    distinctions: [],
+    examples: [],
+    evidence: [{
+      sourceId: "p-conservacion",
+      sourceName: "Manual de teoría",
+      title: "Principio de conservación",
+      sectionPath: ["Principios generales"],
+      pageStart: 18,
+      pageEnd: 18,
+      excerpt: "una cantidad permanece constante",
+    }],
+  };
+  const passages = buildKnowledgePassages(corpus);
+  const course = {
+    concepts: [],
+    corpus,
+    knowledgeBase: {
+      version: KNOWLEDGE_BASE_VERSION,
+      sourceSignature: knowledgeCorpusSignature(corpus),
+      status: "complete",
+      entries: [entry],
+      totalPassages: passages.length,
+      processedPassageIds: passages.map(passage => passage.passageId),
+    },
+  };
+
+  const results = retrieveFromCourse(course, "invariancia", {
+    conceptLimit: 0,
+    corpusLimit: 3,
+    knowledgeLimit: 3,
+  });
+
+  assert.ok(results.some(item => item.id === "kb-conservacion"));
+  assert.ok(results.some(item => item.id === "p-conservacion"),
+    "the source passage should be found even though it uses the indexed concept's canonical term");
+});
+
 test("knowledge index version changes when corpus scope changes", () => {
   const included = [{ id: "p1", title: "Sección", content: "Contenido suficiente." }];
   const excluded = [{ ...included[0], scope: "excluded" }];
