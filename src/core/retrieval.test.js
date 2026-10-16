@@ -99,6 +99,34 @@ test("contexto sigue siendo recuperable cuando la penalización lo baja al final
  assert.equal(results.some(item=>item.id==="contexto-relevante"),true);
 });
 
+
+test("recupera bibliografía relevante en una pregunta de seguimiento breve", () => {
+  const corpus = [
+    { id: "funcion-sustitutiva", title: "Función sustitutiva", sectionPath: ["Funciones de la música"], content: "La función sustitutiva permite que la música ocupe el lugar de una acción o elemento que no se muestra directamente.", scope: "included", priority: "central" },
+    { id: "resonancia", title: "Resonancia sonora", sectionPath: ["Acústica"], content: "La resonancia describe la respuesta vibratoria de un sistema ante determinadas frecuencias.", scope: "included", priority: "normal" },
+  ];
+  const contextMessages = [
+    { role: "user", content: "En la escena, la música reemplaza una acción que no vemos. ¿Qué función cumple?" },
+    { role: "assistant", content: "Eso corresponde a la función sustitutiva: la música ocupa el lugar de esa acción no mostrada." },
+  ];
+  const withoutContext = retrieveFromCourse({ concepts: [], corpus, knowledgeBase: null }, "¿Y por qué?", { conceptLimit: 0, corpusLimit: 2, knowledgeLimit: 0 });
+  const withContext = retrieveFromCourse({ concepts: [], corpus, knowledgeBase: null }, "¿Y por qué?", { conceptLimit: 0, corpusLimit: 2, knowledgeLimit: 0, contextMessages });
+  assert.equal(withoutContext.some(item => item.id === "funcion-sustitutiva"), false);
+  assert.equal(withContext[0]?.id, "funcion-sustitutiva");
+});
+
+test("una consulta específica no queda desviada por el contexto anterior", () => {
+  const corpus = [
+    { id: "funcion-sustitutiva", title: "Función sustitutiva", content: "La función sustitutiva permite que la música ocupe el lugar de una acción no mostrada.", scope: "included", priority: "normal" },
+    { id: "resonancia", title: "Resonancia sonora", content: "La resonancia sonora describe la respuesta vibratoria de un sistema ante determinadas frecuencias.", scope: "included", priority: "normal" },
+  ];
+  const results = retrieveFromCourse({ concepts: [], corpus, knowledgeBase: null }, "resonancia sonora", {
+    conceptLimit: 0, corpusLimit: 2, knowledgeLimit: 0,
+    contextMessages: [{ role: "assistant", content: "La función sustitutiva es una función de la música." }],
+  });
+  assert.equal(results[0]?.id, "resonancia");
+});
+
 test("knowledge index version changes when corpus scope changes", () => {
   const included = [{ id: "p1", title: "Sección", content: "Contenido suficiente." }];
   const excluded = [{ ...included[0], scope: "excluded" }];
