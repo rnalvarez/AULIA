@@ -1,4 +1,4 @@
-import { KNOWLEDGE_BASE_VERSION, knowledgeCorpusSignature, legacyKnowledgeCorpusSignature, isKnowledgeBaseCurrent } from "../../core/knowledgeBase.js";
+import { KNOWLEDGE_BASE_VERSION, knowledgeCorpusSignature, legacyKnowledgeCorpusSignature, legacyKnowledgeCorpusSignatureV2, isKnowledgeBaseCurrent } from "../../core/knowledgeBase.js";
 
 const DEFAULT_MODELS = [
   "openai/gpt-oss-120b",
@@ -609,6 +609,104 @@ function makeIndex({ sourceSignature, totalPassages, processedPassageIds, entrie
   };
 }
 
+/**
+ * Safely migrate a complete/partial v2 index when its text-only signature still
+ * matches the current corpus. Entries cited by excluded passages are discarded.
+ * Active passages that shared an old indexing batch with excluded content are
+ * reprocessed too, because the old model response could have mixed their ideas.
+ */
+export function migrateLegacyKnowledgeBaseV2({ existingIndex, corpus = [], passages = [] } = {}) {
+  if (existingIndex?.version !== 2) return null;
+  if (existingIndex?.sourceSignature !== legacyKnowledgeCorpusSignatureV2(corpus)) return null;
+
+  const corpusById = new Map((Array.isArray(corpus) ? corpus : []).map(item => [String(item?.id || ""), item]));
+  const oldPassages = buildKnowledgePassages(corpus, { includeExcluded: true });
+  const oldPassageIds = new Set(oldPassages.map(passage => passage.passageId));
+  const activePassageIds = new Set((Array.isArray(passages) ? passages : []).map(passage => passage.passageId));
+  const passagesBySource = new Map();
+
+  for (const passage of passages || []) {
+    const sourceId = String(passage.sourceId || "");
+    if (!passagesBySource.has(sourceId)) passagesBySource.set(sourceId, []);
+    passagesBySource.get(sourceId).push(passage.passageId);
+  }
+
+  const dirtyPassageIds = new Set();
+  for (const batch of makeBatches(oldPassages)) {
+    const containsExcluded = batch.some(passage =>
+      (corpusById.get(String(passage.sourceId || ""))?.scope || "included") === "excluded"
+    );
+    if (!containsExcluded) continue;
+
+    for (const passage of batch) {
+      const scope = corpusById.get(String(passage.sourceId || ""))?.scope || "included";
+      if (scope !== "excluded" && activePassageIds.has(passage.passageId)) {
+        dirtyPassageIds.add(passage.passageId);
+      }
+    }
+  }
+
+  const entries = Array.isArray(existingIndex.entries) ? existingIndex.entries : [];
+  const isUnsafeEntry = entry => {
+    const evidence = Array.isArray(entry?.evidence) ? entry.evidence : [];
+    if (!evidence.length) return true;
+    return evidence.some(ref => {
+      const sourceId = String(ref?.sourceId || "");
+      const passageId = String(ref?.passageId || "");
+      const source = corpusById.get(sourceId);
+      return !source ||
+        (source.scope || "included") === "excluded" ||
+        !passageId ||
+        !oldPassageIds.has(passageId) ||
+        !activePassageIds.has(passageId) ||
+        dirtyPassageIds.has(passageId);
+    });
+  };
+
+  // Dropping a merged entry can invalidate otherwise-active sources that also
+  // contributed to it. Reprocess those sources and any entries built on them.
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const entry of entries) {
+      if (!isUnsafeEntry(entry)) continue;
+      for (const ref of Array.isArray(entry?.evidence) ? entry.evidence : []) {
+        const sourceId = String(ref?.sourceId || "");
+        const source = corpusById.get(sourceId);
+        if (!source || (source.scope || "included") === "excluded") continue;
+        const passageId = String(ref?.passageId || "");
+        const candidates = passageId && activePassageIds.has(passageId)
+          ? [passageId]
+          : (passagesBySource.get(sourceId) || []);
+        for (const candidate of candidates) {
+          if (!dirtyPassageIds.has(candidate)) {
+            dirtyPassageIds.add(candidate);
+            changed = true;
+          }
+        }
+      }
+    }
+  }
+
+  const safeEntries = entries.filter(entry => !isUnsafeEntry(entry));
+  const processed = new Set(
+    (Array.isArray(existingIndex.processedPassageIds) ? existingIndex.processedPassageIds : [])
+      .filter(id => activePassageIds.has(id) && !dirtyPassageIds.has(id))
+  );
+
+  return {
+    ...existingIndex,
+    version: KNOWLEDGE_BASE_VERSION,
+    sourceSignature: knowledgeCorpusSignature(corpus),
+    status: "partial",
+    totalPassages: activePassageIds.size,
+    processedPassageIds: Array.from(processed),
+    entries: safeEntries,
+    requestCount: Number(existingIndex.requestCount || 0),
+    updatedAt: new Date().toISOString(),
+  };
+}
+
 export async function buildKnowledgeBase({
   apiKey,
   course,
@@ -627,9 +725,13 @@ export async function buildKnowledgeBase({
   const sourceSignature = knowledgeCorpusSignature(corpus);
   const currentV2 = existingIndex && existingIndex.sourceSignature === sourceSignature &&
     existingIndex.version === KNOWLEDGE_BASE_VERSION ? existingIndex : null;
+  const legacyV2Migrated = !currentV2 && existingIndex?.version === 2 &&
+    existingIndex?.sourceSignature === legacyKnowledgeCorpusSignatureV2(corpus)
+    ? migrateLegacyKnowledgeBaseV2({ existingIndex, corpus, passages })
+    : null;
   const legacyMatchesCurrentText = existingIndex?.version === 1 &&
     existingIndex?.sourceSignature === legacyKnowledgeCorpusSignature(corpus);
-  const legacyMigrated = !currentV2 && legacyMatchesCurrentText
+  const legacyMigrated = !currentV2 && !legacyV2Migrated && legacyMatchesCurrentText
     ? {
         ...existingIndex,
         version: KNOWLEDGE_BASE_VERSION,
@@ -642,7 +744,7 @@ export async function buildKnowledgeBase({
         updatedAt: new Date().toISOString(),
       }
     : null;
-  const current = currentV2 || legacyMigrated;
+  const current = currentV2 || legacyV2Migrated || legacyMigrated;
 
   if (current && isKnowledgeBaseCurrent({ corpus, knowledgeBase: current })) {
     return { ...current, cached: true, requestCount: 0 };
