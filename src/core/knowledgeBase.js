@@ -1,4 +1,4 @@
-export const KNOWLEDGE_BASE_VERSION = 2;
+export const KNOWLEDGE_BASE_VERSION = 3;
 
 function hashString(value) {
   let hash = 2166136261;
@@ -14,6 +14,7 @@ export function knowledgeCorpusSignature(corpus = []) {
   const active = (Array.isArray(corpus) ? corpus : [])
     .map((item) => [
       item?.id,
+      item?.scope || "included",
       item?.title,
       item?.source,
       item?.documentId,
