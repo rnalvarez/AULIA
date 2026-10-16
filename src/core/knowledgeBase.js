@@ -28,6 +28,26 @@ export function knowledgeCorpusSignature(corpus = []) {
   return "kb" + KNOWLEDGE_BASE_VERSION + "-" + hashString(JSON.stringify(active));
 }
 
+// Signature used by knowledge-index version 2. It intentionally mirrors that
+// version's text-only fingerprint so its index can be migrated without a full
+// rebuild when only teacher-selected scope metadata changed.
+export function legacyKnowledgeCorpusSignatureV2(corpus = []) {
+  const active = (Array.isArray(corpus) ? corpus : [])
+    .map((item) => [
+      item?.id,
+      item?.title,
+      item?.source,
+      item?.documentId,
+      item?.sourcePageStart,
+      item?.sourcePageEnd,
+      item?.sectionPath,
+      item?.content,
+      item?.summary,
+      item?.explanation,
+    ]);
+  return "kb2-" + hashString(JSON.stringify(active));
+}
+
 export function legacyKnowledgeCorpusSignature(corpus = []) {
   const active = (Array.isArray(corpus) ? corpus : [])
     .filter((item) => (item?.scope || "included") !== "excluded")
