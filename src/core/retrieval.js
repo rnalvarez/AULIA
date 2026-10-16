@@ -205,7 +205,35 @@ function splitIntoPassages(item, maxChars = 1100, overlap = 170) {
   return passages.length ? passages : [{ ...item, content: text.slice(0, maxChars), _passageIndex: 0 }];
 }
 
-function rankCorpusPassages(items, question, includeReference, limit, contextQuestion = "") {
+function buildKnowledgeQueryAlternatives(knowledgeItems, question) {
+  const alternatives = [];
+  const seen = new Set([normalize(question)]);
+  const add = (value, weight) => {
+    const query = String(value || "").trim();
+    const key = normalize(query);
+    if (!key || seen.has(key) || !queryTokens(query).length || alternatives.length >= 12) return;
+    seen.add(key);
+    alternatives.push({ query, weight });
+  };
+
+  for (const item of knowledgeItems || []) {
+    const entry = item?.knowledgeEntry || {};
+    // Canonical terms and aliases connect different wording to the same
+    // bibliography-derived concept. Related terms broaden recall more cautiously.
+    add(entry.term || item?.title, 0.48);
+    for (const alias of (Array.isArray(entry.aliases) ? entry.aliases : []).slice(0, 4)) {
+      add(alias, 0.56);
+    }
+    for (const related of (Array.isArray(entry.relatedTerms) ? entry.relatedTerms : []).slice(0, 3)) {
+      add(related, 0.22);
+    }
+    if (alternatives.length >= 12) break;
+  }
+
+  return alternatives;
+}
+
+function rankCorpusPassages(items, question, includeReference, limit, contextQuestion = "", queryAlternatives = []) {
   const passages = [];
   for (const item of items || []) {
     const scope = item.scope || "included";
@@ -216,7 +244,7 @@ function rankCorpusPassages(items, question, includeReference, limit, contextQue
     passages.push(...splitIntoPassages(item));
   }
 
-  const ranked = rank(passages, question, includeReference, contextQuestion);
+  const ranked = rank(passages, question, includeReference, contextQuestion, queryAlternatives);
   const bestBySource = new Map();
   for (const item of ranked) {
     const key = String(item.id || item.title || "");
@@ -225,7 +253,7 @@ function rankCorpusPassages(items, question, includeReference, limit, contextQue
   return Array.from(bestBySource.values()).slice(0, limit);
 }
 
-function rank(items, question, optionsIncludeReference = false, contextQuestion = "") {
+function rank(items, question, optionsIncludeReference = false, contextQuestion = "", queryAlternatives = []) {
   const available = (items || []).filter(item => {
     const scope = item.scope || "included";
     if (scope === "excluded") return false;
@@ -234,21 +262,38 @@ function rank(items, question, optionsIncludeReference = false, contextQuestion 
   });
   const corpusStats = buildCorpusStats(available, question);
   const contextStats = contextQuestion ? buildCorpusStats(available, contextQuestion) : null;
+  const alternativeStats = (Array.isArray(queryAlternatives) ? queryAlternatives : [])
+    .filter(alternative => alternative?.query && Number(alternative.weight) > 0)
+    .map(alternative => ({
+      query: alternative.query,
+      weight: Math.min(0.7, Number(alternative.weight)),
+      stats: buildCorpusStats(available, alternative.query),
+    }));
+
   return available
     .map(item => {
       const directRelevance = score(question, item, corpusStats);
       const contextualRelevance = contextQuestion ? score(contextQuestion, item, contextStats) : 0;
-      // Context is a secondary signal, used only for underspecified follow-ups.
-      const relevance = directRelevance + contextualRelevance * 0.22;
+      let expandedRelevance = 0;
+      for (const alternative of alternativeStats) {
+        expandedRelevance = Math.max(
+          expandedRelevance,
+          score(alternative.query, item, alternative.stats) * alternative.weight
+        );
+      }
+      // Local query expansion uses concepts extracted from this course's own
+      // bibliography. Direct matches remain strongest; related terms are weaker.
+      const relevance = directRelevance + contextualRelevance * 0.22 + expandedRelevance;
       const priorityAdjustment = item.priority === "central"
         ? 1.5
         : item.priority === "context"
           ? -1.5
           : 0;
-      return { item, directRelevance, contextualRelevance, relevance, score: relevance + priorityAdjustment };
+      return { item, directRelevance, contextualRelevance, expandedRelevance, score: relevance + priorityAdjustment };
     })
-    // Context material can provide retrieval signal when the current turn is too short.
-    .filter(({ directRelevance, contextualRelevance }) => directRelevance > 0 || contextualRelevance > 0)
+    .filter(({ directRelevance, contextualRelevance, expandedRelevance }) =>
+      directRelevance > 0 || contextualRelevance > 0 || expandedRelevance > 0
+    )
     .sort((a, b) => b.score - a.score)
     .map(({ item, score: value }) => ({ ...item, _score: value }));
 }
@@ -265,7 +310,6 @@ export function retrieveFromCourse(course, question, options = {}) {
   const contextQuestion = shouldUseConversationContext(question)
     ? buildContextQuery(options.contextMessages)
     : "";
-  const concepts = rank(course.concepts || [], question, includeReference, contextQuestion).slice(0, conceptLimit);
   // A generated concept index gives paraphrases and related terminology a second
   // retrieval path, while every indexed item carries page/section evidence.
   const indexIsCurrent = isKnowledgeBaseCurrent(course);
@@ -343,10 +387,13 @@ export function retrieveFromCourse(course, question, options = {}) {
         };
       }).filter(Boolean), question, includeReference, contextQuestion).slice(0, options.knowledgeLimit ?? 4)
     : [];
-  // Rank overlapping passages, not whole chapters. This prevents a concept
-  // mentioned halfway through a long section from being lost when the prompt
-  // later trims the text to fit the student's Groq budget.
-  const corpus = rankCorpusPassages(course.corpus || [], question, includeReference, corpusLimit, contextQuestion);
+  const queryAlternatives = buildKnowledgeQueryAlternatives(knowledgeItems, question);
+  const concepts = rank(course.concepts || [], question, includeReference, contextQuestion, queryAlternatives).slice(0, conceptLimit);
+
+  // Rank overlapping passages using a few compact, bibliography-derived query variants.
+  const corpus = rankCorpusPassages(
+    course.corpus || [], question, includeReference, corpusLimit, contextQuestion, queryAlternatives
+  );
 
   const seen = new Set();
   return knowledgeItems.concat(concepts, corpus).filter(item => {
