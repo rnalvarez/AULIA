@@ -105,7 +105,7 @@ function findBoundary(text, start, proposedEnd) {
   return boundary >= 0 ? minimum + boundary + 1 : proposedEnd;
 }
 
-export function buildKnowledgePassages(corpus = [], { includeExcluded = true } = {}) {
+export function buildKnowledgePassages(corpus = [], { includeExcluded = false } = {}) {
   const passages = [];
   for (const [sourceIndex, item] of (Array.isArray(corpus) ? corpus : []).entries()) {
     if (!includeExcluded && (item?.scope || "included") === "excluded") continue;
