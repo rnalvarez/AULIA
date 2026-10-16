@@ -47,6 +47,32 @@ function queryTokens(value) {
     });
 }
 
+const FOLLOW_UP_CUES = /\b(?:eso|esa|ese|esto|esta|este|esos|esas|estos|estas|otro|otra|otros|otras|mismo|misma|mismos|mismas|anterior|anteriores|diferencia|diferencias|comparar|comparacion|relacion|relaciona|relacionar|vincula|vincular|significa|significado|quiere decir|implica|implicar|funciona|funcionar|depende|depender|aplica|aplicar|y entonces|en ese caso|por que|como se conecta|como se relaciona|que tiene que ver)\b/;
+
+function shouldUseConversationContext(question) {
+  const normalizedQuestion = normalize(question);
+  return queryTokens(question).length === 0 || FOLLOW_UP_CUES.test(normalizedQuestion);
+}
+
+function buildContextQuery(messages) {
+  const recent = (Array.isArray(messages) ? messages : [])
+    .filter(message => ["user", "assistant"].includes(message?.role) && String(message?.content || "").trim())
+    .slice(-4);
+  const selected = [];
+  let remaining = 1100;
+
+  for (let index = recent.length - 1; index >= 0 && remaining > 0; index -= 1) {
+    const content = String(recent[index]?.content || "").replace(/\s+/g, " ").trim();
+    if (!content) continue;
+    const limit = Math.min(360, remaining);
+    const excerpt = content.length > limit ? content.slice(-limit) : content;
+    selected.push(excerpt);
+    remaining -= excerpt.length;
+  }
+
+  return selected.reverse().join(" ").trim();
+}
+
 function fieldsFor(item) {
   const path = Array.isArray(item?.sectionPath) ? item.sectionPath.join(" ") : "";
   const keywords = [
@@ -179,7 +205,7 @@ function splitIntoPassages(item, maxChars = 1100, overlap = 170) {
   return passages.length ? passages : [{ ...item, content: text.slice(0, maxChars), _passageIndex: 0 }];
 }
 
-function rankCorpusPassages(items, question, includeReference, limit) {
+function rankCorpusPassages(items, question, includeReference, limit, contextQuestion = "") {
   const passages = [];
   for (const item of items || []) {
     const scope = item.scope || "included";
@@ -190,7 +216,7 @@ function rankCorpusPassages(items, question, includeReference, limit) {
     passages.push(...splitIntoPassages(item));
   }
 
-  const ranked = rank(passages, question, includeReference);
+  const ranked = rank(passages, question, includeReference, contextQuestion);
   const bestBySource = new Map();
   for (const item of ranked) {
     const key = String(item.id || item.title || "");
@@ -199,7 +225,7 @@ function rankCorpusPassages(items, question, includeReference, limit) {
   return Array.from(bestBySource.values()).slice(0, limit);
 }
 
-function rank(items, question, optionsIncludeReference = false) {
+function rank(items, question, optionsIncludeReference = false, contextQuestion = "") {
   const available = (items || []).filter(item => {
     const scope = item.scope || "included";
     if (scope === "excluded") return false;
@@ -207,19 +233,22 @@ function rank(items, question, optionsIncludeReference = false) {
     return true;
   });
   const corpusStats = buildCorpusStats(available, question);
+  const contextStats = contextQuestion ? buildCorpusStats(available, contextQuestion) : null;
   return available
     .map(item => {
-      const relevance = score(question, item, corpusStats);
+      const directRelevance = score(question, item, corpusStats);
+      const contextualRelevance = contextQuestion ? score(contextQuestion, item, contextStats) : 0;
+      // Context is a secondary signal, used only for underspecified follow-ups.
+      const relevance = directRelevance + contextualRelevance * 0.22;
       const priorityAdjustment = item.priority === "central"
         ? 1.5
         : item.priority === "context"
           ? -1.5
           : 0;
-      return { item, relevance, score: relevance + priorityAdjustment };
+      return { item, directRelevance, contextualRelevance, relevance, score: relevance + priorityAdjustment };
     })
-    // Priority affects ordering, not whether a textually relevant passage
-    // remains retrievable. Context material is a fallback, not an exclusion.
-    .filter(({ relevance }) => relevance > 0)
+    // Context material can provide retrieval signal when the current turn is too short.
+    .filter(({ directRelevance, contextualRelevance }) => directRelevance > 0 || contextualRelevance > 0)
     .sort((a, b) => b.score - a.score)
     .map(({ item, score: value }) => ({ ...item, _score: value }));
 }
@@ -233,7 +262,10 @@ export function retrieveFromCourse(course, question, options = {}) {
   // relevant excerpts so the book is searchable in full without sending the book
   // on every request or overrunning the student's Groq token budget.
   const includeReference = options.includeReference === true;
-  const concepts = rank(course.concepts || [], question, includeReference).slice(0, conceptLimit);
+  const contextQuestion = shouldUseConversationContext(question)
+    ? buildContextQuery(options.contextMessages)
+    : "";
+  const concepts = rank(course.concepts || [], question, includeReference, contextQuestion).slice(0, conceptLimit);
   // A generated concept index gives paraphrases and related terminology a second
   // retrieval path, while every indexed item carries page/section evidence.
   const indexIsCurrent = isKnowledgeBaseCurrent(course);
@@ -309,12 +341,12 @@ export function retrieveFromCourse(course, question, options = {}) {
           sourcePageEnd: first.pageEnd || first.printedPageEnd || null,
           sourceIds: Array.from(new Set(activeEvidence.map(item => item.sourceId).filter(Boolean))),
         };
-      }).filter(Boolean), question, includeReference).slice(0, options.knowledgeLimit ?? 4)
+      }).filter(Boolean), question, includeReference, contextQuestion).slice(0, options.knowledgeLimit ?? 4)
     : [];
   // Rank overlapping passages, not whole chapters. This prevents a concept
   // mentioned halfway through a long section from being lost when the prompt
   // later trims the text to fit the student's Groq budget.
-  const corpus = rankCorpusPassages(course.corpus || [], question, includeReference, corpusLimit);
+  const corpus = rankCorpusPassages(course.corpus || [], question, includeReference, corpusLimit, contextQuestion);
 
   const seen = new Set();
   return knowledgeItems.concat(concepts, corpus).filter(item => {
