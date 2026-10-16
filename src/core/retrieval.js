@@ -243,26 +243,43 @@ export function retrieveFromCourse(course, question, options = {}) {
         const evidence = Array.isArray(entry.evidence) ? entry.evidence : [];
         if (!evidence.length) return null;
 
-        // Scope and priority are teacher controls applied after indexing.
-        // Never retrieve an entry if any of its supporting passages is now
-        // excluded, or if reference material is disabled for this query.
-        const sourceChunks = evidence.map(ref => corpusById.get(String(ref.sourceId || "")));
-        if (sourceChunks.some(chunk => !chunk)) return null;
-        if (sourceChunks.some(chunk => (chunk.scope || "included") === "excluded")) return null;
-        if (!includeReference && sourceChunks.some(chunk => (chunk.scope || "included") === "reference")) return null;
+        // Teacher scope is evaluated against the current corpus, not stale
+        // metadata cached in the generated index. Keep valid evidence and drop
+        // only references that are missing, excluded, or unauthorized here.
+        const activePairs = evidence
+          .map(ref => ({ ref, chunk: corpusById.get(String(ref.sourceId || "")) }))
+          .filter(({ chunk }) => {
+            if (!chunk) return false;
+            const scope = chunk.scope || "included";
+            if (scope === "excluded") return false;
+            if (scope === "reference" && !includeReference) return false;
+            return true;
+          });
+        if (!activePairs.length) return null;
 
-        const first = evidence[0] || {};
-        const scopes = sourceChunks.map(chunk => chunk.scope || "included");
-        const priorities = sourceChunks.map(chunk => chunk.priority || "normal");
+        const activeEvidence = activePairs.map(({ ref, chunk }) => ({
+          ...ref,
+          scope: chunk.scope || "included",
+          priority: chunk.priority || "normal",
+          sourceName: chunk.source || chunk.sourceName || ref.sourceName || "",
+          title: chunk.title || chunk.chapter || ref.title || "",
+          sectionPath: Array.isArray(chunk.sectionPath) && chunk.sectionPath.length
+            ? chunk.sectionPath
+            : (Array.isArray(ref.sectionPath) ? ref.sectionPath : []),
+          pageStart: chunk.sourcePageStart || chunk.sourcePage || ref.pageStart || null,
+          pageEnd: chunk.sourcePageEnd || chunk.sourcePageStart || chunk.sourcePage || ref.pageEnd || null,
+          printedPageStart: chunk.printedPageStart || ref.printedPageStart || null,
+          printedPageEnd: chunk.printedPageEnd || ref.printedPageEnd || null,
+        }));
+        const first = activeEvidence[0] || {};
+        const scopes = activeEvidence.map(ref => ref.scope || "included");
+        const priorities = activeEvidence.map(ref => ref.priority || "normal");
         const scope = scopes.every(value => value === "reference") ? "reference" : "included";
         const priority = priorities.includes("central")
           ? "central"
           : priorities.includes("normal")
             ? "normal"
             : "context";
-        const activeEvidence = evidence.filter((ref, index) =>
-          (sourceChunks[index].scope || "included") !== "excluded"
-        );
 
         return {
           id: entry.id,
