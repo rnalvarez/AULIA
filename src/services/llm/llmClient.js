@@ -33,12 +33,13 @@ function promptText(value, maxChars) {
 
 function limitPromptBlocks(blocks, maxChars, maxBlockChars = maxChars) {
   const selected = [];
+  const separator = "\\n\\n";
   let remaining = maxChars;
 
   for (const rawBlock of Array.isArray(blocks) ? blocks : []) {
     const block = promptText(rawBlock, maxBlockChars);
     if (!block) continue;
-    const separatorChars = selected.length ? 2 : 0;
+    const separatorChars = selected.length ? separator.length : 0;
     const available = remaining - separatorChars;
     if (available < 80) break;
 
@@ -53,7 +54,7 @@ function limitPromptBlocks(blocks, maxChars, maxBlockChars = maxChars) {
     break;
   }
 
-  return selected.join("\\n\\n");
+  return selected.join(separator);
 }
 
 function compactConversation(messages) {
