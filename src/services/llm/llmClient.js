@@ -11,9 +11,15 @@ const MAX_RESPONSE_TOKENS = 800;
 const MAX_ASSISTANT_INSTRUCTIONS_CHARS = 1000;
 const MAX_MODE_INSTRUCTIONS_CHARS = 650;
 const MAX_CONCEPT_SUMMARY_CHARS = 420;
-const MAX_CORPUS_EXCERPT_CHARS = 1400;
+const MAX_CORPUS_EXCERPT_CHARS = 850;
 const MAX_CONVERSATION_CHARS = 3600;
 const MAX_LATEST_MESSAGE_CHARS = 1800;
+const MAX_KNOWLEDGE_CONTEXT_CHARS = 3800;
+const MAX_KNOWLEDGE_ENTRY_CHARS = 1150;
+const MAX_CONCEPT_CONTEXT_CHARS = 1350;
+const MAX_CONCEPT_ITEM_CHARS = 500;
+const MAX_CORPUS_CONTEXT_CHARS = 3000;
+const MAX_CORPUS_ITEM_CHARS = 1050;
 
 function normalizePromptValue(value) {
   return String(value || "").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/\s+/g, " ").trim();
@@ -23,6 +29,31 @@ function promptText(value, maxChars) {
   const clean = String(value ?? "").replace(/\s+/g, " ").trim();
   if (clean.length <= maxChars) return clean;
   return clean.slice(0, Math.max(0, maxChars - 1)).trimEnd() + "…";
+}
+
+function limitPromptBlocks(blocks, maxChars, maxBlockChars = maxChars) {
+  const selected = [];
+  let remaining = maxChars;
+
+  for (const rawBlock of Array.isArray(blocks) ? blocks : []) {
+    const block = promptText(rawBlock, maxBlockChars);
+    if (!block) continue;
+    const separatorChars = selected.length ? 2 : 0;
+    const available = remaining - separatorChars;
+    if (available < 80) break;
+
+    if (block.length <= available) {
+      selected.push(block);
+      remaining -= separatorChars + block.length;
+      continue;
+    }
+
+    const truncated = promptText(block, available);
+    if (truncated.length >= 80) selected.push(truncated);
+    break;
+  }
+
+  return selected.join("\\n\\n");
 }
 
 function compactConversation(messages) {
@@ -48,7 +79,7 @@ function compactConversation(messages) {
   return selected.reverse();
 }
 
-function buildSystemPrompt({ course, assistant, mode, retrieved }) {
+export function buildSystemPrompt({ course, assistant, mode, retrieved }) {
   const bibliography = new Map((course?.bibliography || []).map(item => [String(item?.id || ""), item]));
   const pedagogicalUnits = new Map((course?.pedagogicalUnits || []).map(unit => [String(unit?.id || ""), unit]));
   const curriculumSequence = Array.isArray(course?.curriculumMap?.sequence)
@@ -81,42 +112,43 @@ function buildSystemPrompt({ course, assistant, mode, retrieved }) {
     ].filter(Boolean).join(" · "), 220);
   };
 
+  const maxIndexedKnowledge = mode?.id === "socratico" ? 2 : 4;
   const indexedKnowledge = (retrieved || [])
     .filter(item => item?._retrievalKind === "knowledge" && item?.knowledgeEntry)
-    .slice(0, 4);
-  const knowledgeContext = indexedKnowledge.map(item => {
+    .slice(0, maxIndexedKnowledge);
+  const knowledgeContext = limitPromptBlocks(indexedKnowledge.map(item => {
     const entry = item.knowledgeEntry || {};
-    const evidence = (Array.isArray(entry.evidence) ? entry.evidence : []).slice(0, 2);
+    // One source reference per entry keeps traceability while leaving room for
+    // several concepts in the prompt. The complete evidence remains in the pack.
+    const evidence = (Array.isArray(entry.evidence) ? entry.evidence : []).slice(0, 1);
     const evidenceText = evidence.map(ref => [
-      "FUENTE: " + promptText(ref.sourceName || ref.title || "", 120),
-      ref.sectionPath?.length ? "SECCIÓN: " + promptText(ref.sectionPath.join(" › "), 150) : "",
+      "FUENTE: " + promptText(ref.sourceName || ref.title || "", 100),
+      ref.sectionPath?.length ? "SECCIÓN: " + promptText(ref.sectionPath.join(" › "), 100) : "",
       ref.pageStart ? "PÁGINAS: " + ref.pageStart + (ref.pageEnd && ref.pageEnd !== ref.pageStart ? "-" + ref.pageEnd : "") : "",
       ref.printedPageStart ? "PÁGINAS IMPRESAS: " + ref.printedPageStart + (ref.printedPageEnd && ref.printedPageEnd !== ref.printedPageStart ? "-" + ref.printedPageEnd : "") : "",
-      "PASO DE EVIDENCIA: " + promptText(ref.excerpt || "", 210),
+      "EVIDENCIA TEXTUAL: " + promptText(ref.excerpt || "", 150),
     ].filter(Boolean).join(" · ")).join("\\n");
     return [
-      "CONCEPTO INDEXADO: " + promptText(entry.term || item.title || "", 120),
-      entry.aliases?.length ? "OTROS NOMBRES: " + entry.aliases.slice(0, 6).map(value => promptText(value, 80)).join(" | ") : "",
-      entry.category ? "TIPO: " + promptText(entry.category, 70) : "",
-      entry.definition ? "DEFINICIÓN: " + promptText(entry.definition, 480) : "",
-      (entry.definitionVariants || []).filter(value => normalizePromptValue(value) !== normalizePromptValue(entry.definition)).slice(0, 2).length
-        ? "OTRAS FORMULACIONES EN EL TEXTO: " + (entry.definitionVariants || []).filter(value => normalizePromptValue(value) !== normalizePromptValue(entry.definition)).slice(0, 2).map(value => promptText(value, 240)).join(" | ") : "",
-      entry.explanation ? "DESARROLLO: " + promptText(entry.explanation, 420) : "",
-      (entry.explanationVariants || []).filter(value => normalizePromptValue(value) !== normalizePromptValue(entry.explanation)).slice(0, 2).length
-        ? "OTROS DESARROLLOS: " + (entry.explanationVariants || []).filter(value => normalizePromptValue(value) !== normalizePromptValue(entry.explanation)).slice(0, 2).map(value => promptText(value, 220)).join(" | ") : "",
-      entry.distinctions?.length ? "DISTINCIONES: " + entry.distinctions.slice(0, 2).map(value => promptText(value, 150)).join(" | ") : "",
-      entry.relatedTerms?.length ? "RELACIONES: " + entry.relatedTerms.slice(0, 5).map(value => promptText(value, 70)).join(" | ") : "",
-      entry.examples?.length ? "EJEMPLOS: " + entry.examples.slice(0, 2).map(value => promptText(value, 140)).join(" | ") : "",
-      evidenceText ? "TRAZABILIDAD AL MATERIAL ORIGINAL:\\n" + evidenceText : "",
+      "CONCEPTO INDEXADO: " + promptText(entry.term || item.title || "", 100),
+      entry.aliases?.length ? "OTROS NOMBRES: " + entry.aliases.slice(0, 3).map(value => promptText(value, 55)).join(" | ") : "",
+      entry.category ? "TIPO: " + promptText(entry.category, 60) : "",
+      entry.definition ? "DEFINICIÓN: " + promptText(entry.definition, 280) : "",
+      entry.explanation ? "DESARROLLO: " + promptText(entry.explanation, 190) : "",
+      evidenceText ? "TRAZABILIDAD: " + evidenceText : "",
+      (entry.definitionVariants || []).filter(value => normalizePromptValue(value) !== normalizePromptValue(entry.definition)).slice(0, 1).length
+        ? "VARIANTE: " + promptText((entry.definitionVariants || []).filter(value => normalizePromptValue(value) !== normalizePromptValue(entry.definition))[0], 130) : "",
+      entry.distinctions?.length ? "DISTINCIÓN: " + promptText(entry.distinctions[0], 120) : "",
+      entry.relatedTerms?.length ? "RELACIONES: " + entry.relatedTerms.slice(0, 2).map(value => promptText(value, 55)).join(" | ") : "",
+      entry.examples?.length ? "EJEMPLO: " + promptText(entry.examples[0], 100) : "",
     ].filter(Boolean).join("\\n");
-  }).join("\\n\\n");
+  }), MAX_KNOWLEDGE_CONTEXT_CHARS, MAX_KNOWLEDGE_ENTRY_CHARS);
 
   const conceptIds = new Set((course?.concepts || []).map(concept => String(concept?.id || "")));
   const retrievedConcepts = (retrieved || [])
     .filter(item => conceptIds.has(String(item?.id || "")))
-    .slice(0, 3);
+    .slice(0, mode?.id === "socratico" ? 2 : 3);
 
-  const conceptItems = retrievedConcepts.map(item => {
+  const conceptItems = limitPromptBlocks(retrievedConcepts.map(item => {
     const sourceIds = Array.isArray(item?.sourceBibliographyIds) ? item.sourceBibliographyIds : [];
     const sources = sourceIds
       .slice(0, 2)
@@ -142,15 +174,15 @@ function buildSystemPrompt({ course, assistant, mode, retrieved }) {
       sources.length ? "BIBLIOGRAFÍA: " + sources.join(" | ") : "",
       confusionCriteria.length ? "CRITERIOS DE POSIBLE CONFUSIÓN: " + confusionCriteria.join(" | ") : "",
     ].filter(Boolean).join("\\n");
-  }).join("\\n\\n");
+  }), MAX_CONCEPT_CONTEXT_CHARS, MAX_CONCEPT_ITEM_CHARS);
 
   // Conceptos ya se incluyen arriba, con un formato específico y compacto.
   // No volver a incluirlos dentro del corpus: duplicaba tokens sin sumar evidencia.
   const retrievedCorpus = (retrieved || [])
     .filter(item => item?._retrievalKind !== "knowledge" && !conceptIds.has(String(item?.id || "")))
-    .slice(0, 4);
+    .slice(0, mode?.id === "socratico" ? 3 : 4);
 
-  const context = retrievedCorpus.map(item => {
+  const context = limitPromptBlocks(retrievedCorpus.map(item => {
     const title = promptText(item?.title || item?.id || "Unidad", 140);
     const section = Array.isArray(item?.sectionPath) && item.sectionPath.length
       ? "SECCIÓN: " + promptText(item.sectionPath.join(" › "), 180)
@@ -177,7 +209,7 @@ function buildSystemPrompt({ course, assistant, mode, retrieved }) {
       source,
       text,
     ].filter(Boolean).join("\\n");
-  }).join("\\n\\n");
+  }), MAX_CORPUS_CONTEXT_CHARS, MAX_CORPUS_ITEM_CHARS);
 
   const curriculumContext = curriculumSequence.length
     ? "MAPA CURRICULAR DE LA CÁTEDRA:\\n" +
@@ -192,6 +224,7 @@ function buildSystemPrompt({ course, assistant, mode, retrieved }) {
     promptText(assistant?.instructions || "Sos un asistente pedagógico. Respondé en español y trabajá con el corpus autorizado.", MAX_ASSISTANT_INSTRUCTIONS_CHARS),
     "Curso: " + promptText(course?.title || course?.id || "", 160),
     "Modo: " + promptText(mode?.title || "", 120),
+    mode?.strategy ? "Estrategia pedagógica del modo: " + promptText(mode.strategy, 120) : "",
     "Objetivo: " + promptText(mode?.pedagogicalGoal || "", 400),
     curriculumContext,
     "El mapa curricular es una guía pedagógica de la cátedra, no una fuente factual adicional. Usalo para orientar la progresión y los prerrequisitos, pero basá las respuestas sobre contenidos únicamente en el corpus y las fuentes autorizadas.",
