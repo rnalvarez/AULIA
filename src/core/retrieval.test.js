@@ -184,6 +184,94 @@ test("el índice conceptual amplía la búsqueda hacia la terminología de la bi
     "the source passage should be found even though it uses the indexed concept's canonical term");
 });
 
+
+test("la expansión terminológica funciona en bibliografías de disciplinas distintas", () => {
+  const scenarios = [
+    {
+      discipline: "ciencias naturales",
+      query: "balance energético",
+      term: "Conservación de la energía",
+      alias: "balance energético",
+      title: "Conservación de la energía",
+      content: "En un sistema aislado, la cantidad total de energía se conserva aunque se transforme de una forma a otra.",
+    },
+    {
+      discipline: "biología",
+      query: "éxito reproductivo diferencial",
+      term: "Selección natural",
+      alias: "éxito reproductivo diferencial",
+      title: "Selección natural",
+      content: "La selección natural ocurre cuando variaciones heredables afectan el éxito reproductivo diferencial de los organismos.",
+    },
+    {
+      discipline: "derecho",
+      query: "derecho de contradicción",
+      term: "Principio de contradicción",
+      alias: "derecho de contradicción",
+      title: "Principio de contradicción",
+      content: "El principio de contradicción garantiza a cada parte la oportunidad de conocer y controvertir los argumentos y pruebas de la contraparte.",
+    },
+  ];
+
+  for (const [index, scenario] of scenarios.entries()) {
+    const sourceId = "source-" + index;
+    const corpus = [{
+      id: sourceId,
+      title: scenario.title,
+      sectionPath: [scenario.title],
+      source: "Bibliografía de prueba",
+      content: scenario.content,
+      scope: "included",
+      priority: "normal",
+      sourcePageStart: index + 1,
+    }];
+    const entry = {
+      id: "kb-" + index,
+      term: scenario.term,
+      aliases: [scenario.alias],
+      category: "concepto",
+      definition: scenario.content,
+      explanation: "",
+      relatedTerms: [],
+      distinctions: [],
+      examples: [],
+      evidence: [{
+        sourceId,
+        sourceName: "Bibliografía de prueba",
+        title: scenario.title,
+        sectionPath: [scenario.title],
+        pageStart: index + 1,
+        pageEnd: index + 1,
+        excerpt: scenario.content.slice(0, 90),
+      }],
+    };
+    const passages = buildKnowledgePassages(corpus);
+    const course = {
+      concepts: [],
+      corpus,
+      knowledgeBase: {
+        version: KNOWLEDGE_BASE_VERSION,
+        sourceSignature: knowledgeCorpusSignature(corpus),
+        status: "complete",
+        entries: [entry],
+        totalPassages: passages.length,
+        processedPassageIds: passages.map(passage => passage.passageId),
+      },
+    };
+
+    const results = retrieveFromCourse(course, scenario.query, {
+      conceptLimit: 0,
+      corpusLimit: 3,
+      knowledgeLimit: 3,
+    });
+
+    assert.ok(results.some(item => item.id === entry.id),
+      "the indexed concept should be found for " + scenario.discipline);
+    assert.ok(results.some(item => item.id === sourceId),
+      "the matching source passage should be found for " + scenario.discipline);
+  }
+});
+
 test("knowledge index version changes when corpus scope changes", () => {
   const included = [{ id: "p1", title: "Sección", content: "Contenido suficiente." }];
   const excluded = [{ ...included[0], scope: "excluded" }];
