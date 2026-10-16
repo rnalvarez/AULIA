@@ -123,18 +123,18 @@ export function buildSystemPrompt({ course, assistant, mode, retrieved }) {
     // several concepts in the prompt. The complete evidence remains in the pack.
     const evidence = (Array.isArray(entry.evidence) ? entry.evidence : []).slice(0, 1);
     const evidenceText = evidence.map(ref => [
-      "FUENTE: " + promptText(ref.sourceName || ref.title || "", 100),
-      ref.sectionPath?.length ? "SECCIÓN: " + promptText(ref.sectionPath.join(" › "), 100) : "",
+      "FUENTE: " + promptText(ref.sourceName || ref.title || "", 90),
+      ref.sectionPath?.length ? "SECCIÓN: " + promptText(ref.sectionPath.join(" › "), 90) : "",
       ref.pageStart ? "PÁGINAS: " + ref.pageStart + (ref.pageEnd && ref.pageEnd !== ref.pageStart ? "-" + ref.pageEnd : "") : "",
       ref.printedPageStart ? "PÁGINAS IMPRESAS: " + ref.printedPageStart + (ref.printedPageEnd && ref.printedPageEnd !== ref.printedPageStart ? "-" + ref.printedPageEnd : "") : "",
-      "EVIDENCIA TEXTUAL: " + promptText(ref.excerpt || "", 150),
+      "EVIDENCIA TEXTUAL: " + promptText(ref.excerpt || "", 130),
     ].filter(Boolean).join(" · ")).join("\\n");
     return [
       "CONCEPTO INDEXADO: " + promptText(entry.term || item.title || "", 100),
-      entry.aliases?.length ? "OTROS NOMBRES: " + entry.aliases.slice(0, 3).map(value => promptText(value, 55)).join(" | ") : "",
+      entry.aliases?.length ? "OTROS NOMBRES: " + entry.aliases.slice(0, 3).map(value => promptText(value, 45)).join(" | ") : "",
       entry.category ? "TIPO: " + promptText(entry.category, 60) : "",
-      entry.definition ? "DEFINICIÓN: " + promptText(entry.definition, 280) : "",
-      entry.explanation ? "DESARROLLO: " + promptText(entry.explanation, 190) : "",
+      entry.definition ? "DEFINICIÓN: " + promptText(entry.definition, 220) : "",
+      entry.explanation ? "DESARROLLO: " + promptText(entry.explanation, 150) : "",
       evidenceText ? "TRAZABILIDAD: " + evidenceText : "",
       (entry.definitionVariants || []).filter(value => normalizePromptValue(value) !== normalizePromptValue(entry.definition)).slice(0, 1).length
         ? "VARIANTE: " + promptText((entry.definitionVariants || []).filter(value => normalizePromptValue(value) !== normalizePromptValue(entry.definition))[0], 130) : "",
